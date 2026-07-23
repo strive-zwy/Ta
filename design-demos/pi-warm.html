@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TA · Pi Warm — AI 伴侣 App 原型</title>
+<script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #FAF8F5;
+    --cream-deep: #F3EFE9;
+    --teal: #1B5E5C;
+    --teal-500: #14B8A6;
+    --teal-100: #CCFBF1;
+    --teal-50: #ECFDF7;
+    --ink: #2D2A26;
+    --ink-soft: #6B645E;
+    --ink-faint: #A8A09A;
+    --line: rgba(27, 94, 92, 0.08);
+    --line-strong: rgba(27, 94, 92, 0.14);
+    --page-bg: #F5F3F0;
+  }
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page-bg);
+    font-family: 'Inter', 'Noto Sans SC', -apple-system, sans-serif;
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 40px 32px 64px;
+  }
+  .page-header {
+    max-width: 1900px;
+    margin: 0 auto 36px;
+    padding: 0 8px;
+  }
+  .page-header h1 {
+    font-family: 'Fraunces', 'Noto Sans SC', serif;
+    font-weight: 500;
+    font-size: 30px;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    color: var(--ink);
+  }
+  .page-header p {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .page-header .meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    padding: 6px 12px;
+    background: var(--cream);
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--teal);
+    font-weight: 500;
+  }
+  .page-header .meta .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #5EEAD4, #14B8A6);
+    box-shadow: 0 0 0 3px rgba(20,184,166,0.18);
+  }
+  .devices-row {
+    display: flex;
+    gap: 36px;
+    overflow-x: auto;
+    padding: 8px 8px 32px;
+    max-width: 1900px;
+    margin: 0 auto;
+    scroll-snap-type: x proximity;
+  }
+  .device-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    scroll-snap-align: start;
+    flex-shrink: 0;
+  }
+  .device-label {
+    font-family: 'Fraunces', serif;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: 0.01em;
+  }
+  .device-sub {
+    font-size: 11px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-top: -10px;
+  }
+  /* hide scrollbars on device screens */
+  .device-scroll::-webkit-scrollbar { display: none; }
+  .device-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+  .devices-row::-webkit-scrollbar { height: 8px; }
+  .devices-row::-webkit-scrollbar-track { background: transparent; }
+  .devices-row::-webkit-scrollbar-thumb { background: rgba(27,94,92,0.18); border-radius: 999px; }
+
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.035); }
+  }
+  @keyframes orbGlow {
+    0%, 100% { box-shadow: 0 0 0 0 var(--orb-glow, rgba(20,184,166,0.25)); }
+    50% { box-shadow: 0 0 0 5px var(--orb-glow, rgba(20,184,166,0.12)); }
+  }
+  @keyframes waveBar {
+    0%, 100% { transform: scaleY(0.35); }
+    50% { transform: scaleY(1); }
+  }
+  @keyframes typingDot {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+    30% { transform: translateY(-3px); opacity: 1; }
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .fade-in { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .breathe { animation: breathe 4.5s ease-in-out infinite; }
+  .orb-glow { animation: orbGlow 3.2s ease-in-out infinite; }
+
+  .font-display { font-family: 'Fraunces', 'Noto Sans SC', serif; }
+  .font-body { font-family: 'Inter', 'Noto Sans SC', sans-serif; }
+
+  .toggle-track {
+    width: 40px; height: 22px; border-radius: 999px;
+    background: var(--cream-deep); position: relative;
+    transition: background 0.25s ease; cursor: pointer; flex-shrink: 0;
+  }
+  .toggle-track.on { background: var(--teal); }
+  .toggle-thumb {
+    position: absolute; top: 2px; left: 2px;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .toggle-track.on .toggle-thumb { transform: translateX(18px); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useMemo } = React;
+
+/* ============================================================
+   设计令牌
+============================================================ */
+const C = {
+  cream: '#FAF8F5',
+  creamDeep: '#F3EFE9',
+  creamLine: '#EFE9E2',
+  teal: '#1B5E5C',
+  teal500: '#14B8A6',
+  teal100: '#CCFBF1',
+  teal50: '#ECFDF7',
+  ink: '#2D2A26',
+  inkSoft: '#6B645E',
+  inkFaint: '#A8A09A',
+  line: 'rgba(27, 94, 92, 0.08)',
+  lineStrong: 'rgba(27, 94, 92, 0.14)',
+  pageBg: '#F5F3F0',
+};
+
+/* Agent 状态：柔和渐变球（功能色，仅状态指示用） */
+const STATUS = {
+  working:  { label: '工作中',   sub: '回复会慢一点点',  orb: 'radial-gradient(circle at 32% 30%, #5EEAD4, #14B8A6)', glow: 'rgba(20,184,166,0.28)' },
+  happy:    { label: '心情不错',  sub: '随时都在',        orb: 'radial-gradient(circle at 32% 30%, #FCD34D, #F59E0B)', glow: 'rgba(245,158,11,0.28)' },
+  sleeping: { label: '睡梦中',   sub: '嘘——轻一点',     orb: 'radial-gradient(circle at 32% 30%, #C4B5FD, #818CF8)', glow: 'rgba(129,140,248,0.28)' },
+  bathing:  { label: '洗澡中',   sub: '稍等一下下',      orb: 'radial-gradient(circle at 32% 30%, #67E8F9, #22D3EE)', glow: 'rgba(34,211,238,0.28)' },
+  gaming:   { label: '在打游戏',  sub: '忙着通关呢',      orb: 'radial-gradient(circle at 32% 30%, #93C5FD, #60A5FA)', glow: 'rgba(96,165,250,0.28)' },
+  bored:    { label: '发呆中',   sub: '想找人说说话',     orb: 'radial-gradient(circle at 32% 30%, #D6D3D1, #A8A29E)', glow: 'rgba(168,162,158,0.28)' },
+};
+const STATUS_ORDER = ['happy','working','bathing','gaming','bored','sleeping'];
+
+/* ============================================================
+   SVG 线条图标（无 emoji）
+============================================================ */
+function Icon({ name, size = 20, color = C.teal, strokeWidth = 1.8, style }) {
+  const props = {
+    width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+    stroke: color, strokeWidth, strokeLinecap: 'round', strokeLinejoin: 'round',
+    style, xmlns: 'http://www.w3.org/2000/svg',
+  };
+  const paths = {
+    back: <><path d="M15 18l-6-6 6-6"/></>,
+    send: <><path d="M12 19V6"/><path d="M6 12l6-6 6 6"/></>,
+    mic: <><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></>,
+    more: <><circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none"/></>,
+    chevronRight: <><path d="M9 6l6 6-6 6"/></>,
+    user: <><circle cx="12" cy="8" r="3.6"/><path d="M5 20a7 7 0 0 1 14 0"/></>,
+    clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
+    cpu: <><rect x="7" y="7" width="10" height="10" rx="2.5"/><path d="M9.5 3.5v2M14.5 3.5v2M9.5 18.5v2M14.5 18.5v2M3.5 9.5h2M3.5 14.5h2M18.5 9.5h2M18.5 14.5h2"/></>,
+    sliders: <><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></>,
+    trash: <><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></>,
+    sparkles: <><path d="M12 4l1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6z"/><path d="M18 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></>,
+    image: <><rect x="4" y="5" width="16" height="14" rx="3"/><circle cx="9" cy="10" r="1.5"/><path d="M5 17l4.5-4.5a2 2 0 0 1 2.8 0L17 17"/></>,
+    volume: <><path d="M4 10v4a1 1 0 0 0 1 1h2.5L12 19V5L7.5 9H5a1 1 0 0 0-1 1z"/><path d="M15.5 9.5a4 4 0 0 1 0 5"/><path d="M18 7.5a7 7 0 0 1 0 9.5"/></>,
+    behavior: <><path d="M12 3a4 4 0 0 1 4 4c0 1.5-1 2-1 3s1 1.5 1 3a4 4 0 0 1-8 0c0-1.5 1-2 1-3s-1-1.5-1-3a4 4 0 0 1 4-4z"/><path d="M9 12h6"/></>,
+    heart: <><path d="M12 20S4 14.5 4 9.5A4 4 0 0 1 12 7a4 4 0 0 1 8 2.5C20 14.5 12 20 12 20z"/></>,
+    info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></>,
+    pencil: <><path d="M14.5 5.5l4 4M3 21l1-4L15.5 5.5a2 2 0 0 1 2.8 0l.2.2a2 2 0 0 1 0 2.8L6.9 19.5l-3.9 1.5z"/></>,
+    download: <><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></>,
+    upload: <><path d="M12 16V5M7 9l5-5 5 5"/><path d="M5 20h14"/></>,
+    plus: <><path d="M12 6v12M6 12h12"/></>,
+    chat: <><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 4z"/></>,
+    refresh: <><path d="M19 12a7 7 0 1 1-1.5-4.3M19 4v4h-4"/></>,
+    moon: <><path d="M20 14.5A7.5 7.5 0 0 1 9.5 4 7 7 0 1 0 20 14.5z"/></>,
+    coffee: <><path d="M5 9h11v4a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4z"/><path d="M16 10h2.5a2.5 2.5 0 0 1 0 5H16"/><path d="M7 3v2M11 3v2"/></>,
+    gamepad: <><rect x="3" y="8" width="18" height="9" rx="4.5"/><path d="M8 12.5h3M9.5 11v3M15.5 12h.01M17.5 13h.01"/></>,
+    bath: <><path d="M4 12h16v3a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z"/><path d="M7 12V6a2 2 0 0 1 4 0M5 21l1-1M18 21l1-1"/></>,
+    cloud: <><path d="M7 18a4 4 0 0 1-.5-7.97A5 5 0 0 1 16 9a3.5 3.5 0 0 1 .5 6.97"/></>,
+    search: <><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></>,
+    play: <><path d="M8 5l11 7-11 7z"/></>,
+    check: <><path d="M5 12l4.5 4.5L19 7"/></>,
+    checkCircle: <><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></>,
+    bookmark: <><path d="M6 4h12v16l-6-4-6 4z"/></>,
+    globe: <><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></>,
+    note: <><path d="M6 4h9l3 3v13H6z"/><path d="M9 12h6M9 16h4"/></>,
+  };
+  return <svg {...props}>{paths[name]}</svg>;
+}
+
+/* ============================================================
+   AndroidFrame 设备框
+============================================================ */
+function AndroidFrame({ children, time = '9:41', battery = 85, label, sub }) {
+  const frameStyles = {
+    wrapper: { display: 'inline-block', padding: 10, background: '#1a1a1a', borderRadius: 44, boxShadow: '0 0 0 2px #2a2a2a, 0 20px 60px rgba(0,0,0,0.18)', position: 'relative' },
+    screen: { position: 'relative', borderRadius: 36, overflow: 'hidden', background: C.cream, width: 412, height: 892 },
+    statusBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', fontSize: 13, fontWeight: 600, zIndex: 20, pointerEvents: 'none', color: C.ink },
+    punchHole: { position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', width: 14, height: 14, background: '#000', borderRadius: '50%', zIndex: 30 },
+    content: { position: 'absolute', top: 32, left: 0, right: 0, bottom: 24, overflow: 'auto', },
+    navBar: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  };
+  return (
+    <div className="device-col">
+      <div style={frameStyles.wrapper}>
+        <div style={frameStyles.screen}>
+          <div style={frameStyles.statusBar}>
+            <span>{time}</span>
+            <span style={{ fontSize: 11, fontWeight: 600 }}>{battery}%</span>
+          </div>
+          <div style={frameStyles.punchHole} />
+          <div className="device-scroll" style={frameStyles.content}>{children}</div>
+          <div style={frameStyles.navBar}>
+            <div style={{ width: 100, height: 4, background: 'rgba(0,0,0,0.35)', borderRadius: 999 }} />
+          </div>
+        </div>
+      </div>
+      {label && <div className="device-label">{label}</div>}
+      {sub && <div className="device-sub">{sub}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   状态球 + 头像（柔和渐变，呼吸感）
+============================================================ */
+function StatusOrb({ status, size = 12, withGlow = true }) {
+  const s = STATUS[status];
+  return (
+    <span
+      className={withGlow ? 'orb-glow' : ''}
+      style={{
+        display: 'inline-block', width: size, height: size, borderRadius: '50%',
+        background: s.orb,
+        // glow handled by animation + inline fallback
+        ['--orb-glow']: s.glow,
+        boxShadow: `0 0 0 3px ${s.glow}`,
+      }}
+    />
+  );
+}
+
+function Avatar({ size = 44, status = 'happy', animate = true }) {
+  const s = STATUS[status] || STATUS.happy;
+  return (
+    <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+      {/* 柔和的呼吸外环 */}
+      <div
+        className={animate ? 'breathe' : ''}
+        style={{
+          position: 'absolute', inset: -3, borderRadius: '50%',
+          background: s.orb, opacity: 0.22, filter: 'blur(6px)',
+        }}
+      />
+      {/* 头像主体：teal 渐变球 */}
+      <div
+        style={{
+          position: 'relative', width: size, height: size, borderRadius: '50%',
+          background: 'radial-gradient(circle at 30% 28%, #7FE7DA 0%, #14B8A6 38%, #1B5E5C 100%)',
+          boxShadow: 'inset 0 -4px 10px rgba(0,0,0,0.12), inset 0 3px 6px rgba(255,255,255,0.35), 0 4px 10px rgba(27,94,92,0.18)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        {/* 简洁的"TA"字标 */}
+        <span style={{
+          fontFamily: "'Fraunces', serif", fontWeight: 500,
+          color: 'rgba(255,255,255,0.95)', fontSize: size * 0.34,
+          letterSpacing: '-0.02em', textShadow: '0 1px 2px rgba(0,0,0,0.15)',
+        }}>ta</span>
+      </div>
+      {/* 状态点 */}
+      <span style={{
+        position: 'absolute', right: -1, bottom: -1, width: size * 0.28, height: size * 0.28,
+        borderRadius: '50%', background: s.orb,
+        border: `2.5px solid ${C.cream}`, boxShadow: `0 0 0 1px ${s.glow}`,
+      }} />
+    </div>
+  );
+}
+
+/* 通用 Section 标题 */
+function SectionTitle({ children, style }) {
+  return (
+    <div style={{
+      fontFamily: "'Fraunces', serif", fontSize: 13, fontWeight: 500,
+      color: C.inkSoft, letterSpacing: '0.06em', textTransform: 'uppercase',
+      margin: '0 4px 10px', ...style,
+    }}>{children}</div>
+  );
+}
+
+/* 柔和的卡片容器 */
+function WarmCard({ children, style, deep = false, onClick }) {
+  return (
+    <div onClick={onClick} style={{
+      background: deep ? C.creamDeep : C.cream,
+      borderRadius: 22, padding: 20,
+      border: `1px solid ${C.line}`,
+      ...style,
+    }}>{children}</div>
+  );
+}
+
+/* 柔和图标底（圆角方块底色） */
+function IconBubble({ name, size = 18, bg = C.teal50, color = C.teal, boxSize = 38 }) {
+  return (
+    <div style={{
+      width: boxSize, height: boxSize, borderRadius: 13,
+      background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexShrink: 0,
+    }}>
+      <Icon name={name} size={size} color={color} />
+    </div>
+  );
+}
+
+/* ============================================================
+   语音消息（柔和波形）
+============================================================ */
+function VoiceMessage({ duration = 4, isAgent = true, playing = false }) {
+  const bars = useMemo(() => {
+    const arr = [];
+    let seed = isAgent ? 7 : 13;
+    for (let i = 0; i < 22; i++) {
+      seed = (seed * 9301 + 49297) % 233280;
+      const r = seed / 233280;
+      arr.push(0.25 + r * 0.75);
+    }
+    return arr;
+  }, [isAgent]);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 168 }}>
+      <div style={{
+        width: 34, height: 34, borderRadius: '50%',
+        background: isAgent ? 'rgba(27,94,92,0.08)' : 'rgba(255,255,255,0.22)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+      }}>
+        <Icon name="play" size={15} color={isAgent ? C.teal : '#fff'} strokeWidth={0} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2.5, height: 22, flex: 1 }}>
+        {bars.map((h, i) => (
+          <span key={i} style={{
+            display: 'block', width: 2.5, height: `${h * 100}%`,
+            borderRadius: 999,
+            background: isAgent ? 'rgba(27,94,92,0.32)' : 'rgba(255,255,255,0.7)',
+            transformOrigin: 'center',
+            animation: playing ? `waveBar 1.1s ease-in-out ${i * 0.06}s infinite` : 'none',
+          }} />
+        ))}
+      </div>
+      <span style={{
+        fontSize: 12, fontVariantNumeric: 'tabular-nums',
+        color: isAgent ? C.inkFaint : 'rgba(255,255,255,0.85)', flexShrink: 0,
+      }}>{duration}″</span>
+    </div>
+  );
+}
+
+/* 正在输入指示 */
+function TypingIndicator() {
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 2px' }}>
+      {[0, 1, 2].map(i => (
+        <span key={i} style={{
+          width: 7, height: 7, borderRadius: '50%', background: C.teal, opacity: 0.5,
+          animation: `typingDot 1.3s ease-in-out ${i * 0.18}s infinite`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   屏幕 1 · 聊天页
+============================================================ */
+function ChatScreen() {
+  const [messages, setMessages] = useState([
+    { id: 1, type: 'agent', text: '下午好呀，今天怎么有空来找我聊天？' },
+    { id: 2, type: 'user', text: '刚忙完一阵，想歇会儿' },
+    { id: 3, type: 'agent', voice: true, duration: 4 },
+    { id: 4, type: 'user', emoji: '😊' },
+    { id: 5, type: 'agent', text: '（轻笑）最近有没有遇到什么有趣的事？', action: '轻笑' },
+    { id: 6, type: 'user', text: '有一件，待会儿跟你细说' },
+    { id: 7, type: 'agent', text: '好呀，我慢慢听着。不着急，你先喝口水～' },
+  ]);
+  const [input, setInput] = useState('');
+  const [typing, setTyping] = useState(false);
+  const [status, setStatus] = useState('happy');
+  const [showStatusSheet, setShowStatusSheet] = useState(false);
+  const scrollRef = useRef(null);
+  const idRef = useRef(100);
+
+  const replies = [
+    '嗯嗯，我在听呢～',
+    '听起来挺不错的呀',
+    '你说的我都记着呢',
+    '想多聊聊吗？我陪着你',
+    '这种感觉我懂',
+    '（点头）然后呢？',
+  ];
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, typing]);
+
+  const send = () => {
+    const text = input.trim();
+    if (!text) return;
+    const userMsg = { id: ++idRef.current, type: 'user', text };
+    setMessages(m => [...m, userMsg]);
+    setInput('');
+    setTyping(true);
+    const delay = STATUS[status] === STATUS.sleeping ? 1800 : 900 + Math.random() * 600;
+    setTimeout(() => {
+      setTyping(false);
+      setMessages(m => [...m, {
+        id: ++idRef.current, type: 'agent',
+        text: replies[Math.floor(Math.random() * replies.length)],
+      }]);
+    }, delay);
+  };
+
+  const cycleStatus = () => {
+    const idx = STATUS_ORDER.indexOf(status);
+    setStatus(STATUS_ORDER[(idx + 1) % STATUS_ORDER.length]);
+  };
+
+  const s = STATUS[status];
+  const sleeping = status === 'sleeping';
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: C.pageBg }}>
+      {/* 顶部栏：温暖、留白 */}
+      <div style={{
+        padding: '18px 20px 14px',
+        background: C.cream,
+        borderBottom: `1px solid ${C.line}`,
+        display: 'flex', alignItems: 'center', gap: 14,
+      }}>
+        <Avatar size={42} status={status} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="font-display" style={{ fontSize: 18, fontWeight: 500, color: C.ink }}>小溪</span>
+            <span style={{ fontSize: 12, color: C.inkFaint }}>· 3 岁</span>
+          </div>
+          <button
+            onClick={() => setShowStatusSheet(v => !v)}
+            style={{
+              border: 'none', background: 'transparent', cursor: 'pointer', padding: '3px 0',
+              display: 'flex', alignItems: 'center', gap: 7, marginTop: 2,
+            }}
+          >
+            <StatusOrb status={status} size={9} />
+            <span style={{ fontSize: 12.5, color: C.inkSoft, fontWeight: 500 }}>{s.label}</span>
+            <span style={{ fontSize: 11.5, color: C.inkFaint }}>· {s.sub}</span>
+          </button>
+        </div>
+        <button style={{
+          border: 'none', background: C.creamDeep, cursor: 'pointer',
+          width: 38, height: 38, borderRadius: 13, display: 'flex',
+          alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icon name="more" size={18} color={C.inkSoft} />
+        </button>
+      </div>
+
+      {/* 状态切换浮层 */}
+      {showStatusSheet && (
+        <div className="fade-in" style={{
+          position: 'absolute', top: 78, right: 16, zIndex: 40,
+          background: C.cream, borderRadius: 18, padding: 8,
+          boxShadow: '0 12px 32px rgba(27,94,92,0.16)',
+          border: `1px solid ${C.line}`,
+          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, width: 200,
+        }}>
+          {STATUS_ORDER.map(key => (
+            <button key={key} onClick={() => { setStatus(key); setShowStatusSheet(false); }}
+              style={{
+                border: 'none', background: status === key ? C.teal50 : 'transparent',
+                borderRadius: 12, padding: '9px 10px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left',
+              }}>
+              <StatusOrb status={key} size={9} withGlow={false} />
+              <span style={{ fontSize: 12.5, color: status === key ? C.teal : C.inkSoft, fontWeight: status === key ? 600 : 500 }}>
+                {STATUS[key].label}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 消息流 */}
+      <div ref={scrollRef} className="device-scroll" style={{
+        flex: 1, overflowY: 'auto', padding: '24px 20px 16px',
+        display: 'flex', flexDirection: 'column', gap: 18,
+      }}>
+        <div style={{ textAlign: 'center', margin: '4px 0 8px' }}>
+          <span style={{
+            fontSize: 11, color: C.inkFaint, letterSpacing: '0.04em',
+            background: C.cream, padding: '4px 12px', borderRadius: 999,
+          }}>今天</span>
+        </div>
+
+        {messages.map(m => {
+          if (m.type === 'user' && m.emoji) {
+            return (
+              <div key={m.id} className="fade-in" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <span style={{ fontSize: 44, lineHeight: 1, padding: '6px 10px 0' }}>{m.emoji}</span>
+              </div>
+            );
+          }
+          const isAgent = m.type === 'agent';
+          return (
+            <div key={m.id} className="fade-in" style={{
+              display: 'flex', justifyContent: isAgent ? 'flex-start' : 'flex-end',
+              alignItems: 'flex-end', gap: 8,
+            }}>
+              {isAgent && <div style={{ marginBottom: 4 }}><Avatar size={28} status={status} animate={false} /></div>}
+              <div style={{
+                maxWidth: 258,
+                background: isAgent ? C.cream : C.teal,
+                color: isAgent ? C.ink : '#fff',
+                padding: m.voice ? '12px 16px' : '12px 16px',
+                borderRadius: 24,
+                borderBottomLeftRadius: isAgent ? 8 : 24,
+                borderBottomRightRadius: isAgent ? 24 : 8,
+                fontSize: 15, lineHeight: 1.65, fontWeight: 400,
+                boxShadow: isAgent ? '0 1px 2px rgba(0,0,0,0.03)' : '0 4px 10px rgba(27,94,92,0.2)',
+              }}>
+                {m.action && (
+                  <div style={{
+                    fontSize: 12.5, fontStyle: 'italic', color: isAgent ? C.teal : 'rgba(255,255,255,0.8)',
+                    marginBottom: 4, fontFamily: "'Fraunces', serif",
+                  }}>（{m.action}）</div>
+                )}
+                {m.voice ? <VoiceMessage duration={m.duration} isAgent={true} />
+                  : <span>{m.text}</span>}
+              </div>
+            </div>
+          );
+        })}
+
+        {typing && (
+          <div className="fade-in" style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+            <div style={{ marginBottom: 4 }}><Avatar size={28} status={status} animate={false} /></div>
+            <div style={{
+              background: C.cream, borderRadius: 24, borderBottomLeftRadius: 8,
+              padding: '12px 16px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+            }}>
+              <TypingIndicator />
+            </div>
+          </div>
+        )}
+        {sleeping && !typing && (
+          <div style={{ textAlign: 'center', marginTop: 4 }}>
+            <span style={{ fontSize: 12, color: C.inkFaint, fontStyle: 'italic', fontFamily: "'Fraunces', serif" }}>
+              小溪睡着了，留言给她吧
+            </span>
+          </div>
+        )}
+        <div style={{ height: 8 }} />
+      </div>
+
+      {/* 输入栏：圆润、温暖 */}
+      <div style={{
+        padding: '12px 16px 18px', background: C.cream,
+        borderTop: `1px solid ${C.line}`,
+        display: 'flex', alignItems: 'flex-end', gap: 10,
+      }}>
+        <button style={{
+          border: 'none', background: C.creamDeep, cursor: 'pointer',
+          width: 40, height: 40, borderRadius: '50%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <Icon name="mic" size={18} color={C.inkSoft} />
+        </button>
+        <div style={{
+          flex: 1, background: C.creamDeep, borderRadius: 22,
+          padding: '10px 18px', minHeight: 40, display: 'flex', alignItems: 'center',
+        }}>
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && send()}
+            placeholder={sleeping ? '留言给小溪…' : '说点什么…'}
+            style={{
+              border: 'none', background: 'transparent', outline: 'none',
+              width: '100%', fontSize: 15, color: C.ink, fontFamily: 'inherit',
+              lineHeight: 1.5,
+            }}
+          />
+        </div>
+        <button
+          onClick={send}
+          disabled={!input.trim()}
+          style={{
+            border: 'none', cursor: 'pointer',
+            width: 42, height: 42, borderRadius: '50%',
+            background: input.trim() ? C.teal : C.creamDeep,
+            transition: 'background 0.2s ease, transform 0.15s ease',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0,
+            boxShadow: input.trim() ? '0 4px 12px rgba(27,94,92,0.3)' : 'none',
+            transform: input.trim() ? 'translateY(0)' : 'translateY(0)',
+          }}
+        >
+          <Icon name="send" size={18} color={input.trim() ? '#fff' : C.inkFaint} strokeWidth={2} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   屏幕 2 · 设置页
+============================================================ */
+function SettingsScreen() {
+  const [active, setActive] = useState(null);
+  const items = [
+    { group: '账户', rows: [
+      { icon: 'user', label: '我的称呼', value: '阿明' },
+    ]},
+    { group: '关于小溪', rows: [
+      { icon: 'clock', label: '今日作息', value: '07:30 – 23:00' },
+      { icon: 'cpu', label: 'Agent 配置', arrow: true, route: 'config' },
+    ]},
+    { group: '模型与声音', rows: [
+      { icon: 'sliders', label: '模型配置', value: 'LLM / TTS', arrow: true },
+      { icon: 'volume', label: '语音偏好', value: '柔和女声', arrow: true },
+    ]},
+    { group: '危险操作', rows: [
+      { icon: 'refresh', label: '重置聊天记录', danger: true },
+      { icon: 'trash', label: '重置记忆', danger: true },
+    ]},
+  ];
+
+  const Row = ({ r, gIdx, rIdx }) => {
+    const key = `${gIdx}-${rIdx}`;
+    const isActive = active === key;
+    return (
+      <button
+        onClick={() => setActive(isActive ? null : key)}
+        style={{
+          border: 'none', cursor: 'pointer', width: '100%',
+          background: isActive ? C.teal50 : 'transparent',
+          borderRadius: 14, padding: '13px 12px',
+          display: 'flex', alignItems: 'center', gap: 13,
+          transition: 'background 0.18s ease', textAlign: 'left',
+        }}
+      >
+        <IconBubble
+          name={r.icon}
+          size={17}
+          boxSize={36}
+          bg={r.danger ? '#FDF2F0' : C.teal50}
+          color={r.danger ? '#C2684F' : C.teal}
+        />
+        <span style={{
+          flex: 1, fontSize: 14.5, fontWeight: 500,
+          color: r.danger ? '#C2684F' : C.ink,
+        }}>{r.label}</span>
+        {r.value && <span style={{ fontSize: 13, color: C.inkFaint }}>{r.value}</span>}
+        {r.arrow && <Icon name="chevronRight" size={16} color={C.inkFaint} strokeWidth={1.6} />}
+      </button>
+    );
+  };
+
+  return (
+    <div style={{ height: '100%', background: C.pageBg, overflowY: 'auto' }} className="device-scroll">
+      {/* 顶部 */}
+      <div style={{
+        padding: '16px 20px 12px', background: C.cream,
+        borderBottom: `1px solid ${C.line}`,
+        display: 'flex', alignItems: 'center', gap: 14,
+      }}>
+        <button style={{
+          border: 'none', background: 'transparent', cursor: 'pointer',
+          width: 36, height: 36, borderRadius: 12, display: 'flex',
+          alignItems: 'center', justifyContent: 'center', marginLeft: -6,
+        }}>
+          <Icon name="back" size={20} color={C.ink} />
+        </button>
+        <span className="font-display" style={{ fontSize: 19, fontWeight: 500, color: C.ink }}>设置</span>
+      </div>
+
+      <div style={{ padding: '20px 18px 32px' }}>
+        {/* 头像资料卡：柔和渐变环 */}
+        <WarmCard style={{
+          padding: 24, marginBottom: 26,
+          display: 'flex', alignItems: 'center', gap: 18,
+        }}>
+          {/* 渐变环头像 */}
+          <div style={{
+            width: 76, height: 76, borderRadius: '50%',
+            background: 'conic-gradient(from 210deg, #14B8A6, #1B5E5C, #5EEAD4, #14B8A6)',
+            padding: 3, flexShrink: 0,
+          }}>
+            <div style={{
+              width: '100%', height: '100%', borderRadius: '50%',
+              background: C.cream, padding: 4,
+            }}>
+              <div style={{
+                width: '100%', height: '100%', borderRadius: '50%',
+                background: 'radial-gradient(circle at 30% 28%, #7FE7DA, #14B8A6 40%, #1B5E5C)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <span style={{
+                  fontFamily: "'Fraunces', serif", color: '#fff', fontSize: 22, fontWeight: 500,
+                }}>ta</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span className="font-display" style={{ fontSize: 22, fontWeight: 500, color: C.ink }}>小溪</span>
+              <span style={{ fontSize: 13, color: C.inkFaint }}>· 3 岁</span>
+            </div>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 8,
+              background: C.teal100, borderRadius: 999, padding: '5px 12px 5px 9px',
+            }}>
+              <StatusOrb status="happy" size={8} withGlow={false} />
+              <span style={{ fontSize: 12.5, color: C.teal, fontWeight: 600 }}>心情不错</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 8, lineHeight: 1.6 }}>
+              陪伴你 412 天 · 共 8,302 段对话
+            </div>
+          </div>
+        </WarmCard>
+
+        {items.map((g, gIdx) => (
+          <div key={gIdx} style={{ marginBottom: 22 }}>
+            <SectionTitle>{g.group}</SectionTitle>
+            <WarmCard style={{ padding: '6px 8px' }}>
+              {g.rows.map((r, rIdx) => (
+                <div key={rIdx}>
+                  <Row r={r} gIdx={gIdx} rIdx={rIdx} />
+                  {rIdx < g.rows.length - 1 && (
+                    <div style={{ height: 1, background: C.line, margin: '0 12px 0 49px' }} />
+                  )}
+                </div>
+              ))}
+            </WarmCard>
+          </div>
+        ))}
+
+        <div style={{ textAlign: 'center', marginTop: 12 }}>
+          <span style={{
+            fontSize: 11.5, color: C.inkFaint, fontFamily: "'Fraunces', serif", fontStyle: 'italic',
+          }}>TA v2.4 · 做你身边的那个人</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   屏幕 3 · Agent 配置入口
+============================================================ */
+function AgentConfigScreen() {
+  const [expanded, setExpanded] = useState(null);
+  const entries = [
+    { icon: 'user', label: '基础信息', sub: '名称 · 年龄 · 称呼', desc: '设定 Agent 的身份基础信息。' },
+    { icon: 'sparkles', label: '人格设定', sub: '性格 · 说话风格 · 兴趣', desc: '定义 Agent 是一个怎样的人——温柔、好奇、还是有点俏皮。' },
+    { icon: 'image', label: '头像管理', sub: '4 张头像 · 6 种情绪', desc: '为不同状态与情绪绑定头像。' },
+    { icon: 'volume', label: '语音配置', sub: '音色 · 语速 · 情感', desc: '让 Agent 的声音也有温度。' },
+    { icon: 'behavior', label: '行为配置', sub: '作息 · 主动消息 · 限流', desc: '控制 Agent 的活动节奏与边界。' },
+  ];
+
+  const toggle = (i) => setExpanded(expanded === i ? null : i);
+
+  return (
+    <div style={{ height: '100%', background: C.pageBg, overflowY: 'auto' }} className="device-scroll">
+      {/* 顶部 */}
+      <div style={{
+        padding: '16px 20px 12px', background: C.cream,
+        borderBottom: `1px solid ${C.line}`,
+        display: 'flex', alignItems: 'center', gap: 14,
+      }}>
+        <button style={{
+          border: 'none', background: 'transparent', cursor: 'pointer',
+          width: 36, height: 36, borderRadius: 12, display: 'flex',
+          alignItems: 'center', justifyContent: 'center', marginLeft: -6,
+        }}>
+          <Icon name="back" size={20} color={C.ink} />
+        </button>
+        <div style={{ flex: 1 }}>
+          <div className="font-display" style={{ fontSize: 19, fontWeight: 500, color: C.ink }}>Agent 配置</div>
+          <div style={{ fontSize: 12, color: C.inkFaint, marginTop: 1 }}>配置你的 Agent 身份</div>
+        </div>
+      </div>
+
+      <div style={{ padding: '20px 18px 32px' }}>
+        {/* Agent 信息卡：teal-100 柔和底 */}
+        <div style={{
+          background: C.teal100, borderRadius: 24, padding: 22,
+          marginBottom: 24, position: 'relative', overflow: 'hidden',
+        }}>
+          {/* 装饰光晕 */}
+          <div style={{
+            position: 'absolute', top: -30, right: -30, width: 120, height: 120,
+            borderRadius: '50%', background: 'radial-gradient(circle, rgba(255,255,255,0.5), transparent 70%)',
+            pointerEvents: 'none',
+          }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, position: 'relative' }}>
+            <div style={{
+              width: 60, height: 60, borderRadius: '50%',
+              background: 'radial-gradient(circle at 30% 28%, #7FE7DA, #14B8A6 40%, #1B5E5C)',
+              boxShadow: '0 4px 12px rgba(27,94,92,0.25)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              <span style={{ fontFamily: "'Fraunces', serif", color: '#fff', fontSize: 18, fontWeight: 500 }}>ta</span>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="font-display" style={{ fontSize: 20, fontWeight: 500, color: C.ink }}>小溪</span>
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  background: C.teal, color: '#fff', fontSize: 10.5, fontWeight: 600,
+                  padding: '3px 8px', borderRadius: 999, letterSpacing: '0.02em',
+                }}>
+                  <Icon name="check" size={10} color="#fff" strokeWidth={2.5} />使用中
+                </span>
+              </div>
+              <div style={{ fontSize: 12.5, color: 'rgba(27,94,92,0.75)', marginTop: 4, lineHeight: 1.6 }}>
+                创建于 2024.05.18 · 陪伴 412 天
+              </div>
+            </div>
+          </div>
+          {/* 导入/导出 */}
+          <div style={{ display: 'flex', gap: 10, marginTop: 18, position: 'relative' }}>
+            <button style={{
+              flex: 1, border: 'none', cursor: 'pointer',
+              background: 'rgba(255,255,255,0.7)', borderRadius: 14, padding: '11px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              fontSize: 13, fontWeight: 500, color: C.teal, backdropFilter: 'blur(4px)',
+            }}>
+              <Icon name="download" size={15} color={C.teal} />导出
+            </button>
+            <button style={{
+              flex: 1, border: 'none', cursor: 'pointer',
+              background: 'rgba(255,255,255,0.7)', borderRadius: 14, padding: '11px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              fontSize: 13, fontWeight: 500, color: C.teal, backdropFilter: 'blur(4px)',
+            }}>
+              <Icon name="upload" size={15} color={C.teal} />导入
+            </button>
+          </div>
+        </div>
+
+        <SectionTitle>配置入口</SectionTitle>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {entries.map((e, i) => {
+            const isOpen = expanded === i;
+            return (
+              <div key={i}>
+                <button
+                  onClick={() => toggle(i)}
+                  style={{
+                    border: `1px solid ${C.line}`, cursor: 'pointer', width: '100%',
+                    background: isOpen ? C.cream : C.cream, borderRadius: 18,
+                    padding: '14px 16px', transition: 'all 0.2s ease', textAlign: 'left',
+                    boxShadow: isOpen ? '0 6px 16px rgba(27,94,92,0.08)' : 'none',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+                    <IconBubble name={e.icon} size={18} boxSize={40} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15, fontWeight: 500, color: C.ink }}>{e.label}</div>
+                      <div style={{ fontSize: 12, color: C.inkFaint, marginTop: 2 }}>{e.sub}</div>
+                    </div>
+                    <Icon name="chevronRight" size={16} color={C.inkFaint}
+                      strokeWidth={1.6}
+                      style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s ease' }} />
+                  </div>
+                  {isOpen && (
+                    <div className="fade-in" style={{
+                      marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}`,
+                      fontSize: 13, color: C.inkSoft, lineHeight: 1.7,
+                    }}>
+                      {e.desc}
+                      <div style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10,
+                        fontSize: 12.5, color: C.teal, fontWeight: 600,
+                      }}>
+                        进入配置 <Icon name="chevronRight" size={13} color={C.teal} strokeWidth={2} />
+                      </div>
+                    </div>
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   屏幕 4 · 人格设定
+============================================================ */
+function PersonaScreen() {
+  const [tags, setTags] = useState(['温柔', '好奇', '有些俏皮', '善解人意', '偶尔迷糊']);
+  const [activeTag, setActiveTag] = useState(null);
+  const [toggle1, setToggle1] = useState(true);
+  const [toggle2, setToggle2] = useState(false);
+
+  const sliders = [
+    { label: '语调', left: '冷静', right: '热烈', value: 62 },
+    { label: '用词层级', left: '日常', right: '书面', value: 32 },
+    { label: '语速', left: '慢', right: '快', value: 45 },
+    { label: '句长', left: '短句', right: '长句', value: 55 },
+  ];
+
+  const Slider = ({ s, i }) => {
+    const [v, setV] = useState(s.value);
+    return (
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 500, color: C.ink }}>{s.label}</span>
+          <span style={{ fontSize: 11.5, color: C.inkFaint }}>{v}%</span>
+        </div>
+        <div style={{ position: 'relative', height: 6, background: C.creamDeep, borderRadius: 999 }}>
+          <div style={{
+            position: 'absolute', left: 0, top: 0, bottom: 0,
+            width: `${v}%`, borderRadius: 999,
+            background: 'linear-gradient(90deg, #5EEAD4, #1B5E5C)',
+          }} />
+          <div
+            style={{
+              position: 'absolute', top: '50%', left: `${v}%`,
+              transform: 'translate(-50%, -50%)',
+              width: 20, height: 20, borderRadius: '50%', background: '#fff',
+              boxShadow: '0 2px 6px rgba(27,94,92,0.25), 0 0 0 1px rgba(27,94,92,0.08)',
+              cursor: 'pointer',
+            }}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 7 }}>
+          <span style={{ fontSize: 11, color: C.inkFaint }}>{s.left}</span>
+          <span style={{ fontSize: 11, color: C.inkFaint }}>{s.right}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const Toggle = ({ on, onClick }) => (
+    <div className={`toggle-track ${on ? 'on' : ''}`} onClick={onClick}>
+      <div className="toggle-thumb" />
+    </div>
+  );
+
+  return (
+    <div style={{ height: '100%', background: C.pageBg, overflowY: 'auto' }} className="device-scroll">
+      {/* 顶部 */}
+      <div style={{
+        padding: '16px 20px 12px', background: C.cream,
+        borderBottom: `1px solid ${C.line}`,
+        display: 'flex', alignItems: 'center', gap: 14,
+      }}>
+        <button style={{
+          border: 'none', background: 'transparent', cursor: 'pointer',
+          width: 36, height: 36, borderRadius: 12, display: 'flex',
+          alignItems: 'center', justifyContent: 'center', marginLeft: -6,
+        }}>
+          <Icon name="back" size={20} color={C.ink} />
+        </button>
+        <div style={{ flex: 1 }}>
+          <div className="font-display" style={{ fontSize: 19, fontWeight: 500, color: C.ink }}>人格设定</div>
+          <div style={{ fontSize: 12, color: C.inkFaint, marginTop: 1 }}>定义小溪是怎样的人</div>
+        </div>
+        <button style={{
+          border: 'none', background: C.teal, cursor: 'pointer',
+          padding: '8px 16px', borderRadius: 12, fontSize: 13, fontWeight: 600, color: '#fff',
+        }}>保存</button>
+      </div>
+
+      <div style={{ padding: '20px 18px 32px' }}>
+        {/* 性格与口头禅 */}
+        <SectionTitle>性格与口头禅</SectionTitle>
+        <WarmCard style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 9, marginBottom: 16 }}>
+            {tags.map((t, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveTag(activeTag === i ? null : i)}
+                style={{
+                  border: 'none', cursor: 'pointer',
+                  background: activeTag === i ? C.teal : C.teal50,
+                  color: activeTag === i ? '#fff' : C.teal,
+                  padding: '8px 16px', borderRadius: 999, fontSize: 13.5, fontWeight: 500,
+                  transition: 'all 0.18s ease',
+                  boxShadow: activeTag === i ? '0 3px 8px rgba(27,94,92,0.22)' : 'none',
+                }}
+              >{t}</button>
+            ))}
+            <button style={{
+              border: `1.5px dashed ${C.lineStrong}`, cursor: 'pointer',
+              background: 'transparent', color: C.inkFaint,
+              padding: '8px 14px', borderRadius: 999, fontSize: 13.5, fontWeight: 500,
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+            }}>
+              <Icon name="plus" size={13} color={C.inkFaint} strokeWidth={2} />添加
+            </button>
+          </div>
+          <div style={{ height: 1, background: C.line, margin: '0 -4px 16px' }} />
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: C.inkSoft, marginBottom: 8 }}>口头缀词</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {['嗯～', '呀', '诶'].map((w, i) => (
+                <span key={i} style={{
+                  background: C.creamDeep, borderRadius: 10, padding: '6px 12px',
+                  fontSize: 13.5, color: C.ink, fontFamily: "'Fraunces', serif",
+                }}>{w}</span>
+              ))}
+            </div>
+          </div>
+        </WarmCard>
+
+        {/* 说话风格 */}
+        <SectionTitle>说话风格</SectionTitle>
+        <WarmCard style={{ marginBottom: 22 }}>
+          {sliders.map((s, i) => <Slider key={i} s={s} i={i} />)}
+        </WarmCard>
+
+        {/* 兴趣与禁忌 */}
+        <SectionTitle>兴趣与禁忌</SectionTitle>
+        <WarmCard style={{ marginBottom: 22 }}>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: C.inkSoft, marginBottom: 9 }}>兴趣话题</div>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+              {['电影', '音乐', '美食', '旅行', '深夜漫谈'].map((t, i) => (
+                <span key={i} style={{
+                  background: C.teal50, color: C.teal, borderRadius: 999,
+                  padding: '6px 13px', fontSize: 12.5, fontWeight: 500,
+                }}>{t}</span>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: C.inkSoft, marginBottom: 9 }}>禁忌话题</div>
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+              {['争吵', '评判'].map((t, i) => (
+                <span key={i} style={{
+                  background: '#FDF2F0', color: '#C2684F', borderRadius: 999,
+                  padding: '6px 13px', fontSize: 12.5, fontWeight: 500,
+                }}>{t}</span>
+              ))}
+            </div>
+          </div>
+        </WarmCard>
+
+        {/* 初始共享记忆 */}
+        <SectionTitle>初始共享记忆</SectionTitle>
+        <WarmCard style={{ marginBottom: 22 }}>
+          <div style={{
+            background: C.teal50, borderRadius: 14, padding: '14px 16px',
+            fontSize: 13.5, color: C.ink, lineHeight: 1.75,
+            fontFamily: "'Fraunces', serif", fontStyle: 'italic',
+          }}>
+            "我们认识三年了。最初是在一个下雨的午后，你带了一把伞。"
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            <Icon name="bookmark" size={14} color={C.teal500} />
+            <span style={{ fontSize: 12, color: C.inkFaint }}>这段记忆会在每次对话开始时悄悄存在</span>
+          </div>
+        </WarmCard>
+
+        {/* 关系阶段 */}
+        <SectionTitle>关系阶段</SectionTitle>
+        <WarmCard style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+            <IconBubble name="heart" size={18} boxSize={40} bg="#FDF2F0" color="#C2684F" />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500, color: C.ink }}>亲密朋友</div>
+              <div style={{ fontSize: 12, color: C.inkFaint, marginTop: 2 }}>第 4 阶段 · 共 5 阶段</div>
+            </div>
+          </div>
+          {/* 阶段进度条 */}
+          <div style={{ display: 'flex', gap: 5 }}>
+            {[1,2,3,4,5].map(n => (
+              <div key={n} style={{
+                flex: 1, height: 5, borderRadius: 999,
+                background: n <= 4 ? 'linear-gradient(90deg, #5EEAD4, #1B5E5C)' : C.creamDeep,
+              }} />
+            ))}
+          </div>
+        </WarmCard>
+
+        {/* 示例对话 */}
+        <SectionTitle>示例对话</SectionTitle>
+        <WarmCard>
+          <div style={{
+            display: 'flex', gap: 8, marginBottom: 10, alignItems: 'flex-end',
+          }}>
+            <div style={{ marginBottom: 3 }}><Avatar size={24} animate={false} /></div>
+            <div style={{
+              background: C.creamDeep, borderRadius: 16, borderBottomLeftRadius: 6,
+              padding: '9px 14px', fontSize: 13.5, color: C.ink, lineHeight: 1.6, maxWidth: 230,
+            }}>
+              今天累不累呀？
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{
+              background: C.teal, color: '#fff', borderRadius: 16, borderBottomRightRadius: 6,
+              padding: '9px 14px', fontSize: 13.5, lineHeight: 1.6, maxWidth: 230,
+            }}>
+              还好，有你陪着就好。
+            </div>
+          </div>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, marginTop: 14,
+            paddingTop: 14, borderTop: `1px solid ${C.line}`,
+          }}>
+            <Icon name="info" size={14} color={C.inkFaint} />
+            <span style={{ fontSize: 11.5, color: C.inkFaint }}>示例对话会作为 Agent 的语气参考</span>
+          </div>
+        </WarmCard>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   App：平铺 4 台设备
+============================================================ */
+function App() {
+  return (
+    <div>
+      <div className="page-header">
+        <h1>TA · 陪伴你的那个人</h1>
+        <p>逻辑二 · Pi by Inflection 现实参照 — 温暖柔和、大量留白、圆润字体、对话为中心</p>
+        <div className="meta">
+          <span className="dot" />
+          <span>奶油底 #FAF8F5 · Teal #1B5E5C · 圆角气泡 · 呼吸感</span>
+        </div>
+      </div>
+      <div className="devices-row">
+        <AndroidFrame label="聊天页" sub="Chat · 对话为主角">
+          <ChatScreen />
+        </AndroidFrame>
+        <AndroidFrame label="设置页" sub="Profile · 温暖列表">
+          <SettingsScreen />
+        </AndroidFrame>
+        <AndroidFrame label="Agent 配置" sub="Config · 柔和入口">
+          <AgentConfigScreen />
+        </AndroidFrame>
+        <AndroidFrame label="人格设定" sub="Persona · 圆润 pill">
+          <PersonaScreen />
+        </AndroidFrame>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

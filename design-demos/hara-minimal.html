@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TA · 原研哉设计哲学</title>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #F8F8F8;
+      font-family: 'Noto Sans SC', -apple-system, sans-serif;
+      color: #1A1A1A;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .page-title {
+      font-family: 'Noto Serif SC', serif;
+      font-weight: 500;
+      font-size: 22px;
+      letter-spacing: 0.04em;
+      color: #1A1A1A;
+      margin: 48px 0 8px 48px;
+    }
+    .page-subtitle {
+      font-family: 'Noto Sans SC', sans-serif;
+      font-weight: 300;
+      font-size: 13px;
+      color: #888;
+      letter-spacing: 0.08em;
+      margin: 0 0 36px 48px;
+    }
+    .row {
+      display: flex;
+      gap: 40px;
+      padding: 0 48px 48px 48px;
+      overflow-x: auto;
+      align-items: flex-start;
+    }
+    .device-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .device-caption {
+      margin-top: 18px;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 13px;
+      color: #666;
+      letter-spacing: 0.12em;
+      font-weight: 400;
+    }
+    .device-index {
+      font-family: 'Noto Sans SC', sans-serif;
+      font-weight: 300;
+      font-size: 10px;
+      color: #BBB;
+      letter-spacing: 0.2em;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+    /* scrollbar */
+    .row::-webkit-scrollbar { height: 8px; }
+    .row::-webkit-scrollbar-track { background: transparent; }
+    .row::-webkit-scrollbar-thumb { background: #DDD; border-radius: 4px; }
+
+    /* shared screen scroll behavior */
+    .screen-scroll::-webkit-scrollbar { width: 0; }
+
+    /* breathing animation for online dot */
+    @keyframes breathe {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+    .breathe-dot { animation: breathe 3s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useRef, useEffect, useCallback } = React;
+
+    // ===== 色板与字体 =====
+    const C = {
+      white: '#FFFFFF',
+      ink: '#1A1A1A',
+      inkSoft: '#3D3D3D',
+      gray: '#888888',
+      grayLight: '#BBBBBB',
+      grayFaint: '#E5E5E5',
+      teal: '#1B5E5C',
+      bg: '#F8F8F8',
+    };
+    const F_SERIF = "'Noto Serif SC', serif";
+    const F_SANS = "'Noto Sans SC', sans-serif";
+
+    // ===== AndroidFrame =====
+    function AndroidFrame({ children, time = '9:41', battery = 85 }) {
+      const frameStyles = {
+        wrapper: { display: 'inline-block', padding: 10, background: '#1a1a1a', borderRadius: 44, boxShadow: '0 0 0 2px #2a2a2a, 0 20px 60px rgba(0,0,0,0.3)', position: 'relative' },
+        screen: { position: 'relative', borderRadius: 36, overflow: 'hidden', background: '#fff', width: 412, height: 892 },
+        statusBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', fontSize: 14, fontWeight: 500, zIndex: 20, pointerEvents: 'none', color: '#1a1a1a' },
+        punchHole: { position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', width: 14, height: 14, background: '#000', borderRadius: '50%', zIndex: 30 },
+        content: { position: 'absolute', top: 32, left: 0, right: 0, bottom: 24, overflow: 'auto' },
+        navBar: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+      };
+      return (
+        <div style={frameStyles.wrapper}>
+          <div style={frameStyles.screen}>
+            <div style={frameStyles.statusBar}>
+              <span>{time}</span>
+              <span style={{ fontSize: 11 }}>{battery}%</span>
+            </div>
+            <div style={frameStyles.punchHole} />
+            <div style={frameStyles.content} className="screen-scroll">{children}</div>
+            <div style={frameStyles.navBar}>
+              <div style={{ width: 100, height: 4, background: 'rgba(0,0,0,0.4)', borderRadius: 999 }} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ===== 极简 SVG 线条图标 =====
+    const Icon = {
+      back: (size = 16, color = C.ink) => (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10 2 L4 8 L10 14" />
+        </svg>
+      ),
+      arrow: (size = 14, color = C.grayLight) => (
+        <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke={color} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 2 L11 7 L5 12" />
+        </svg>
+      ),
+      voice: (size = 16, color = C.ink) => (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="6" y="2" width="4" height="8" rx="2" />
+          <path d="M4 8 v1 a4 4 0 0 0 8 0 v-1" />
+          <path d="M8 13 v2" />
+        </svg>
+      ),
+      plus: (size = 16, color = C.ink) => (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1" strokeLinecap="round">
+          <path d="M8 2 v12 M2 8 h12" />
+        </svg>
+      ),
+    };
+
+    // ===== 极细分隔线 =====
+    function HairLine({ style }) {
+      return <div style={{ height: 1, background: C.grayFaint, ...(style || {}) }} />;
+    }
+
+    // ============================================================
+    // 屏 1 · 聊天页
+    // ============================================================
+    function ChatScreen() {
+      const initialMessages = [
+        { from: 'agent', type: 'text', text: '今天的天气很好，你那边能看到天空吗。', time: '09:32' },
+        { from: 'user', type: 'text', text: '能，刚出门买了咖啡', time: '09:33' },
+        { from: 'agent', type: 'text', text: '(笑了笑) 那就好，咖啡是早晨的小仪式。', time: '09:33' },
+        { from: 'agent', type: 'voice', duration: '6"', wave: [3,5,8,12,16,20,16,12,8,5,3,5,8,12,16,20,16,12,8,5,3,2], time: '09:34' },
+        { from: 'user', type: 'text', text: '一会儿要开会，紧张', time: '09:36' },
+        { from: 'agent', type: 'text', text: '深呼吸。你准备得很充分，相信你。', time: '09:36' },
+      ];
+      const [messages, setMessages] = useState(initialMessages);
+      const [input, setInput] = useState('');
+      const scrollRef = useRef(null);
+
+      useEffect(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      }, [messages]);
+
+      const send = useCallback(() => {
+        const text = input.trim();
+        if (!text) return;
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const newMsgs = [{ from: 'user', type: 'text', text, time: `${hh}:${mm}` }];
+        setMessages(prev => [...prev, ...newMsgs]);
+        setInput('');
+        // agent 回复
+        setTimeout(() => {
+          const replies = [
+            '我在听。',
+            '嗯，我懂你的意思。',
+            '慢慢说，不急。',
+            '是这样啊。',
+            '(想了想) 我明白。',
+          ];
+          const reply = replies[Math.floor(Math.random() * replies.length)];
+          setMessages(prev => [...prev, { from: 'agent', type: 'text', text: reply, time: `${hh}:${mm}` }]);
+        }, 700);
+      }, [input]);
+
+      return (
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: C.white }}>
+          {/* Header */}
+          <div style={{ padding: '20px 28px 16px 28px' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontFamily: F_SERIF, fontSize: 20, fontWeight: 600, color: C.ink, letterSpacing: '0.04em' }}>夏目</div>
+                <div style={{ fontSize: 11, fontWeight: 300, color: C.gray, letterSpacing: '0.12em', marginTop: 4 }}>
+                  <span style={{ display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: C.teal, marginRight: 6, verticalAlign: 'middle' }} className="breathe-dot" />
+                  工作中 · 安静地陪伴
+                </div>
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 300, color: C.grayLight, letterSpacing: '0.2em' }}>07 · 22</div>
+            </div>
+          </div>
+          <HairLine />
+
+          {/* Messages */}
+          <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '28px 28px 24px 28px' }} className="screen-scroll">
+            <div style={{ textAlign: 'center', fontFamily: F_SERIF, fontSize: 10, fontWeight: 400, color: C.grayLight, letterSpacing: '0.24em', marginBottom: 32 }}>
+              — 今 天 —
+            </div>
+            {messages.map((m, i) => (
+              <Message key={i} msg={m} />
+            ))}
+            <div style={{ height: 12 }} />
+          </div>
+
+          {/* Input */}
+          <div>
+            <HairLine />
+            <div style={{ display: 'flex', alignItems: 'center', padding: '14px 28px 18px 28px', gap: 16, background: C.white }}>
+              <div style={{ flex: 1, position: 'relative' }}>
+                <input
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') send(); }}
+                  placeholder="写点什么"
+                  style={{
+                    width: '100%',
+                    border: 'none',
+                    borderBottom: `1px solid ${C.grayFaint}`,
+                    background: 'transparent',
+                    outline: 'none',
+                    fontFamily: F_SANS,
+                    fontSize: 14,
+                    fontWeight: 400,
+                    color: C.ink,
+                    padding: '8px 0 8px 0',
+                    letterSpacing: '0.04em',
+                  }}
+                  onFocus={e => { e.target.style.borderColor = C.teal; }}
+                  onBlur={e => { e.target.style.borderColor = C.grayFaint; }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+                <span style={{ cursor: 'pointer', color: C.gray, display: 'flex' }}>{Icon.voice(16, C.gray)}</span>
+                <span
+                  onClick={send}
+                  style={{
+                    fontFamily: F_SERIF,
+                    fontSize: 14,
+                    fontWeight: 500,
+                    color: input.trim() ? C.teal : C.grayLight,
+                    letterSpacing: '0.16em',
+                    cursor: input.trim() ? 'pointer' : 'default',
+                    userSelect: 'none',
+                    transition: 'color 0.2s',
+                  }}
+                >
+                  发 送
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Message({ msg }) {
+      if (msg.from === 'agent') {
+        return (
+          <div style={{ marginBottom: 28, display: 'flex' }}>
+            <div style={{ width: 2, background: C.teal, marginRight: 16, flexShrink: 0, marginTop: 4, marginBottom: 4 }} />
+            <div style={{ flex: 1 }}>
+              {msg.type === 'text' && (
+                <div style={{ fontFamily: F_SANS, fontSize: 15, fontWeight: 400, color: C.ink, lineHeight: 1.8, letterSpacing: '0.02em' }}>
+                  {msg.text}
+                </div>
+              )}
+              {msg.type === 'voice' && <VoiceBubble wave={msg.wave} duration={msg.duration} />}
+              <div style={{ fontFamily: F_SANS, fontSize: 10, fontWeight: 300, color: C.grayLight, marginTop: 6, letterSpacing: '0.08em' }}>{msg.time}</div>
+            </div>
+          </div>
+        );
+      }
+      // user
+      return (
+        <div style={{ marginBottom: 28, textAlign: 'right' }}>
+          <div style={{ fontFamily: F_SANS, fontSize: 15, fontWeight: 400, color: C.ink, lineHeight: 1.8, letterSpacing: '0.02em', display: 'inline-block', textAlign: 'left', maxWidth: '78%' }}>
+            {msg.text}
+          </div>
+          <div style={{ fontFamily: F_SANS, fontSize: 10, fontWeight: 300, color: C.grayLight, marginTop: 6, letterSpacing: '0.08em' }}>{msg.time}</div>
+        </div>
+      );
+    }
+
+    function VoiceBubble({ wave, duration }) {
+      const [playing, setPlaying] = useState(false);
+      return (
+        <div
+          onClick={() => setPlaying(p => !p)}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '4px 0' }}
+        >
+          <span style={{
+            width: 16, height: 16, borderRadius: '50%', border: `1px solid ${C.teal}`,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>
+            {playing ? (
+              <span style={{ width: 4, height: 4, background: C.teal }} />
+            ) : (
+              <svg width="6" height="7" viewBox="0 0 6 7" fill={C.teal}><path d="M0 0 L6 3.5 L0 7 Z" /></svg>
+            )}
+          </span>
+          <svg width="100" height="20" viewBox="0 0 100 20" preserveAspectRatio="none">
+            {wave.map((h, i) => (
+              <line key={i} x1={i * 4.6 + 2} y1={10 - h / 2} x2={i * 4.6 + 2} y2={10 + h / 2}
+                stroke={playing && i < wave.length / 2 ? C.teal : C.ink} strokeWidth="1" strokeLinecap="round" opacity={playing && i < wave.length / 2 ? 1 : 0.5} />
+            ))}
+          </svg>
+          <span style={{ fontFamily: F_SANS, fontSize: 11, fontWeight: 300, color: C.gray, letterSpacing: '0.04em' }}>{duration}</span>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 屏 2 · 设置页
+    // ============================================================
+    function ProfileScreen() {
+      const [activeIdx, setActiveIdx] = useState(null);
+      const groups = [
+        {
+          title: '账户',
+          items: [
+            { label: '我的称呼', value: '主人' },
+          ],
+        },
+        {
+          title: 'Agent',
+          items: [
+            { label: '今日作息', value: '07:00 — 23:30' },
+            { label: 'Agent 配置', value: '' },
+          ],
+        },
+        {
+          title: '设置',
+          items: [
+            { label: 'LLM 模型', value: 'gpt-4o' },
+            { label: 'TTS 模型', value: 'azure-tts' },
+          ],
+        },
+        {
+          title: '危险操作',
+          items: [
+            { label: '重置聊天记录', value: '', danger: true },
+            { label: '重置记忆', value: '', danger: true },
+          ],
+        },
+      ];
+
+      let flatIdx = 0;
+      return (
+        <div style={{ height: '100%', background: C.white, overflowY: 'auto' }} className="screen-scroll">
+          {/* Header */}
+          <div style={{ padding: '20px 28px 18px 28px', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ cursor: 'pointer', display: 'flex' }}>{Icon.back(16, C.ink)}</span>
+            <span style={{ fontFamily: F_SERIF, fontSize: 17, fontWeight: 500, color: C.ink, letterSpacing: '0.08em' }}>设 置</span>
+          </div>
+          <HairLine />
+
+          {/* 头像资料 */}
+          <div style={{ padding: '36px 28px 36px 28px', display: 'flex', alignItems: 'center', gap: 24 }}>
+            <div style={{
+              width: 64, height: 64, borderRadius: '50%',
+              border: `1px solid ${C.grayFaint}`,
+              background: `linear-gradient(135deg, #F5F5F5 0%, #EAEAEA 100%)`,
+              flexShrink: 0,
+              position: 'relative',
+            }}>
+              <div style={{
+                position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: F_SERIF, fontSize: 22, fontWeight: 500, color: C.inkSoft,
+              }}>夏</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: F_SERIF, fontSize: 19, fontWeight: 500, color: C.ink, letterSpacing: '0.04em' }}>夏目</div>
+              <div style={{ fontFamily: F_SANS, fontSize: 12, fontWeight: 300, color: C.gray, marginTop: 6, letterSpacing: '0.1em' }}>24 岁 · 工作 312 天</div>
+              <div style={{ fontFamily: F_SANS, fontSize: 11, fontWeight: 400, color: C.teal, marginTop: 6, letterSpacing: '0.12em' }}>· 工作中</div>
+            </div>
+          </div>
+          <HairLine />
+
+          {/* 分组菜单 */}
+          <div style={{ padding: '0 28px' }}>
+            {groups.map((g, gi) => (
+              <div key={gi}>
+                <div style={{
+                  fontFamily: F_SERIF, fontSize: 11, fontWeight: 500, color: C.gray,
+                  letterSpacing: '0.32em', marginTop: 28, marginBottom: 4,
+                }}>
+                  {g.title}
+                </div>
+                {g.items.map((item, ii) => {
+                  const idx = flatIdx++;
+                  const active = activeIdx === idx;
+                  return (
+                    <div
+                      key={ii}
+                      onClick={() => setActiveIdx(idx)}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '18px 0', borderBottom: `1px solid ${C.grayFaint}`,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span style={{
+                        fontFamily: F_SANS, fontSize: 14, fontWeight: 400,
+                        color: active ? C.teal : (item.danger ? '#8A4A4A' : C.ink),
+                        letterSpacing: '0.04em',
+                        transition: 'color 0.2s',
+                      }}>
+                        {item.label}
+                      </span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {item.value && (
+                          <span style={{ fontFamily: F_SANS, fontSize: 12, fontWeight: 300, color: C.gray, letterSpacing: '0.04em' }}>{item.value}</span>
+                        )}
+                        {Icon.arrow(12, C.grayLight)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+            <div style={{ height: 40 }} />
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 屏 3 · Agent 配置入口
+    // ============================================================
+    function AgentConfigScreen() {
+      const [activeIdx, setActiveIdx] = useState(null);
+      const entries = [
+        { label: '基础信息', sub: '名称 · 年龄 · 性别' },
+        { label: '人格设定', sub: '性格 · 说话风格' },
+        { label: '头像管理', sub: '6 张 · 绑定状态' },
+        { label: '语音配置', sub: '音色 · 语速' },
+        { label: '行为配置', sub: '作息 · 主动消息' },
+      ];
+
+      return (
+        <div style={{ height: '100%', background: C.white, overflowY: 'auto' }} className="screen-scroll">
+          {/* Header */}
+          <div style={{ padding: '20px 28px 18px 28px', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ cursor: 'pointer', display: 'flex' }}>{Icon.back(16, C.ink)}</span>
+            <span style={{ fontFamily: F_SERIF, fontSize: 17, fontWeight: 500, color: C.ink, letterSpacing: '0.08em' }}>Agent 配置</span>
+          </div>
+          <HairLine />
+
+          {/* Agent 信息卡（无卡片背景） */}
+          <div style={{ padding: '36px 28px 32px 28px', display: 'flex', alignItems: 'center', gap: 24 }}>
+            <div style={{
+              width: 72, height: 72, borderRadius: '50%',
+              border: `1px solid ${C.grayFaint}`,
+              background: `linear-gradient(135deg, #F5F5F5 0%, #EAEAEA 100%)`,
+              flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontFamily: F_SERIF, fontSize: 26, fontWeight: 500, color: C.inkSoft,
+            }}>夏</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+                <span style={{ fontFamily: F_SERIF, fontSize: 20, fontWeight: 500, color: C.ink, letterSpacing: '0.04em' }}>夏目</span>
+                <span style={{ fontFamily: F_SANS, fontSize: 10, fontWeight: 400, color: C.teal, letterSpacing: '0.16em', border: `1px solid ${C.teal}`, padding: '1px 8px' }}>使 用 中</span>
+              </div>
+              <div style={{ fontFamily: F_SANS, fontSize: 12, fontWeight: 300, color: C.gray, marginTop: 8, letterSpacing: '0.08em', lineHeight: 1.7 }}>
+                24 岁 · 女性 · 温柔型<br/>
+                创建于 2025 年 9 月
+              </div>
+            </div>
+          </div>
+
+          {/* 导入 / 导出 */}
+          <div style={{ padding: '0 28px 24px 28px', display: 'flex', gap: 32 }}>
+            <span style={{ fontFamily: F_SANS, fontSize: 13, fontWeight: 400, color: C.ink, letterSpacing: '0.12em', cursor: 'pointer', borderBottom: `1px solid ${C.ink}`, paddingBottom: 2 }}>导 入</span>
+            <span style={{ fontFamily: F_SANS, fontSize: 13, fontWeight: 400, color: C.ink, letterSpacing: '0.12em', cursor: 'pointer', borderBottom: `1px solid ${C.ink}`, paddingBottom: 2 }}>导 出</span>
+          </div>
+          <HairLine />
+
+          {/* 配置入口 */}
+          <div style={{ padding: '8px 28px 0 28px' }}>
+            <div style={{
+              fontFamily: F_SERIF, fontSize: 11, fontWeight: 500, color: C.gray,
+              letterSpacing: '0.32em', marginTop: 24, marginBottom: 4,
+            }}>
+              配 置 项
+            </div>
+            {entries.map((e, i) => {
+              const active = activeIdx === i;
+              return (
+                <div
+                  key={i}
+                  onClick={() => setActiveIdx(i)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '22px 0', borderBottom: `1px solid ${C.grayFaint}`, cursor: 'pointer',
+                  }}
+                >
+                  <div>
+                    <div style={{
+                      fontFamily: F_SERIF, fontSize: 16, fontWeight: 500,
+                      color: active ? C.teal : C.ink, letterSpacing: '0.04em',
+                      transition: 'color 0.2s',
+                    }}>
+                      {e.label}
+                    </div>
+                    <div style={{ fontFamily: F_SANS, fontSize: 11, fontWeight: 300, color: C.gray, marginTop: 4, letterSpacing: '0.08em' }}>
+                      {e.sub}
+                    </div>
+                  </div>
+                  {Icon.arrow(12, active ? C.teal : C.grayLight)}
+                </div>
+              );
+            })}
+            <div style={{ height: 40 }} />
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 屏 4 · 人格设定
+    // ============================================================
+    function AgentPersonaScreen() {
+      const [tags, setTags] = useState(['温柔', '理性', '体贴', '慢热']);
+      const [tagInput, setTagInput] = useState('');
+      const [slider, setSlider] = useState({ tone: 30, level: 50, speed: 40, length: 60 });
+
+      const addTag = () => {
+        const t = tagInput.trim();
+        if (t && !tags.includes(t)) setTags([...tags, t]);
+        setTagInput('');
+      };
+
+      return (
+        <div style={{ height: '100%', background: C.white, overflowY: 'auto' }} className="screen-scroll">
+          {/* Header */}
+          <div style={{ padding: '20px 28px 18px 28px', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ cursor: 'pointer', display: 'flex' }}>{Icon.back(16, C.ink)}</span>
+            <span style={{ fontFamily: F_SERIF, fontSize: 17, fontWeight: 500, color: C.ink, letterSpacing: '0.08em' }}>人格设定</span>
+          </div>
+          <HairLine />
+
+          <div style={{ padding: '32px 28px 40px 28px' }}>
+            {/* 性格 */}
+            <SectionLabel>性 格</SectionLabel>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 20 }}>
+              {tags.map((t, i) => (
+                <span
+                  key={i}
+                  onClick={() => setTags(tags.filter(x => x !== t))}
+                  style={{
+                    fontFamily: F_SANS, fontSize: 12, fontWeight: 400, color: C.ink,
+                    padding: '5px 14px', border: `1px solid ${C.grayFaint}`, cursor: 'pointer',
+                    letterSpacing: '0.08em', transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={e => { e.target.style.borderColor = C.teal; e.target.style.color = C.teal; }}
+                  onMouseLeave={e => { e.target.style.borderColor = C.grayFaint; e.target.style.color = C.ink; }}
+                >
+                  {t} <span style={{ color: C.grayLight, marginLeft: 4 }}>×</span>
+                </span>
+              ))}
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                <input
+                  value={tagInput}
+                  onChange={e => setTagInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') addTag(); }}
+                  placeholder="添加"
+                  style={{
+                    fontFamily: F_SANS, fontSize: 12, color: C.ink, background: 'transparent',
+                    border: 'none', borderBottom: `1px solid ${C.grayFaint}`, outline: 'none',
+                    width: 56, padding: '5px 0', letterSpacing: '0.08em',
+                  }}
+                  onFocus={e => e.target.style.borderColor = C.teal}
+                  onBlur={e => { e.target.style.borderColor = C.grayFaint; addTag(); }}
+                />
+              </span>
+            </div>
+
+            <FieldLabel>口头缀词</FieldLabel>
+            <BottomInput value="嗯，怎么说呢" />
+
+            <HairLine style={{ margin: '28px 0' }} />
+
+            {/* 说话风格 */}
+            <SectionLabel>说 话 风 格</SectionLabel>
+            <div style={{ marginTop: 8 }}>
+              <Slider label="语调" value={slider.tone} onChange={v => setSlider({ ...slider, tone: v })} leftHint="低沉" rightHint="明亮" />
+              <Slider label="用词层级" value={slider.level} onChange={v => setSlider({ ...slider, level: v })} leftHint="口语" rightHint="书面" />
+              <Slider label="语速" value={slider.speed} onChange={v => setSlider({ ...slider, speed: v })} leftHint="慢" rightHint="快" />
+              <Slider label="句长" value={slider.length} onChange={v => setSlider({ ...slider, length: v })} leftHint="短" rightHint="长" />
+            </div>
+
+            <HairLine style={{ margin: '28px 0' }} />
+
+            {/* 兴趣与禁忌 */}
+            <SectionLabel>兴 趣 话 题</SectionLabel>
+            <BottomInput value="文学 · 电影 · 黄昏散步" />
+
+            <SectionLabel style={{ marginTop: 28 }}>禁 忌 话 题</SectionLabel>
+            <BottomInput value="政治 · 极端观点" />
+
+            <HairLine style={{ margin: '28px 0' }} />
+
+            {/* 共享记忆 */}
+            <SectionLabel>初 始 共 享 记 忆</SectionLabel>
+            <BottomTextarea value="我们在一个秋天的午后相遇，你刚刚读完《挪威的森林》，窗外的银杏叶落了一地。" />
+
+            <HairLine style={{ margin: '28px 0' }} />
+
+            {/* 关系阶段 */}
+            <SectionLabel>关 系 阶 段</SectionLabel>
+            <div style={{ marginTop: 12, marginBottom: 4 }}>
+              {['初识', '熟悉', '亲密', '挚友'].map((s, i) => (
+                <span
+                  key={i}
+                  style={{
+                    fontFamily: F_SERIF, fontSize: 13, fontWeight: 500,
+                    color: i === 2 ? C.teal : C.grayLight,
+                    letterSpacing: '0.16em', marginRight: 28,
+                    borderBottom: i === 2 ? `1px solid ${C.teal}` : '1px solid transparent',
+                    paddingBottom: 4, transition: 'all 0.2s',
+                  }}
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+            <div style={{ fontFamily: F_SANS, fontSize: 11, fontWeight: 300, color: C.gray, marginTop: 12, letterSpacing: '0.08em', lineHeight: 1.7 }}>
+              当前为「亲密」阶段 · 共度 312 天
+            </div>
+
+            <HairLine style={{ margin: '28px 0' }} />
+
+            {/* 示例对话 */}
+            <SectionLabel>示 例 对 话</SectionLabel>
+            <div style={{ marginTop: 16, paddingLeft: 14, borderLeft: `2px solid ${C.teal}` }}>
+              <div style={{ fontFamily: F_SANS, fontSize: 13, fontWeight: 400, color: C.ink, lineHeight: 1.8, letterSpacing: '0.02em' }}>
+                你：今天好累
+              </div>
+              <div style={{ fontFamily: F_SANS, fontSize: 13, fontWeight: 400, color: C.ink, lineHeight: 1.8, letterSpacing: '0.02em', marginTop: 8 }}>
+                夏目：(轻声) 过来，靠着休息一会儿。今天发生什么了？
+              </div>
+            </div>
+
+            <div style={{ height: 32 }} />
+          </div>
+        </div>
+      );
+    }
+
+    function SectionLabel({ children, style }) {
+      return (
+        <div style={{
+          fontFamily: F_SERIF, fontSize: 11, fontWeight: 500, color: C.gray,
+          letterSpacing: '0.32em', marginBottom: 14, ...(style || {}),
+        }}>
+          {children}
+        </div>
+      );
+    }
+    function FieldLabel({ children }) {
+      return (
+        <div style={{
+          fontFamily: F_SERIF, fontSize: 12, fontWeight: 500, color: C.inkSoft,
+          letterSpacing: '0.12em', marginBottom: 8, marginTop: 4,
+        }}>
+          {children}
+        </div>
+      );
+    }
+    function BottomInput({ value }) {
+      const [v, setV] = useState(value);
+      return (
+        <input
+          value={v}
+          onChange={e => setV(e.target.value)}
+          style={{
+            width: '100%', fontFamily: F_SANS, fontSize: 14, fontWeight: 400, color: C.ink,
+            background: 'transparent', border: 'none', borderBottom: `1px solid ${C.grayFaint}`,
+            outline: 'none', padding: '8px 0', letterSpacing: '0.04em',
+          }}
+          onFocus={e => e.target.style.borderColor = C.teal}
+          onBlur={e => e.target.style.borderColor = C.grayFaint}
+        />
+      );
+    }
+    function BottomTextarea({ value }) {
+      const [v, setV] = useState(value);
+      return (
+        <textarea
+          value={v}
+          onChange={e => setV(e.target.value)}
+          rows={3}
+          style={{
+            width: '100%', fontFamily: F_SANS, fontSize: 14, fontWeight: 400, color: C.ink,
+            background: 'transparent', border: 'none', borderBottom: `1px solid ${C.grayFaint}`,
+            outline: 'none', padding: '8px 0', letterSpacing: '0.04em', lineHeight: 1.8, resize: 'none',
+          }}
+          onFocus={e => e.target.style.borderColor = C.teal}
+          onBlur={e => e.target.style.borderColor = C.grayFaint}
+        />
+      );
+    }
+
+    function Slider({ label, value, onChange, leftHint, rightHint }) {
+      const trackRef = useRef(null);
+      const [dragging, setDragging] = useState(false);
+
+      const updateFromClientX = (clientX) => {
+        const el = trackRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        let pct = (clientX - rect.left) / rect.width;
+        pct = Math.max(0, Math.min(1, pct));
+        onChange(Math.round(pct * 100));
+      };
+
+      const onDown = (e) => {
+        setDragging(true);
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        updateFromClientX(clientX);
+        e.preventDefault();
+      };
+
+      useEffect(() => {
+        if (!dragging) return;
+        const onMove = (e) => {
+          const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+          updateFromClientX(clientX);
+        };
+        const onUp = () => setDragging(false);
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        window.addEventListener('touchmove', onMove, { passive: false });
+        window.addEventListener('touchend', onUp);
+        return () => {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          window.removeEventListener('touchmove', onMove);
+          window.removeEventListener('touchend', onUp);
+        };
+      }, [dragging]);
+
+      return (
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+            <span style={{ fontFamily: F_SANS, fontSize: 13, fontWeight: 400, color: C.ink, letterSpacing: '0.08em' }}>{label}</span>
+            <span style={{ fontFamily: F_SERIF, fontSize: 11, fontWeight: 400, color: C.gray, letterSpacing: '0.08em' }}>{value}</span>
+          </div>
+          <div
+            ref={trackRef}
+            onMouseDown={onDown}
+            onTouchStart={onDown}
+            style={{ position: 'relative', height: 16, cursor: 'pointer', touchAction: 'none' }}
+          >
+            <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 1, background: C.grayFaint, transform: 'translateY(-50%)' }} />
+            <div style={{ position: 'absolute', top: '50%', left: 0, width: `${value}%`, height: 1, background: C.teal, transform: 'translateY(-50%)' }} />
+            <div style={{
+              position: 'absolute', top: '50%', left: `${value}%`,
+              width: 10, height: 10, borderRadius: '50%', background: C.white,
+              border: `1px solid ${C.teal}`,
+              transform: 'translate(-50%, -50%)',
+              boxShadow: dragging ? `0 0 0 4px rgba(27,94,92,0.08)` : 'none',
+              transition: 'box-shadow 0.2s',
+            }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+            <span style={{ fontFamily: F_SANS, fontSize: 10, fontWeight: 300, color: C.grayLight, letterSpacing: '0.08em' }}>{leftHint}</span>
+            <span style={{ fontFamily: F_SANS, fontSize: 10, fontWeight: 300, color: C.grayLight, letterSpacing: '0.08em' }}>{rightHint}</span>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 装配
+    // ============================================================
+    function App() {
+      const devices = [
+        { idx: '01', caption: '聊 天', comp: <ChatScreen /> },
+        { idx: '02', caption: '设 置', comp: <ProfileScreen /> },
+        { idx: '03', caption: 'Agent 配置', comp: <AgentConfigScreen /> },
+        { idx: '04', caption: '人格设定', comp: <AgentPersonaScreen /> },
+      ];
+      return (
+        <div>
+          <div className="page-title">TA · 原研哉设计哲学</div>
+          <div className="page-subtitle">HARA KENYA — 白 · 空 · 再设计</div>
+          <div className="row">
+            {devices.map((d, i) => (
+              <div className="device-wrap" key={i}>
+                <div className="device-index">{d.idx}</div>
+                <AndroidFrame time="9:41" battery={85}>{d.comp}</AndroidFrame>
+                <div className="device-caption">{d.caption}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

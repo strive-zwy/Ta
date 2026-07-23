@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 主主题：原生 Theme.NoActionBar，与 Compose TaTheme 对齐
+         （项目未引入 AppCompat/Material XML 库，全部 UI 由 Compose 渲染） -->
+    <style name="Theme.Ta" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <!-- Edge-to-edge 强制（Android 15+ 默认） -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>
