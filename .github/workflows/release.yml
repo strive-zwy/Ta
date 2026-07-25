@@ -35,6 +35,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
       # 解码 release keystore（如果配置了 GitHub Secrets）
       # 必需 Secrets:
       #   KEYSTORE_BASE64     - keystore 文件的 base64 编码（base64 -i release.jks）
