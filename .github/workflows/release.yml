@@ -1,0 +1,106 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布版本号（用于命名 APK，不强制创建 tag）'
+        required: true
+        default: '1.0.0'
+
+# 同一 tag 多次触发时取消旧构建
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 解码 release keystore（如果配置了 GitHub Secrets）
+      # 必需 Secrets:
+      #   KEYSTORE_BASE64     - keystore 文件的 base64 编码（base64 -i release.jks）
+      #   KEYSTORE_PASSWORD   - keystore 密码
+      #   KEY_ALIAS           - key 别名
+      #   KEY_PASSWORD        - key 密码
+      # 未配置时，build.gradle.kts 会自动 fallback 到 debug 签名
+      - name: Decode release keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          cat > keystore.properties <<EOF
+          storeFile=release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Determine version name
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="${{ inputs.tag }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "构建版本: $VERSION"
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: |
+          mkdir -p release-out
+          for apk in app/build/outputs/apk/release/*.apk; do
+            base=$(basename "$apk" .apk)
+            mv "$apk" "release-out/ta-${{ steps.version.outputs.version }}-${base}.apk"
+          done
+          ls -la release-out/
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk-${{ steps.version.outputs.version }}
+          path: release-out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: release-out/*.apk
+          draft: false
+          prerelease: false
+
+      - name: Clean keystore
+        if: always()
+        run: |
+          rm -f release.keystore keystore.properties

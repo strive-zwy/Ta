@@ -1,8 +1,19 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+}
+
+// 读取 keystore.properties（本地不存在时跳过，CI 通过 secrets 注入）
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) {
+        load(FileInputStream(file))
+    }
 }
 
 android {
@@ -23,8 +34,24 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            // 仅当 keystore.properties 存在对应字段时填充，否则保持空（fallback 到 debug 签名）
+            keystoreProperties["storeFile"]?.let { storeFile = file(it as String) }
+            keystoreProperties["storePassword"]?.let { storePassword = it as String }
+            keystoreProperties["keyAlias"]?.let { keyAlias = it as String }
+            keystoreProperties["keyPassword"]?.let { keyPassword = it as String }
+        }
+    }
+
     buildTypes {
         release {
+            // 配置了 keystore.properties 则用 release 签名，否则用 debug 签名兜底（CI 未配置 secrets 时仍可出包）
+            signingConfig = if (keystoreProperties.containsKey("storeFile")) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             optimization {
                 enable = false
             }
