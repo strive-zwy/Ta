@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
@@ -252,25 +253,27 @@ class DailyPlanner {
         }
 
         // 状态说明
-        sb.appendLine("状态可选值：")
-        sb.appendLine("- sleep: 睡觉")
-        sb.appendLine("- work: 工作")
-        sb.appendLine("- game: 玩游戏")
-        sb.appendLine("- bath: 洗澡")
-        sb.appendLine("- bored: 无聊/空闲")
+        sb.appendLine("状态可选值（按能否回复和回复积极性区分）：")
+        sb.appendLine("- normal: 正常（日常活动，可正常回复）")
+        sb.appendLine("- busy: 忙碌（工作/游戏等专注活动，回复慢）")
+        sb.appendLine("- idle: 空闲（发呆/摸鱼/休息，回复快，话多）")
+        sb.appendLine("- unavailable: 无法回复（睡觉/洗澡等，不回复消息）")
         sb.appendLine()
 
         // 输出格式
-        sb.appendLine("请用以下 JSON 格式输出你今天的作息时间表（从当前时间开始规划，覆盖到今晚 24:00）：")
+        sb.appendLine("请用以下 JSON 格式输出你今天的作息时间表（从今天起床开始规划，到最后睡觉结束）：")
         sb.appendLine("{")
         sb.appendLine("  \"replyText\": \"简要说明你今天的安排（一两句话）\",")
         sb.appendLine("  \"slots\": [")
-        sb.appendLine("    {\"start\": \"HH:MM\", \"end\": \"HH:MM\", \"state\": \"sleep\", \"activity\": \"具体活动描述\"}")
+        sb.appendLine("    {\"start\": \"HH:MM\", \"end\": \"HH:MM\", \"state\": \"unavailable\", \"activity\": \"具体活动描述\"}")
         sb.appendLine("  ]")
         sb.appendLine("}")
         sb.appendLine()
         sb.appendLine("规则：")
-        sb.appendLine("- 时间段必须连续，覆盖 00:00 到 24:00")
+        sb.appendLine("- 从今天起床时间开始（如 07:30），到最后一个 unavailable（睡觉）时段结束")
+        sb.appendLine("- 最后一个时段必须是 unavailable（睡觉），且跨午夜到明早起床时间（如 22:00 - 07:30，表示今晚22点睡到明早7点半）")
+        sb.appendLine("- 第一个时段是起床后的状态（normal/idle/busy 等），不要以 unavailable 开头")
+        sb.appendLine("- 时间段必须连续，每个时段的 end 等于下一个时段的 start")
         sb.appendLine("- 每个时段必须有 start / end / state / activity")
         sb.appendLine("- activity 是你具体在做什么（如 写设计稿 / 看新番 / 泡澡放松）")
         sb.appendLine("- 体现你的性格和喜好，不要机械")
@@ -287,7 +290,7 @@ class DailyPlanner {
      * 从 LLM 回复中解析 slots
      */
     private fun parseSlotsFromReply(content: String): List<DailySlot> {
-        return try {
+        val raw = try {
             val element = json.parseToJsonElement(content)
             val obj = element as? kotlinx.serialization.json.JsonObject ?: return emptyList()
             val slotsArr = obj["slots"] ?: return emptyList()
@@ -299,13 +302,51 @@ class DailyPlanner {
                 val endIndex = content.lastIndexOf(']')
                 if (startIndex >= 0 && endIndex > startIndex) {
                     val jsonArr = content.substring(startIndex, endIndex + 1)
-                    return json.decodeFromString<List<DailySlot>>(jsonArr)
+                    json.decodeFromString<List<DailySlot>>(jsonArr)
+                } else {
+                    emptyList()
                 }
             } catch (e2: Exception) {
                 Log.e(TAG, "解析 slots 失败", e2)
+                emptyList()
             }
-            emptyList()
         }
+        return normalizeSlots(raw)
+    }
+
+    /**
+     * 规范化 slots：
+     * 1. 移除开头的 unavailable 时段（如 LLM 仍以 00:00 unavailable 开头）
+     * 2. 确保最后一个时段是 unavailable（睡觉）且跨午夜到次日起床时间
+     *    兼容旧 sleep 状态值
+     */
+    private fun normalizeSlots(slots: List<DailySlot>): List<DailySlot> {
+        if (slots.isEmpty()) return slots
+        var result = slots.toMutableList()
+
+        // 1. 移除开头的 unavailable/sleep 时段
+        while (result.isNotEmpty() && (result.first().state == "unavailable" || result.first().state == "sleep")) {
+            result.removeAt(0)
+        }
+        if (result.isEmpty()) return slots // 全是 unavailable，返回原始
+
+        // 2. 确保最后一个时段是跨午夜 unavailable（睡觉）
+        val firstStart = result.first().start
+        val last = result.last()
+        val isSleepEnd = last.state == "unavailable" || last.state == "sleep"
+        if (!isSleepEnd || last.end == "24:00" ||
+            runCatching { LocalTime.parse(last.end) <= LocalTime.parse(last.start) }.getOrDefault(false).not()
+        ) {
+            // 最后一个时段不是跨午夜 unavailable，替换为 unavailable 跨午夜到次日起床
+            result[result.lastIndex] = DailySlot(
+                start = last.start,
+                end = firstStart,  // 跨午夜到明早起床
+                state = "unavailable",
+                activity = "睡觉"
+            )
+        }
+
+        return result
     }
 
     /**
@@ -322,18 +363,17 @@ class DailyPlanner {
 
     /**
      * 兜底作息（LLM 调用失败时使用）
+     * 结构：从起床开始，最后一个 unavailable（睡觉）跨午夜到次日起床
      */
     private fun fallbackSchedule(): List<DailySlot> {
-        val now = java.time.LocalTime.now()
         return listOf(
-            DailySlot("00:00", "07:30", "sleep", "睡觉"),
-            DailySlot("07:30", "08:30", "bored", "刚起床发呆"),
-            DailySlot("08:30", "12:00", "work", "工作"),
-            DailySlot("12:00", "13:30", "bored", "午休"),
-            DailySlot("13:30", "18:00", "work", "工作"),
-            DailySlot("18:00", "19:00", "bath", "洗澡"),
-            DailySlot("19:00", "22:00", "game", "玩游戏"),
-            DailySlot("22:00", "24:00", "bored", "睡前刷手机")
+            DailySlot("07:30", "08:30", "idle", "刚起床发呆"),
+            DailySlot("08:30", "12:00", "busy", "工作"),
+            DailySlot("12:00", "13:30", "idle", "午休"),
+            DailySlot("13:30", "18:00", "busy", "工作"),
+            DailySlot("18:00", "19:00", "unavailable", "洗澡"),
+            DailySlot("19:00", "22:00", "busy", "玩游戏"),
+            DailySlot("22:00", "07:30", "unavailable", "睡觉")  // 跨午夜到次日 07:30
         )
     }
 
@@ -385,11 +425,16 @@ class DailyPlanner {
      */
     private fun activityLabel(slot: DailySlot): String {
         val stateLabel = when (slot.state) {
-            "sleep" -> "睡觉"
-            "work" -> "工作"
-            "game" -> "游戏"
-            "bath" -> "洗澡"
+            "normal" -> "正常"
+            "busy" -> "忙碌"
+            "idle" -> "空闲"
+            "unavailable" -> "休息"
+            // 兼容旧状态值
+            "sleep" -> "休息"
+            "work", "game" -> "忙碌"
+            "bath" -> "休息"
             "bored" -> "空闲"
+            "happy" -> "正常"
             else -> slot.state
         }
         return if (slot.activity.isNotBlank()) "${stateLabel}（${slot.activity}）" else stateLabel

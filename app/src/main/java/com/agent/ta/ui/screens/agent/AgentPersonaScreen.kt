@@ -51,15 +51,13 @@ import com.agent.ta.di.ServiceLocator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** 示例对话 mood 选项（value → 显示标签） */
+/** 示例对话 mood 选项（value → 显示标签），与 AgentState 4 状态对齐 */
 private val MOOD_OPTIONS = listOf(
     "default" to "默认",
-    "happy" to "开心",
-    "work" to "工作",
-    "sleep" to "睡觉",
-    "shower" to "洗澡",
-    "game" to "游戏",
-    "bored" to "无聊"
+    "normal" to "正常",
+    "busy" to "忙碌",
+    "idle" to "空闲",
+    "unavailable" to "无法回复"
 )
 
 /** 说话风格下拉选项 */

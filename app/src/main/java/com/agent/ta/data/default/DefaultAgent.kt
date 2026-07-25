@@ -6,6 +6,7 @@ import com.agent.ta.data.model.BehaviorConfig
 import com.agent.ta.data.model.BoredInitiate
 import com.agent.ta.data.model.Persona
 import com.agent.ta.data.model.ReplyDelay
+import com.agent.ta.data.model.StateInitiate
 import com.agent.ta.data.model.VoiceConfig
 
 /**
@@ -38,11 +39,10 @@ object DefaultAgent {
         ),
         behavior = BehaviorConfig(
             replyDelaySec = mapOf(
-                "work" to ReplyDelay.Range(60, 300),
-                "game" to ReplyDelay.Range(120, 300),
-                "sleep" to ReplyDelay.Defer,
-                "bath" to ReplyDelay.Defer,
-                "bored" to ReplyDelay.Range(1, 10)
+                "normal" to ReplyDelay.Range(3, 8),
+                "busy" to ReplyDelay.Range(30, 120),
+                "idle" to ReplyDelay.Range(1, 3),
+                "unavailable" to ReplyDelay.Defer
             ),
             boredInitiate = BoredInitiate(
                 enabled = true,
@@ -56,12 +56,25 @@ object DefaultAgent {
                     "说说今天的心情"
                 )
             ),
+            perStateInitiate = mapOf(
+                "normal" to StateInitiate(
+                    enabled = true,
+                    initiateLevel = "normal"
+                ),
+                "busy" to StateInitiate(
+                    enabled = true,
+                    initiateLevel = "quiet"
+                ),
+                "idle" to StateInitiate(
+                    enabled = true,
+                    initiateLevel = "active"
+                )
+            ),
             stateDirectorHints = mapOf(
-                "sleep" to "语速极慢，沙哑慵懒，带气声，停顿长",
-                "work" to "语速偏快，干练简洁，咬字清晰",
-                "bath" to "轻松明快，带着水汽的慵懒感",
-                "game" to "兴奋上扬，语速快，偶尔分心停顿",
-                "bored" to "随意拖音，慵懒俏皮，语速不规律"
+                "normal" to "日常状态，语气平和自然，回复长度适中，积极参与对话。像平时和朋友聊天一样随意。",
+                "busy" to "正在忙碌，语速偏快，回复简短直接，可能会提及正在处理的事务。不闲聊，结束时可能说'先去忙了'。",
+                "idle" to "空闲状态，乐于交流，话变多，会主动找话题或分享趣事。随意拖音，慵懒俏皮，偶尔撒娇求关注。",
+                "unavailable" to "无法回复，处于睡觉或洗澡等状态，不会发送消息。切换回可回复状态后会补回复之前的消息。"
             )
         ),
         // 默认无参考明星，用户可在 Admin 端配置

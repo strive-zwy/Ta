@@ -97,9 +97,7 @@ class LlmClient {
         val apiKey = prefs.llmApiKey
         val baseUrl = prefs.llmBaseUrl
         val model = prefs.llmModel
-        Log.d(TAG, "请求配置：baseUrl=$baseUrl, model=$model, apiKey长度=${apiKey.length}, " +
-            "apiKey前缀=${if (apiKey.length >= 6) apiKey.substring(0, 6) else "too_short"}, " +
-            "apiKey末尾=${if (apiKey.length >= 4) apiKey.substring(apiKey.length - 4) else "too_short"}")
+        Log.d(TAG, "请求配置：baseUrl=$baseUrl, model=$model, apiKey长度=${apiKey.length}")
 
         val request = ChatCompletionRequest(
             model = model,
@@ -188,7 +186,8 @@ class LlmClient {
                         replyText = text,
                         action = itemObj["action"]?.jsonPrimitive?.contentOrNull ?: "",
                         directorPrompt = itemObj["directorPrompt"]?.jsonPrimitive?.contentOrNull ?: "",
-                        emoji = emoji
+                        emoji = emoji,
+                        emotion = itemObj["emotion"]?.jsonPrimitive?.contentOrNull ?: ""
                     )
                 }
             } else emptyList()

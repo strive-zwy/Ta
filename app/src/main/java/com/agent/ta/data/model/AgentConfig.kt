@@ -165,11 +165,9 @@ object ExampleDialogueSerializer : KSerializer<ExampleDialogue> {
 
 @Serializable
 data class VoiceConfig(
-    /** v1 兼容字段：单样本路径 */
+    /** v1 兼容字段：默认样本路径（neutral 情绪样本的兜底） */
     @SerialName("sample_file") val sampleFile: String = "voice/sample.wav",
     @SerialName("director_mode") val directorMode: Boolean = true,
-    /** Admin v2: TTS 参数（speed/pitch/volume/emotion/intonation） */
-    @SerialName("voice_params") val voiceParams: Map<String, String> = emptyMap(),
     /** Admin v2: 声音文本描述（部分 API 可作为 voice prompt） */
     @SerialName("voice_description") val voiceDescription: String = "",
     /** Admin v2: 标点风格 normal/ellipses/tilde/mixed */
@@ -178,29 +176,95 @@ data class VoiceConfig(
     @SerialName("filler_words_handling") val fillerWordsHandling: String = "",
     /** Admin v2: 数字读法 literal/contextual */
     @SerialName("number_reading") val numberReading: String = "",
-    /** Admin v2: Emoji 处理 skip/translate */
-    @SerialName("emoji_handling") val emojiHandling: String = "",
-    /** Admin v2: 多情绪样本列表 */
-    @SerialName("sample_files") val sampleFiles: List<VoiceSampleFile> = emptyList()
-)
+    /** Admin v3: 按情绪分组的样本+参数（neutral/happy/calm）
+     *  - neutral 必须有样本（作为所有情绪的兜底）
+     *  - happy/calm 可选，未配置时 fallback 到 neutral 样本 + 自身参数（或 neutral 参数） */
+    val emotions: Map<String, VoiceEmotionConfig> = VoiceEmotionConfig.defaults()
+) {
+    /**
+     * 取指定情绪的样本路径：
+     * 1. 优先取该情绪配置的 sampleFile
+     * 2. 空则 fallback 到 neutral 的 sampleFile
+     * 3. 仍空则 fallback 到 v1 sampleFile
+     */
+    fun sampleFileFor(emotion: String?): String? {
+        val normalized = VoiceEmotionConfig.normalize(emotion)
+        val emotionCfg = emotions[normalized]
+        return emotionCfg?.sampleFile?.takeIf { it.isNotBlank() }
+            ?: emotions[VoiceEmotionConfig.NEUTRAL]?.sampleFile?.takeIf { it.isNotBlank() }
+            ?: sampleFile.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 取指定情绪的 voiceParams：
+     * 1. 优先取该情绪配置的 voiceParams（非空）
+     * 2. 空则 fallback 到 neutral 的 voiceParams
+     */
+    fun voiceParamsFor(emotion: String?): Map<String, String> {
+        val normalized = VoiceEmotionConfig.normalize(emotion)
+        val emotionCfg = emotions[normalized]
+        val params = emotionCfg?.voiceParams
+        return if (!params.isNullOrEmpty()) params
+               else emotions[VoiceEmotionConfig.NEUTRAL]?.voiceParams ?: emptyMap()
+    }
+
+    /**
+     * 所有非空样本路径（用于导出 zip 时去重写入文件）
+     */
+    fun allSamplePaths(): List<String> {
+        val paths = mutableListOf<String>()
+        sampleFile.takeIf { it.isNotBlank() }?.let { paths.add(it) }
+        emotions.values.forEach { ec ->
+            ec.sampleFile.takeIf { it.isNotBlank() }?.let { paths.add(it) }
+        }
+        return paths.distinct()
+    }
+}
 
 /**
- * 多情绪音频样本文件（Admin v2 新增）
- * 一个 Agent 可挂多条不同情绪的样本，TTS 按当前情绪选择最匹配的样本
+ * 单个情绪的语音配置（Admin v3）
+ *
+ * - sampleFile 为空时，TTS 合成 fallback 到 neutral 样本
+ * - voiceParams 为空时，TTS 合成 fallback 到 neutral 参数
  */
 @Serializable
-data class VoiceSampleFile(
-    val id: String = "",
-    val file: String = "",
-    /** neutral/happy/sad/angry/excited/soft/serious */
-    val emotion: String = "neutral",
-    /** 参考文本（提升克隆相似度） */
-    val transcript: String = "",
-    @SerialName("duration_sec") val durationSec: Float = 0f,
-    @SerialName("sample_rate") val sampleRate: Int = 0,
-    /** 是否为主样本（TTS 默认使用） */
-    val primary: Boolean = false
-)
+data class VoiceEmotionConfig(
+    /** 该情绪的样本路径，空则 fallback 到 neutral 样本 */
+    @SerialName("sample_file") val sampleFile: String = "",
+    /** 该情绪的 TTS 参数（speed/pitch/volume/intonation） */
+    @SerialName("voice_params") val voiceParams: Map<String, String> = emptyMap()
+) {
+    companion object {
+        const val NEUTRAL = "neutral"
+        const val HAPPY = "happy"
+        const val CALM = "calm"
+
+        /** 支持的情绪标签（固定 3 个） */
+        val SUPPORTED = listOf(NEUTRAL, HAPPY, CALM)
+
+        /** 中文标签映射（供 UI 显示） */
+        val LABELS = mapOf(
+            NEUTRAL to "中性 neutral",
+            HAPPY to "开心 happy",
+            CALM to "平静 calm"
+        )
+
+        /** 默认配置：3 个情绪都存在但样本和参数为空 */
+        fun defaults(): Map<String, VoiceEmotionConfig> =
+            SUPPORTED.associateWith { VoiceEmotionConfig() }
+
+        /** 把任意输入归一化到支持的 3 个情绪之一 */
+        fun normalize(emotion: String?): String {
+            val raw = emotion?.trim()?.lowercase() ?: return NEUTRAL
+            return when (raw) {
+                NEUTRAL, "serious" -> NEUTRAL
+                HAPPY, "excited", "angry" -> HAPPY
+                CALM, "soft", "sad" -> CALM
+                else -> NEUTRAL
+            }
+        }
+    }
+}
 
 /**
  * 当天作息时间段（由 LLM 每天生成，可随时调整）
@@ -334,38 +398,53 @@ data class BoredInitiate(
 )
 
 /**
- * 各状态主动发起配置（Admin v2）
- * 用于替代 v1 的全局 bored_initiate
+ * 各状态主动发起配置（Admin v3 语义化档位版）
  *
- * 注意：
- * - candidates 是对象数组（Admin v2 导出格式），与 Admin 端 behavior.go 的 PerStateInitiate 对齐
- * - time_window 是对象（含 start/end 字段），非字符串
+ * 只保留 enabled + initiateLevel（语义化档位）：
+ * - 档位：quiet/silent/normal/active/chatty
+ * - 每个状态可独立选档（如 idle=active，busy=quiet）
+ * - 系统内部映射到概率，用户不需要理解数字
+ * - 固定冷却 30 分钟，静音时段 23:00-08:00
  */
 @Serializable
 data class StateInitiate(
     val enabled: Boolean = false,
-    @SerialName("interval_min") val intervalMin: Int = 60,
-    val probability: Float = 0.2f,
-    @SerialName("time_window") val timeWindow: TimeWindow = TimeWindow(),
-    @SerialName("cooldown_min") val cooldownMin: Int = 30,
-    val candidates: List<StateInitiateCandidate> = emptyList()
-)
+    /** 主动发起档位：quiet/silent/normal/active/chatty */
+    @SerialName("initiate_level") val initiateLevel: String = "normal"
+) {
+    companion object {
+        const val QUIET = "quiet"       // 安静：0.5% 概率，~100分钟间隔
+        const val SILENT = "silent"     // 偶尔：2% 概率，~25分钟间隔
+        const val NORMAL = "normal"     // 正常：5% 概率，~10分钟间隔
+        const val ACTIVE = "active"     // 活跃：10% 概率，~5分钟间隔
+        const val CHATTY = "chatty"     // 话痨：20% 概率，~2.5分钟间隔
+
+        val ALL_LEVELS = listOf(QUIET, SILENT, NORMAL, ACTIVE, CHATTY)
+
+        /** 档位 → 概率映射（每5分钟检查一次） */
+        fun levelToProbability(level: String): Float = when (level) {
+            QUIET -> 0.005f
+            SILENT -> 0.02f
+            NORMAL -> 0.05f
+            ACTIVE -> 0.10f
+            CHATTY -> 0.20f
+            else -> 0.05f  // 默认 normal
+        }
+
+        /** 档位 → 中文标签 */
+        fun levelToLabel(level: String): String = when (level) {
+            QUIET -> "安静"
+            SILENT -> "偶尔"
+            NORMAL -> "正常"
+            ACTIVE -> "活跃"
+            CHATTY -> "话痨"
+            else -> "正常"
+        }
+    }
+}
 
 /**
- * 主动发起候选消息（Admin v2）
- * 每条候选包含文本、情绪、触发后状态、权重
- */
-@Serializable
-data class StateInitiateCandidate(
-    val text: String = "",
-    val emotion: String = "",
-    @SerialName("mood_after") val moodAfter: String = "",
-    val weight: Int = 1
-)
-
-/**
- * 时间窗口（Admin v2）
- * 用于 per_state_initiate[state].time_window，限制主动发起的生效时段
+ * 时间窗口（Admin v2，保留用于其他场景兼容）
  */
 @Serializable
 data class TimeWindow(

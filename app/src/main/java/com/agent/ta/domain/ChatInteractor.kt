@@ -25,6 +25,7 @@ import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 聊天业务编排
@@ -79,8 +80,8 @@ class ChatInteractor(private val context: Context) {
         }
 
         // 1. 取消上一个进行中的回复任务（包括延迟阶段，防止快速连发产生多个并行任务）
-        currentReplyJob?.cancel()
-        currentReplyJob = null
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(null)
 
         // 2. 立即启动可取消的回复任务（包括入库、延迟、生成回复，都在同一个 Job 中）
         val job = scope.launch {
@@ -99,7 +100,7 @@ class ChatInteractor(private val context: Context) {
             // 4. 判定当前状态
             val state = com.agent.ta.service.AgentEngine.currentState.value
 
-            if (state == AgentState.SLEEP || state == AgentState.BATH) {
+            if (state == AgentState.UNAVAILABLE) {
                 // 不可回复，标记为待回复（由 StateMachine 状态切换后触发 processPendingReplies）
                 chatDao.updateStatus(msgId, "pending", null)
                 return@launch
@@ -119,7 +120,7 @@ class ChatInteractor(private val context: Context) {
                 _isReplying.value = false
             }
         }
-        currentReplyJob = job
+        currentReplyJobRef.set(job)
     }
 
     /**
@@ -130,8 +131,8 @@ class ChatInteractor(private val context: Context) {
      */
     private fun enterConfigMode() {
         _configMode.value = true
-        currentReplyJob?.cancel()
-        currentReplyJob = scope.launch {
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(scope.launch {
             val state = com.agent.ta.service.AgentEngine.currentState.value
             val msg = ChatMessageEntity(
                 direction = "outbound",
@@ -144,7 +145,7 @@ class ChatInteractor(private val context: Context) {
             )
             chatDao.insert(msg)
             notificationHelper.notifyAgentMessage(msg.text ?: "", null)
-        }
+        })
     }
 
     /**
@@ -170,8 +171,8 @@ class ChatInteractor(private val context: Context) {
             return
         }
         _configMode.value = false
-        currentReplyJob?.cancel()
-        currentReplyJob = scope.launch {
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(scope.launch {
             val state = com.agent.ta.service.AgentEngine.currentState.value
             val msg = ChatMessageEntity(
                 direction = "outbound",
@@ -184,7 +185,7 @@ class ChatInteractor(private val context: Context) {
             )
             chatDao.insert(msg)
             notificationHelper.notifyAgentMessage(msg.text ?: "", null)
-        }
+        })
     }
 
     /**
@@ -242,7 +243,7 @@ class ChatInteractor(private val context: Context) {
             if (pending.isEmpty()) return@launch
 
             val state = com.agent.ta.service.AgentEngine.currentState.value
-            if (state == AgentState.SLEEP || state == AgentState.BATH) return@launch
+            if (state == AgentState.UNAVAILABLE) return@launch
 
             // 把所有 pending 消息合并成一条"补充说明"用户消息入库
             // 让 LLM 知道用户之前说了什么，但不触发逐条对应回复
@@ -275,16 +276,16 @@ class ChatInteractor(private val context: Context) {
                 chatDao.updateStatus(msg.id, "received", System.currentTimeMillis())
             }
 
-            currentReplyJob?.cancel()
-            currentReplyJob = scope.launch {
+            currentReplyJobRef.get()?.cancel()
+            currentReplyJobRef.set(scope.launch {
                 try {
                     _isReplying.value = true
                     generateAgentReply(isPendingCatchup = true)
                 } finally {
                     _isReplying.value = false
-                    currentReplyJob = null
+                    currentReplyJobRef.set(null)
                 }
-            }
+            })
         }
     }
 
@@ -295,32 +296,32 @@ class ChatInteractor(private val context: Context) {
      * 用户发新消息时会取消正在进行的主动发起剩余条目。
      */
     fun agentInitiate() {
-        currentReplyJob?.cancel()
-        currentReplyJob = scope.launch {
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(scope.launch {
             try {
                 _isReplying.value = true
                 generateAgentReply(isInitiate = true)
             } finally {
                 _isReplying.value = false
-                currentReplyJob = null
+                currentReplyJobRef.set(null)
             }
-        }
+        })
     }
 
     /**
      * 触发 Onboarding 消息（Agent 主动提问了解用户）
      */
     fun triggerOnboardingMessage() {
-        currentReplyJob?.cancel()
-        currentReplyJob = scope.launch {
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(scope.launch {
             try {
                 _isReplying.value = true
                 generateAgentReply(isInitiate = true, isOnboarding = true)
             } finally {
                 _isReplying.value = false
-                currentReplyJob = null
+                currentReplyJobRef.set(null)
             }
-        }
+        })
     }
 
     /**
@@ -495,15 +496,18 @@ class ChatInteractor(private val context: Context) {
                 chatDao.insert(emojiMsg)
                 notificationHelper.notifyAgentMessage(mergedEmoji, null)
             } else {
-                // 文字消息（可能带 emoji）：合成语音只朗读 replyText，emoji 仅作为视觉装饰
+                // 文字消息：合成语音只朗读 replyText
                 var audioPath: String? = null
                 var audioDurationSec: Int? = null
                 if (prefs.voiceEnabled && mergedReplyText.isNotBlank()) {
-                    val result = synthesizeVoice(mergedReplyText, mergedDirectorPrompt)
+                    // 合并兜底路径：取第一条 reply 的 emotion（空则 fallback neutral）
+                    val mergedEmotion = cleanedItems.firstOrNull { it.emotion.isNotBlank() }?.emotion ?: ""
+                    val result = synthesizeVoice(mergedReplyText, mergedDirectorPrompt, mergedEmotion)
                     audioPath = result?.first
                     audioDurationSec = result?.second
                 }
 
+                // 同时有文字和 emoji 时忽略 emoji（语音消息只保留文字，避免 emoji 挤在语音气泡里）
                 val agentMsg = ChatMessageEntity(
                     direction = "outbound",
                     text = mergedReplyText,
@@ -514,8 +518,7 @@ class ChatInteractor(private val context: Context) {
                     createdAt = System.currentTimeMillis(),
                     action = mergedAction?.takeIf { it.isNotBlank() },
                     audioDurationSec = audioDurationSec,
-                    // emoji 和文字共存在同一条消息（如「晚安啦🌙」）
-                    emoji = mergedEmoji.takeIf { it.isNotBlank() }
+                    emoji = null  // 忽略 emoji
                 )
                 chatDao.insert(agentMsg)
 
@@ -620,18 +623,22 @@ class ChatInteractor(private val context: Context) {
         var firstAudioPath: String? = null
         var firstAudioDuration: Int? = null
         if (prefs.voiceEnabled && allTextJoined.isNotBlank()) {
-            val result = synthesizeVoice(allTextJoined, firstReply.directorPrompt)
+            val result = synthesizeVoice(allTextJoined, firstReply.directorPrompt, firstReply.emotion)
             firstAudioPath = result?.first
             firstAudioDuration = result?.second
         }
 
-        // 每条独立入库
+        // 每条独立入库；同时有 replyText 和 emoji 时忽略 emoji（避免语音气泡里塞 emoji 显示难看）
         replies.forEachIndexed { index, reply ->
             val isFirst = index == 0
             val isLast = index == replies.size - 1
 
             // 纯 emoji 消息：不合成语音
             val isPureEmoji = reply.replyText.isBlank() && reply.emoji.isNotBlank()
+            // 同时有文字和 emoji：忽略 emoji（语音消息只保留文字，避免 emoji 挤在语音气泡里）
+            val effectiveEmoji = if (reply.replyText.isNotBlank()) null
+                                 else reply.emoji.takeIf { it.isNotBlank() }
+
             val audioPath = if (isFirst && !isPureEmoji) firstAudioPath else null
             val audioDuration = if (isFirst && !isPureEmoji) firstAudioDuration else null
 
@@ -645,7 +652,7 @@ class ChatInteractor(private val context: Context) {
                 createdAt = now + index,  // 保证时间顺序
                 action = reply.action.takeIf { it.isNotBlank() },
                 audioDurationSec = audioDuration,
-                emoji = reply.emoji.takeIf { it.isNotBlank() }
+                emoji = effectiveEmoji
             )
             chatDao.insert(msg)
         }
@@ -665,26 +672,27 @@ class ChatInteractor(private val context: Context) {
     /**
      * 合成语音
      *
+     * @param emotion 该条回复的情绪标签（neutral/happy/calm），用于选择对应情绪的样本和参数。
+     *                空字符串或未知值时由 VoiceConfig 内部 fallback 到 neutral。
+     *
      * @return (音频文件路径, 时长秒)，失败返回 null
      *
      * 失败重试：远程 TTS 失败时短暂等待后重试一次（避免连续调用被限流导致中间几条降级系统 TTS）
      */
-    private suspend fun synthesizeVoice(text: String, directorPrompt: String): Pair<String, Int>? {
+    private suspend fun synthesizeVoice(text: String, directorPrompt: String, emotion: String): Pair<String, Int>? {
         val config = configProvider.get()
         val voiceConfig = config.voice
         val samplePath = voiceConfig.sampleFile.takeIf { it.isNotBlank() }
 
-        // 根据当前 Agent 状态推断情绪，用于 v2 多情绪样本选择
-        val emotionHint = inferEmotionFromState(com.agent.ta.service.AgentEngine.currentState.value)
-        Log.d(TAG, "合成语音：samplePath=$samplePath, sampleFiles=${voiceConfig.sampleFiles.size}, emotionHint=$emotionHint, directorMode=${voiceConfig.directorMode}, ttsBaseUrl=${prefs.ttsBaseUrl}, ttsApiKey配置=${prefs.ttsApiKey.isNotBlank()}")
+        Log.d(TAG, "合成语音：emotion=$emotion, samplePath=$samplePath, directorMode=${voiceConfig.directorMode}, ttsBaseUrl=${prefs.ttsBaseUrl}, ttsApiKey配置=${prefs.ttsApiKey.isNotBlank()}")
 
         // 第一次尝试
-        var audioBytes = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotionHint)
+        var audioBytes = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotion)
         if (audioBytes == null) {
             // 短暂等待后重试一次（可能因限流或瞬时网络抖动失败）
             Log.w(TAG, "远程 TTS 第一次失败，500ms 后重试")
             delay(500)
-            audioBytes = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotionHint)
+            audioBytes = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotion)
         }
 
         if (audioBytes != null) {
@@ -725,29 +733,6 @@ class ChatInteractor(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "远程 TTS 异常", e)
             null
-        }
-    }
-
-    /**
-     * 根据当前 Agent 状态推断情绪标签，用于 v2 多情绪样本选择
-     *
-     * 映射规则（与 Admin v2 VoiceSampleFile.emotion 字段对齐）：
-     * - GAME → excited（兴奋/激烈）
-     * - HAPPY → happy（开心/愉悦）
-     * - WORK → serious（认真）
-     * - SLEEP → soft（温柔/慵懒）
-     * - BATH → soft
-     * - BORED → neutral（平淡）
-     * - 其他 → neutral
-     */
-    private fun inferEmotionFromState(state: com.agent.ta.data.model.AgentState): String {
-        return when (state) {
-            com.agent.ta.data.model.AgentState.GAME -> "excited"
-            com.agent.ta.data.model.AgentState.HAPPY -> "happy"
-            com.agent.ta.data.model.AgentState.WORK -> "serious"
-            com.agent.ta.data.model.AgentState.SLEEP,
-            com.agent.ta.data.model.AgentState.BATH -> "soft"
-            else -> "neutral"
         }
     }
 
@@ -804,8 +789,8 @@ class ChatInteractor(private val context: Context) {
         private const val TAG = "ChatInteractor"
 
         // 当前进行中的回复任务（跨实例共享，用户发新消息时取消）
-        @Volatile
-        private var currentReplyJob: Job? = null
+        // 使用 AtomicReference 避免竞态条件
+        private val currentReplyJobRef = AtomicReference<Job?>(null)
 
         // Agent 是否正在输入/生成回复（供 UI 显示"正在输入中"指示器）
         // 跨实例共享：ChatViewModel 的 ChatInteractor 和 AgentEngine 创建的实例共享同一状态

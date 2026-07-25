@@ -232,7 +232,7 @@ class PromptBuilder {
             sb.appendLine()
         } else if (isPendingCatchup) {
             sb.appendLine("【当前是补回复场景】")
-            sb.appendLine("用户在之前的状态（你当时在 SLEEP 或 BATH）发了一些消息给你，你那时没来得及回复。")
+            sb.appendLine("用户在之前的状态（你当时处于无法回复状态，如睡觉/洗澡）发了一些消息给你，你那时没来得及回复。")
             sb.appendLine("现在你已切换到「${state.displayName}」状态，请用【当前状态】的语气和情境自然简短回应，")
             sb.appendLine("不要按消息发送时的时间语境回复（比如消息是深夜发的，但现在是白天，就按白天的你回复）。")
             sb.appendLine("只发 1 条简短回复（最多 2 条），表达「看到你之前发的了，我现在来回应」的感觉即可。")
@@ -264,40 +264,23 @@ class PromptBuilder {
         sb.appendLine("- 如果你认为不应该调整（比如正在专注工作、或用户的请求不合理），shouldAdjust=false，正常回复即可")
         sb.appendLine()
 
-        // Emoji 表情能力
-        val emojiBehavior = config.behavior.emoji
-        if (emojiBehavior.enabled) {
-            sb.appendLine("【发表情】")
-            sb.appendLine("你可以在对话中发 emoji 表情，像真人微信聊天一样。可用 emoji（必须在下列字符中选择，不要编造其他）：")
-            // Admin v2: 若配置了 preferred_emojis，优先展示给 LLM
-            val preferredEmojis = emojiBehavior.preferredEmojis.filter { it.isNotBlank() }
-            if (preferredEmojis.isNotEmpty()) {
-                sb.appendLine("你偏好的 emoji（优先使用这些）：${preferredEmojis.joinToString(" ")}")
-            }
-            sb.appendLine("开心：😄 😂 🤣 😏 😎 😊")
-            sb.appendLine("无奈/叹气：🤔 😅 😑 🙄 😮‍💨 😅")
-            sb.appendLine("惊讶：😮 😲 🤯 😯")
-            sb.appendLine("疑惑：🤨 😕 🤷")
-            sb.appendLine("生气：😤 😠 😒")
-            sb.appendLine("委屈/可怜：😢 🥺 😔 😞")
-            sb.appendLine("可爱/亲昵：🥰 😘 🤗 😍 🥹")
-            sb.appendLine("日常：😴 🌙 ☕ 🍚 🛏️ 👋 👌 👍 💬")
-            sb.appendLine("规则：")
-            sb.appendLine("- 不是每条都要发！像真人一样根据情境判断该不该发——大部分时候用文字回复即可")
-            sb.appendLine("- 单条消息最多 ${emojiBehavior.maxPerMessage.coerceAtLeast(1)} 个 emoji")
-            // Admin v2: 各状态 emoji 频率（如有配置）
-            val freqMap = emojiBehavior.frequencyPerState
-            if (freqMap.isNotEmpty()) {
-                val currentFreq = freqMap[state.id]
-                if (currentFreq != null) {
-                    sb.appendLine("- 当前状态「${state.displayName}」下 emoji 频率：${(currentFreq * 100).toInt()}%")
-                }
-            }
-            sb.appendLine("- emoji 可以和文字组合在同一条 reply 中（如：replyText=\"晚安啦\" emoji=\"🌙\"），也可以只发表情（replyText 留空，emoji 填表情字符）")
-            sb.appendLine("- 典型场景：用户讲了个笑话回 😂 / 用户说晚安回 🌙 / 撒娇时回 🥰 / 不知道说什么时回 🤔")
-            sb.appendLine("- 如果用户发了 emoji（你在对话历史看到 emoji 字符），理解其含义并自然回复，也可以回一个 emoji")
-            sb.appendLine()
-        }
+        // Emoji 表情能力（Agent 自主决策，无需配置）
+        sb.appendLine("【发表情】")
+        sb.appendLine("你可以在对话中发 emoji 表情，像真人微信聊天一样。可用 emoji（必须在下列字符中选择，不要编造其他）：")
+        sb.appendLine("开心：😄 😂 🤣 😏 😎 😊")
+        sb.appendLine("无奈/叹气：🤔 😅 😑 🙄 😮‍💨 😅")
+        sb.appendLine("惊讶：😮 😲 🤯 😯")
+        sb.appendLine("疑惑：🤨 😕 🤷")
+        sb.appendLine("生气：😤 😠 😒")
+        sb.appendLine("委屈/可怜：😢 🥺 😔 😞")
+        sb.appendLine("可爱/亲昵：🥰 😘 🤗 😍 🥹")
+        sb.appendLine("日常：😴 🌙 ☕ 🍚 🛏️ 👋 👌 👍 💬")
+        sb.appendLine("规则：")
+        sb.appendLine("- 不是每条都要发！像真人一样根据情境判断该不该发——大部分时候用文字回复即可")
+        sb.appendLine("- emoji 可以和文字组合在同一条 reply 中（如：replyText=\"晚安啦\" emoji=\"🌙\"），也可以只发表情（replyText 留空，emoji 填表情字符）")
+        sb.appendLine("- 典型场景：用户讲了个笑话回 😂 / 用户说晚安回 🌙 / 撒娇时回 🥰 / 不知道说什么时回 🤔")
+        sb.appendLine("- 如果用户发了 emoji（你在对话历史看到 emoji 字符），理解其含义并自然回复，也可以回一个 emoji")
+        sb.appendLine()
 
         // 输出格式要求
         sb.appendLine("请用以下 JSON 格式回复（不要输出其他内容）：")
@@ -307,7 +290,8 @@ class PromptBuilder {
         sb.appendLine("      \"replyText\": \"这条消息的纯对话文本\",")
         sb.appendLine("      \"action\": \"这条消息的旁白/动作（第三人称，描述此刻姿态/场景/小动作，如：在沙发上躺着）。没有动作就留空字符串\",")
         sb.appendLine("      \"directorPrompt\": \"这条消息的导演指令：语气、语速、情绪\",")
-        sb.appendLine("      \"emoji\": \"如果这条消息要带 emoji，输出单个 emoji 字符（如 😄）；和 replyText 可以共存（如 replyText='晚安啦' emoji='🌙'）；不带 emoji 留空字符串\"")
+        sb.appendLine("      \"emoji\": \"如果这条消息要带 emoji，输出单个 emoji 字符（如 😄）；和 replyText 可以共存（如 replyText='晚安啦' emoji='🌙'）；不带 emoji 留空字符串\",")
+        sb.appendLine("      \"emotion\": \"这条消息的情绪标签，可选值：neutral/happy/calm。不标默认 neutral\"")
         sb.appendLine("    }")
         sb.appendLine("  ],")
         sb.appendLine("  \"scheduleAdjustment\": {")
@@ -344,6 +328,11 @@ class PromptBuilder {
         sb.appendLine("  如果当前只是普通打字回复、没有特别的动作场景，就留空字符串")
         sb.appendLine("- directorPrompt 用于每条消息的语音合成，描述这句话应该怎么说话")
         sb.appendLine("- emoji：可以和 replyText 共存在同一条消息中（如「晚安啦🌙」），也可以单独发纯表情（replyText 留空）。带 emoji 的条目若也有 replyText，TTS 会朗读 replyText 部分；纯 emoji 不合成语音")
+        sb.appendLine("- emotion：根据这条回复的真实情绪判断，不是每条都要标（不标默认 neutral）")
+        sb.appendLine("  - neutral：日常、平淡、认真的普通对话")
+        sb.appendLine("  - happy：开心、兴奋、激动、被夸、遇到有趣的事、撒娇玩耍")
+        sb.appendLine("  - calm：温柔、慵懒、低落、疲惫、难过、想睡觉、深夜安静时刻")
+        sb.appendLine("  示例：被用户夸奖时 emotion=\"happy\"；深夜想睡了 emotion=\"calm\"；普通回复 emotion=\"neutral\"")
         sb.appendLine("- scheduleAdjustment.shouldAdjust 大多数情况为 false。只在用户明确表达想让 Agent 陪、且 Agent 基于自己人格愿意调整时才为 true")
         sb.appendLine("- memoryUpdates 只在对话中出现值得记住的信息时才输出，否则留空数组")
         sb.appendLine("- futureEvents 只在用户提到未来日期/事件时才输出（如「后天 XX 演唱会」「下周三约会」），把日期换算成 yyyy-MM-dd。没有就留空数组")

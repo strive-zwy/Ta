@@ -9,6 +9,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,10 +31,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SentimentSatisfied
 import androidx.compose.material.icons.filled.Shower
 import androidx.compose.material.icons.filled.Work
@@ -54,22 +57,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.agent.ta.data.local.entity.DailyScheduleEntity
 import com.agent.ta.data.model.AgentState
 import com.agent.ta.data.model.DailySlot
 import com.agent.ta.di.ServiceLocator
-import com.agent.ta.ui.theme.AmbientBackground
-import com.agent.ta.ui.theme.GlassSurface
 import com.agent.ta.ui.theme.TaMotion
+import com.agent.ta.ui.screens.agent.AiBg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.widget.Toast
 import kotlinx.serialization.json.Json
 import java.time.LocalDate
 import java.time.LocalTime
@@ -93,42 +99,75 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
     var slots by remember { mutableStateOf<List<DailySlot>>(emptyList()) }
     var isAdjusted by remember { mutableStateOf(false) }
     var hasSchedule by remember { mutableStateOf<Boolean?>(null) }
+    var regenerating by remember { mutableStateOf(false) }
     val agentConfig by ServiceLocator.agentConfigProvider.config.collectAsState()
     val agentName = agentConfig.agent.name.ifBlank { "小雅" }
     val agentState = com.agent.ta.service.AgentEngine.currentState.value
     var entered by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = LocalContext.current
+
+    // 重新读取当天作息（重新生成后调用）
+    suspend fun reloadToday() = withContext(Dispatchers.IO) {
+        val dao = ServiceLocator.dailyScheduleDao
+        val today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        val entity: DailyScheduleEntity? = dao.getByDate(today)
+        if (entity != null) {
+            val json = Json { ignoreUnknownKeys = true }
+            slots = try {
+                json.decodeFromString<List<DailySlot>>(entity.slotsJson)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            isAdjusted = entity.isAdjusted
+            hasSchedule = true
+        } else {
+            hasSchedule = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         entered = true
-        withContext(Dispatchers.IO) {
-            val dao = ServiceLocator.dailyScheduleDao
-            val today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-            val entity: DailyScheduleEntity? = dao.getByDate(today)
-            if (entity != null) {
-                val json = Json { ignoreUnknownKeys = true }
-                slots = try {
-                    json.decodeFromString<List<DailySlot>>(entity.slotsJson)
-                } catch (e: Exception) {
-                    emptyList()
+        reloadToday()
+    }
+
+    // 重新生成当天作息
+    fun onRegenerate() {
+        if (regenerating) return
+        scope.launch {
+            regenerating = true
+            try {
+                withContext(Dispatchers.IO) {
+                    // 复用 AgentEngine 的重载流程：重新生成作息 + 更新状态机 + 重新调度
+                    com.agent.ta.service.AgentEngine.reloadAfterConfigChanged(context)
                 }
-                isAdjusted = entity.isAdjusted
-                hasSchedule = true
-            } else {
-                hasSchedule = false
+                reloadToday()
+                Toast.makeText(context, "已重新生成今日作息", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "重新生成失败：${e.message}", Toast.LENGTH_SHORT).show()
+            } finally {
+                regenerating = false
             }
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // 氛围背景：随当前 AgentState 联动
-        AmbientBackground(state = agentState, intensity = 0.8f)
-
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AiBg)
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.statusBars)
         ) {
             // ===== 沉浸式顶部栏 =====
-            TopHeader(onBack = onBack, agentName = agentName)
+            TopHeader(
+                onBack = onBack,
+                agentName = agentName,
+                onRegenerate = ::onRegenerate,
+                regenerating = regenerating
+            )
 
             // ===== 主内容 =====
             when (hasSchedule) {
@@ -153,30 +192,63 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
                             }
                         }
 
-                        // 当前时段 Hero 卡
+                        // 当前时段：跨午夜时段用 now >= start || now < end 判定
+                        val nowForCurrent = LocalTime.now()
                         val currentSlot = slots.find { slot ->
-                            val now = LocalTime.now()
                             val slotStart = runCatching { LocalTime.parse(slot.start) }.getOrNull()
                             val slotEnd = runCatching {
                                 if (slot.end == "24:00") LocalTime.MIDNIGHT
                                 else LocalTime.parse(slot.end)
                             }.getOrNull()
                             slotStart != null && slotEnd != null &&
-                                if (slotStart <= slotEnd) now >= slotStart && now < slotEnd
-                                else now >= slotStart || now < slotEnd
+                                if (slotStart <= slotEnd) nowForCurrent >= slotStart && nowForCurrent < slotEnd
+                                else nowForCurrent >= slotStart || nowForCurrent < slotEnd
                         }
-                        if (currentSlot != null) {
+                        // 若当前时间不在任何时段内（空档期，通常是生成时刻已过），
+                        // 取下一个即将开始的时段作为"即将开始"显示
+                        val upcomingSlot = if (currentSlot == null) {
+                            slots.firstOrNull { slot ->
+                                val slotStart = runCatching { LocalTime.parse(slot.start) }.getOrNull()
+                                slotStart != null && slotStart > nowForCurrent
+                            } ?: slots.firstOrNull()
+                        } else null
+                        val heroSlot = currentSlot ?: upcomingSlot
+                        val heroIsUpcoming = currentSlot == null && upcomingSlot != null
+                        if (heroSlot != null) {
                             item {
                                 StaggerItem(index = 0, entered = entered) {
-                                    HeroCurrentSlotCard(slot = currentSlot)
+                                    HeroCurrentSlotCard(slot = heroSlot, isUpcoming = heroIsUpcoming)
                                 }
                             }
                         }
 
                         // 时段列表
                         itemsIndexed(slots) { index, slot ->
+                            // 判断是否已过去（非当前时段 且 结束时间已过）
+                            val now = LocalTime.now()
+                            val slotStart = runCatching { LocalTime.parse(slot.start) }.getOrNull()
+                            val slotEnd = runCatching {
+                                if (slot.end == "24:00") LocalTime.MIDNIGHT
+                                else LocalTime.parse(slot.end)
+                            }.getOrNull()
+                            val isPast = slot != currentSlot && slot != upcomingSlot &&
+                                slotStart != null && slotEnd != null && run {
+                                if (slotStart <= slotEnd) {
+                                    // 普通时段：now >= end 即已过去（排除 24:00=MIDNIGHT 的末段）
+                                    now.isAfter(slotEnd) && slotEnd != LocalTime.MIDNIGHT
+                                } else {
+                                    // 跨午夜时段（如 22:00-07:30）：在作息当天要么进行中要么未来，
+                                    // 永远不会"已过去"（作息周期到 sleep 结束即完成）
+                                    false
+                                }
+                            }
                             StaggerItem(index = index + 1, entered = entered) {
-                                TimelineSlotItem(slot = slot, isCurrent = slot == currentSlot)
+                                TimelineSlotItem(
+                                    slot = slot,
+                                    isCurrent = slot == currentSlot || slot == upcomingSlot,
+                                    isPast = isPast,
+                                    isUpcoming = slot == upcomingSlot
+                                )
                             }
                         }
                     }
@@ -187,10 +259,15 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
 }
 
 /**
- * 沉浸式顶部栏：返回按钮 + displaySmall 标题 + 副标题
+ * 沉浸式顶部栏：返回按钮 + displaySmall 标题 + 副标题 + 重新生成按钮
  */
 @Composable
-private fun TopHeader(onBack: () -> Unit, agentName: String) {
+private fun TopHeader(
+    onBack: () -> Unit,
+    agentName: String,
+    onRegenerate: () -> Unit,
+    regenerating: Boolean
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -204,7 +281,7 @@ private fun TopHeader(onBack: () -> Unit, agentName: String) {
                 tint = MaterialTheme.colorScheme.onSurface
             )
         }
-        Column(modifier = Modifier.padding(start = 4.dp)) {
+        Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
             Text(
                 text = "今日作息",
                 style = MaterialTheme.typography.displaySmall,
@@ -215,6 +292,23 @@ private fun TopHeader(onBack: () -> Unit, agentName: String) {
                 text = "$agentName 的今天 · ${LocalDate.now().format(DateTimeFormatter.ofPattern("MM月dd日"))}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        // 重新生成按钮：旋转动画反馈
+        val rotation by animateFloatAsState(
+            targetValue = if (regenerating) 360f else 0f,
+            animationSpec = if (regenerating) infiniteRepeatable(
+                animation = tween(900, easing = androidx.compose.animation.core.LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ) else tween(0),
+            label = "refreshRot"
+        )
+        IconButton(onClick = onRegenerate, enabled = !regenerating) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "重新生成",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.graphicsLayer { rotationZ = rotation }
             )
         }
     }
@@ -278,11 +372,17 @@ private fun StaggerItem(
  */
 @Composable
 private fun AdjustedBadge() {
-    GlassSurface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(50),
-        tonalElevation = TaMotion.DEFAULT_ELEVATION,
-        alpha = 0.65f
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(
+                elevation = 3.dp,
+                shape = RoundedCornerShape(50),
+                ambientColor = Color(0x141B5E5C),
+                spotColor = Color(0x141B5E5C)
+            )
+            .clip(RoundedCornerShape(50))
+            .background(Color.White)
     ) {
         Row(
             modifier = Modifier
@@ -309,218 +409,156 @@ private fun AdjustedBadge() {
 }
 
 /**
- * Hero 当前时段卡：超大玻璃卡 + 旋转光晕 + 呼吸光圈
+ * Hero 当前时段卡：纯白大卡 + 主题色强调 + 阴影悬浮
+ * - isUpcoming=true 时显示"即将开始"而非"正在进行"
  */
 @Composable
-private fun HeroCurrentSlotCard(slot: DailySlot) {
+private fun HeroCurrentSlotCard(slot: DailySlot, isUpcoming: Boolean = false) {
     val stateLabel = slot.state.toStateLabel()
     val stateIcon = slot.state.toStateIcon()
     val stateColor = slot.state.toStateColor()
 
-    // 外圈 sweepGradient 旋转动画
-    val transition = rememberInfiniteTransition(label = "heroSweep")
-    val rotation by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
+    // LIVE 呼吸点动画（仅进行中显示）
+    val transition = rememberInfiniteTransition(label = "heroBreath")
+    val breathDot by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 8000, easing = androidx.compose.animation.core.LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "heroRotation"
-    )
-    // 中圈 radialGradient 呼吸
-    val breathAlpha by transition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 0.75f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(TaMotion.STATUS_BREATH_DURATION_MS),
+            animation = tween(1200),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "heroBreath"
+        label = "breathDot"
     )
-    // Hero 卡片 spring pulse（微小缩放呼吸）
-    val cardPulse by transition.animateFloat(
+    // 卡片轻微呼吸缩放（仅正在进行时）
+    val cardBreath by transition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.015f,
+        targetValue = if (isUpcoming) 1f else 1.008f,
         animationSpec = infiniteRepeatable(
-            animation = tween(TaMotion.STATUS_BREATH_DURATION_MS),
+            animation = tween(2400),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "cardPulse"
+        label = "cardBreath"
     )
 
+    // 主卡片 — 浅绿色渐变背景 + 主题色阴影增强悬浮感
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .graphicsLayer { scaleX = cardPulse; scaleY = cardPulse },
-        contentAlignment = Alignment.Center
+            .graphicsLayer { scaleX = cardBreath; scaleY = cardBreath }
+            .shadow(
+                elevation = 10.dp,
+                shape = RoundedCornerShape(24.dp),
+                ambientColor = stateColor.copy(alpha = 0.25f),
+                spotColor = stateColor.copy(alpha = 0.25f)
+            )
+            .clip(RoundedCornerShape(24.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        stateColor.copy(alpha = 0.06f),
+                        Color.White
+                    )
+                )
+            )
     ) {
-        // 背景光晕（外层）
-        Box(
+        Column(
             modifier = Modifier
-                .matchParentSize()
-                .graphicsLayer { alpha = breathAlpha * 0.5f }
-                .clip(RoundedCornerShape(32.dp))
-                .background(
-                    brush = Brush.sweepGradient(
-                        colors = listOf(
-                            stateColor.copy(alpha = 0f),
-                            stateColor.copy(alpha = 0.4f),
-                            stateColor.copy(alpha = 0f),
-                            stateColor.copy(alpha = 0.3f),
-                            stateColor.copy(alpha = 0f)
-                        )
-                    )
-                )
-        )
-        // 旋转光晕装饰
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .graphicsLayer {
-                    rotationZ = rotation
-                    alpha = breathAlpha
-                }
-                .clip(RoundedCornerShape(32.dp))
-                .background(
-                    brush = Brush.sweepGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            stateColor.copy(alpha = 0.6f),
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
-
-        // 主玻璃卡
-        GlassSurface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            tonalElevation = TaMotion.HERO_ELEVATION,
-            alpha = 0.85f,
-            borderAlpha = 0.25f
+                .fillMaxWidth()
+                .padding(22.dp)
         ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
-                // 渐变背景层
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 状态图标圆环（放大 + 主题色）
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(stateColor.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = stateIcon,
+                            contentDescription = null,
+                            tint = stateColor,
+                            modifier = Modifier.size(34.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text(
+                            text = if (isUpcoming) "即将开始" else "正在进行",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = stateColor,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = stateLabel,
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = stateColor
+                        )
+                    }
+                }
+                // "现在" 时间标签（主题色实底）
+                val nowStr = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
                 Box(
                     modifier = Modifier
-                        .matchParentSize()
-                        .background(
-                            brush = Brush.linearGradient(
-                                colors = listOf(
-                                    stateColor.copy(alpha = 0.18f),
-                                    Color.Transparent,
-                                    stateColor.copy(alpha = 0.08f)
-                                )
-                            )
-                        )
-                )
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(stateColor)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // 状态图标圆环
-                            Box(
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(CircleShape)
-                                    .background(stateColor.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = stateIcon,
-                                    contentDescription = null,
-                                    tint = stateColor,
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(14.dp))
-                            Column {
-                                Text(
-                                    text = "正在进行",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = stateColor,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = stateLabel,
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                        // "现在" 时间标签
-                        val nowStr = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-                        GlassSurface(
-                            shape = RoundedCornerShape(50),
-                            tonalElevation = 0.dp,
-                            alpha = 0.5f
-                        ) {
-                            Text(
-                                text = nowStr,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = stateColor,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-                    if (slot.activity.isNotBlank()) {
-                        Spacer(Modifier.height(14.dp))
-                        Text(
-                            text = slot.activity,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
-                        )
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${slot.start} → ${slot.end}",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.Medium
-                        )
-                        // 呼吸进行中指示
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val breathDot by transition.animateFloat(
-                                initialValue = 0.3f,
-                                targetValue = 1f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(1200),
-                                    repeatMode = RepeatMode.Reverse
-                                ),
-                                label = "breathDot"
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .graphicsLayer { alpha = breathDot }
-                                    .clip(CircleShape)
-                                    .background(stateColor)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = "LIVE",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = stateColor,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
+                    Text(
+                        text = nowStr,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                }
+            }
+            if (slot.activity.isNotBlank()) {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = slot.activity,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(stateColor.copy(alpha = 0.08f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${slot.start} → ${slot.end}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = stateColor,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .graphicsLayer { alpha = if (isUpcoming) 1f else breathDot }
+                            .clip(CircleShape)
+                            .background(stateColor)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (isUpcoming) "SOON" else "LIVE",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = stateColor,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -528,58 +566,99 @@ private fun HeroCurrentSlotCard(slot: DailySlot) {
 }
 
 /**
- * 时间轴单个时段：左侧圆点节点 + 右侧玻璃质感内容
+ * 时间轴单个时段：左侧圆点节点 + 右侧白色内容卡
+ * - isCurrent: 当前/即将开始时段（放大 + 主题色强调）
+ * - isPast: 已过去时段（灰色半透明 + 对勾标记）
+ * - isUpcoming: 即将开始（非进行中，显示"即将开始"标签）
  */
 @Composable
-private fun TimelineSlotItem(slot: DailySlot, isCurrent: Boolean) {
+private fun TimelineSlotItem(
+    slot: DailySlot,
+    isCurrent: Boolean,
+    isPast: Boolean = false,
+    isUpcoming: Boolean = false
+) {
     val stateLabel = slot.state.toStateLabel()
     val stateIcon = slot.state.toStateIcon()
     val stateColor = slot.state.toStateColor()
 
-    Row(modifier = Modifier.fillMaxWidth()) {
-        // 左侧：时间线 + 圆点节点（spring 呼吸）
+    // 已过去时段整体淡化
+    val pastAlpha = if (isPast) 0.5f else 1f
+
+    // 当前时段整体放大
+    val itemScale by animateFloatAsState(
+        targetValue = if (isCurrent) 1.03f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = 380f
+        ),
+        label = "itemScale"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = itemScale; scaleY = itemScale
+                alpha = pastAlpha
+            }
+    ) {
+        // 左侧：时间线 + 圆点节点
         Column(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // 圆点节点
             val nodeScale by animateFloatAsState(
-                targetValue = if (isCurrent) 1.15f else 1f,
+                targetValue = if (isCurrent) 1.3f else 1f,
                 animationSpec = spring(
                     dampingRatio = Spring.DampingRatioMediumBouncy,
                     stiffness = 380f
                 ),
                 label = "nodeScale"
             )
+            // 节点颜色：已结束灰 / 当前主题色实底 / 未来淡状态色
+            val nodeBgColor = when {
+                isPast -> PastNodeColor
+                isCurrent -> stateColor
+                else -> stateColor.copy(alpha = 0.15f)
+            }
             Box(
                 modifier = Modifier
-                    .size(32.dp)
+                    .size(if (isCurrent) 40.dp else 32.dp)
                     .graphicsLayer { scaleX = nodeScale; scaleY = nodeScale }
                     .clip(CircleShape)
-                    .background(
-                        if (isCurrent) stateColor
-                        else stateColor.copy(alpha = 0.18f)
-                    ),
+                    .background(nodeBgColor),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = stateIcon,
-                    contentDescription = null,
-                    tint = if (isCurrent) MaterialTheme.colorScheme.onPrimary
-                           else stateColor,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (isPast) {
+                    // 已过去：对勾图标
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(if (isCurrent) 22.dp else 18.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = stateIcon,
+                        contentDescription = null,
+                        tint = if (isCurrent) Color.White else stateColor,
+                        modifier = Modifier.size(if (isCurrent) 22.dp else 18.dp)
+                    )
+                }
             }
-            // 垂直连接线
+            // 垂直连接线：已结束灰 / 当前+未来浅状态色
+            val lineStartColor = if (isPast) PastLineColor.copy(alpha = 0.6f)
+                                 else stateColor.copy(alpha = if (isCurrent) 0.6f else 0.3f)
+            val lineEndColor = if (isPast) PastLineColor.copy(alpha = 0.1f)
+                               else stateColor.copy(alpha = 0.05f)
             Box(
                 modifier = Modifier
                     .width(2.dp)
                     .height(56.dp)
                     .background(
                         brush = Brush.verticalGradient(
-                            colors = listOf(
-                                stateColor.copy(alpha = 0.4f),
-                                stateColor.copy(alpha = 0.05f)
-                            )
+                            colors = listOf(lineStartColor, lineEndColor)
                         )
                     )
             )
@@ -587,80 +666,110 @@ private fun TimelineSlotItem(slot: DailySlot, isCurrent: Boolean) {
 
         Spacer(Modifier.width(14.dp))
 
-        // 右侧：玻璃质感内容卡
-        GlassSurface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            tonalElevation = if (isCurrent) TaMotion.HERO_ELEVATION else TaMotion.DEFAULT_ELEVATION,
-            alpha = if (isCurrent) 0.92f else 0.75f,
-            borderAlpha = if (isCurrent) 0.25f else 0.12f
-        ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
-                // 状态色渐变背景
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .background(
-                            brush = Brush.linearGradient(
-                                colors = listOf(
-                                    stateColor.copy(alpha = if (isCurrent) 0.22f else 0.08f),
-                                    Color.Transparent
-                                )
-                            )
-                        )
+        // 右侧：内容卡（已结束浅灰底 / 当前白底+主题色描边 / 未来白底+状态色描边）
+        val cardBg = if (isPast) PastCardBg else Color.White
+        val cardBorder = when {
+            isCurrent -> stateColor.copy(alpha = 0.3f)
+            isPast -> Color.Transparent
+            else -> stateColor.copy(alpha = 0.15f)
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(
+                    elevation = when {
+                        isCurrent -> 8.dp
+                        isPast -> 1.dp
+                        else -> 3.dp
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    ambientColor = when {
+                        isCurrent -> stateColor.copy(alpha = 0.2f)
+                        isPast -> Color(0x08000000)
+                        else -> Color(0x141B5E5C)
+                    },
+                    spotColor = when {
+                        isCurrent -> stateColor.copy(alpha = 0.2f)
+                        isPast -> Color(0x08000000)
+                        else -> Color(0x141B5E5C)
+                    }
                 )
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                .clip(RoundedCornerShape(16.dp))
+                .background(cardBg)
+                .then(
+                    if (cardBorder != Color.Transparent) Modifier.border(1.dp, cardBorder, RoundedCornerShape(16.dp))
+                    else Modifier
+                )
+        ) {
+            Column(modifier = Modifier.padding(if (isCurrent) 18.dp else 14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${slot.start} - ${slot.end}",
+                        style = if (isCurrent) MaterialTheme.typography.titleMedium
+                                else MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = when {
+                            isPast -> PastTextColor                       // 已过去：灰
+                            isCurrent -> stateColor                        // 当前：主题色
+                            else -> MaterialTheme.colorScheme.onSurface    // 未来：标准色
+                        }
+                    )
+                    // 状态标签：按状态自动切换颜色
+                    val labelColors = if (isPast) StateLabelColors(PastLabelBg, PastTextColor)
+                                      else stateLabelColors(slot.state)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = labelColors.bg
                     ) {
                         Text(
-                            text = "${slot.start} - ${slot.end}",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
+                            text = when {
+                                isPast -> "已结束"
+                                isUpcoming -> "即将开始"
+                                else -> stateLabel
+                            },
+                            style = if (isCurrent) MaterialTheme.typography.labelMedium
+                                    else MaterialTheme.typography.labelSmall,
+                            color = labelColors.fg,
+                            fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
                         )
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = stateColor.copy(alpha = if (isCurrent) 0.3f else 0.15f)
-                        ) {
-                            Text(
-                                text = stateLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = stateColor,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
-                            )
-                        }
                     }
-                    if (slot.activity.isNotBlank()) {
-                        Spacer(Modifier.height(6.dp))
+                }
+                if (slot.activity.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = slot.activity,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isPast) PastTextColor
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (isCurrent) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(stateColor.copy(alpha = 0.08f))
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = stateColor,
+                            modifier = Modifier.size(14.dp)
+                        )
                         Text(
-                            text = slot.activity,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = if (isUpcoming) "即将开始" else "正在进行",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = stateColor,
+                            fontWeight = FontWeight.SemiBold
                         )
-                    }
-                    if (isCurrent) {
-                        Spacer(Modifier.height(8.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                tint = stateColor,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Text(
-                                text = "正在进行",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = stateColor,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
                     }
                 }
             }
@@ -735,11 +844,17 @@ private fun EmptyState(agentName: String) {
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
-        GlassSurface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            tonalElevation = TaMotion.DEFAULT_ELEVATION,
-            alpha = 0.75f
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(
+                    elevation = 3.dp,
+                    shape = RoundedCornerShape(28.dp),
+                    ambientColor = Color(0x141B5E5C),
+                    spotColor = Color(0x141B5E5C)
+                )
+                .clip(RoundedCornerShape(28.dp))
+                .background(Color.White)
         ) {
             Column(
                 modifier = Modifier.padding(28.dp),
@@ -792,32 +907,84 @@ private fun EmptyState(agentName: String) {
 // ===== 状态映射扩展 =====
 
 private fun String.toStateLabel(): String = when (this) {
-    "sleep" -> "睡觉"
-    "work" -> "工作"
-    "game" -> "游戏"
-    "bath" -> "洗澡"
+    "normal" -> "正常"
+    "busy" -> "忙碌"
+    "idle" -> "空闲"
+    "unavailable" -> "休息"
+    // 兼容旧状态值
+    "sleep" -> "休息"
+    "work", "game" -> "忙碌"
+    "bath" -> "休息"
     "bored" -> "空闲"
-    "happy" -> "开心"
+    "happy" -> "正常"
     else -> this
 }
 
 private fun String.toStateIcon(): ImageVector = when (this) {
+    "normal" -> Icons.Default.SentimentSatisfied
+    "busy" -> Icons.Default.Work
+    "idle" -> Icons.Default.HourglassEmpty
+    "unavailable" -> Icons.Default.Bedtime
+    // 兼容旧状态值
     "sleep" -> Icons.Default.Bedtime
-    "work" -> Icons.Default.Work
-    "game" -> Icons.Default.SentimentSatisfied
+    "work", "game" -> Icons.Default.Work
     "bath" -> Icons.Default.Shower
     "bored" -> Icons.Default.HourglassEmpty
-    "happy" -> Icons.Default.GraphicEq
+    "happy" -> Icons.Default.SentimentSatisfied
     else -> Icons.Default.WorkHistory
+}
+
+// ===== 状态色板（低饱和莫兰迪风格辅助色系统）=====
+// 保留品牌绿色作为主色，引入辅助色增强状态辨识度
+
+// 已结束灰阶
+private val PastNodeColor = Color(0xFFBFC6CF)       // 节点灰
+private val PastLineColor = Color(0xFFE8ECF1)        // 连线灰
+private val PastTextColor = Color(0xFFA8B1BC)        // 文字灰
+private val PastCardBg = Color(0xFFFAFBFC)           // 卡片浅灰底
+private val PastLabelBg = Color(0xFFF1F3F5)          // 标签浅灰底
+
+// 辅助色（低饱和莫兰迪风格）
+private val ColorIdle = Color(0xFF4FA3E0)            // 空闲 - 天蓝
+private val ColorIdleBg = Color(0xFFE8F4FC)
+private val ColorBusy = Color(0xFF7C5CFF)            // 忙碌 - 柔紫
+private val ColorBusyBg = Color(0xFFF5F2FF)
+private val ColorWork = Color(0xFF5B8CFF)            // 工作 - 蓝
+private val ColorWorkBg = Color(0xFFEEF3FF)
+private val ColorGame = Color(0xFFFF8A3D)            // 娱乐 - 橙
+private val ColorGameBg = Color(0xFFFFF1E8)
+private val ColorUnavailable = Color(0xFF6B7AB5)     // 休息 - 静谧夜蓝
+private val ColorUnavailableBg = Color(0xFFF2F4F8)
+private val ColorHappy = Color(0xFFE8A555)           // 开心 - 橙黄
+private val ColorHappyBg = Color(0xFFFFF6E8)
+
+// 状态标签背景/文字色对（10% 浅色背景 + 对应色文字）
+private data class StateLabelColors(val bg: Color, val fg: Color)
+
+@Composable
+private fun stateLabelColors(state: String): StateLabelColors = when (state) {
+    "normal" -> StateLabelColors(Color(0xFFEAF8F3), MaterialTheme.colorScheme.primary)
+    "idle", "bored" -> StateLabelColors(Color(0xFFE8F4FC), Color(0xFF2A7AB8))
+    "busy" -> StateLabelColors(Color(0xFFF2ECFF), Color(0xFF7158E2))
+    "work" -> StateLabelColors(Color(0xFFE8EFFF), Color(0xFF4A7AD9))
+    "game" -> StateLabelColors(Color(0xFFFFF0E0), Color(0xFFD97706))
+    "unavailable", "sleep", "bath" -> StateLabelColors(Color(0xFFEEF0F5), Color(0xFF5A6B95))
+    "happy" -> StateLabelColors(Color(0xFFFFF6E8), Color(0xFFB8761A))
+    else -> StateLabelColors(Color(0xFFEEF2F4), MaterialTheme.colorScheme.outline)
 }
 
 @Composable
 private fun String.toStateColor(): Color = when (this) {
-    "sleep" -> Color(0xFF6B7AB5)        // 静谧夜蓝
-    "work" -> MaterialTheme.colorScheme.primary
-    "game" -> MaterialTheme.colorScheme.tertiary
-    "bath" -> MaterialTheme.colorScheme.secondary
-    "bored" -> MaterialTheme.colorScheme.outline
-    "happy" -> Color(0xFFE8A555)       // 暖橙
+    "normal" -> MaterialTheme.colorScheme.primary
+    "busy" -> ColorBusy
+    "idle" -> ColorIdle
+    "unavailable" -> ColorUnavailable
+    // 兼容旧状态值
+    "sleep" -> ColorUnavailable
+    "work" -> ColorWork
+    "game" -> ColorGame
+    "bath" -> ColorUnavailable
+    "bored" -> ColorIdle
+    "happy" -> ColorHappy
     else -> MaterialTheme.colorScheme.outline
 }

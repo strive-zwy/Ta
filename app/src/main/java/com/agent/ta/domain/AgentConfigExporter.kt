@@ -66,20 +66,9 @@ class AgentConfigExporter {
                     }
                 }
 
-                // 写入语音样本（v1 单样本 + v2 多样本，去重）
-                if (config.voice.sampleFile.isNotBlank()) {
-                    val file = File(config.voice.sampleFile)
-                    if (file.exists() && file.isAbsolute) {
-                        val relativePath = "voice/${file.name}"
-                        if (writtenFiles.add(relativePath)) {
-                            zos.putNextEntry(ZipEntry(relativePath))
-                            file.inputStream().use { it.copyTo(zos) }
-                            zos.closeEntry()
-                        }
-                    }
-                }
-                config.voice.sampleFiles.forEach { sf ->
-                    val file = File(sf.file)
+                // 写入语音样本（v1 单样本 + v3 情绪样本，去重）
+                config.voice.allSamplePaths().forEach { path ->
+                    val file = File(path)
                     if (file.exists() && file.isAbsolute) {
                         val relativePath = "voice/${file.name}"
                         if (writtenFiles.add(relativePath)) {
@@ -111,32 +100,25 @@ class AgentConfigExporter {
             avatar.copy(file = relativePath)
         }
 
-        val newSampleFiles = config.voice.sampleFiles.map { sf ->
-            val file = File(sf.file)
-            val relativePath = if (file.isAbsolute && file.exists()) {
-                "voice/${file.name}"
-            } else {
-                sf.file
-            }
-            sf.copy(file = relativePath)
-        }
+        // 改写 v1 sampleFile + emotions 里每个情绪的 sampleFile
+        val newSampleFile = config.voice.sampleFile.takeIf { it.isNotBlank() }?.let { path ->
+            val file = File(path)
+            if (file.isAbsolute && file.exists()) "voice/${file.name}" else path
+        } ?: config.voice.sampleFile
 
-        val newSampleFile = if (config.voice.sampleFile.isNotBlank()) {
-            val file = File(config.voice.sampleFile)
-            if (file.isAbsolute && file.exists()) {
-                "voice/${file.name}"
-            } else {
-                config.voice.sampleFile
-            }
-        } else {
-            config.voice.sampleFile
+        val newEmotions = config.voice.emotions.mapValues { (_, emotionCfg) ->
+            val newPath = emotionCfg.sampleFile.takeIf { it.isNotBlank() }?.let { path ->
+                val file = File(path)
+                if (file.isAbsolute && file.exists()) "voice/${file.name}" else path
+            } ?: emotionCfg.sampleFile
+            emotionCfg.copy(sampleFile = newPath)
         }
 
         return config.copy(
             agent = config.agent.copy(avatars = newAvatars),
             voice = config.voice.copy(
                 sampleFile = newSampleFile,
-                sampleFiles = newSampleFiles
+                emotions = newEmotions
             )
         )
     }

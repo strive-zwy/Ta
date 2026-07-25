@@ -69,13 +69,17 @@ data class ScheduleAdjustment(
  *
  * emoji 字段：若 LLM 输出 emoji（如 "😄"），该条作为纯表情消息，不合成语音、不入 text。
  * 与 replyText 互斥：有 emoji 时 replyText 应为空。
+ *
+ * emotion 字段：该条回复的情绪标签（neutral/happy/calm）。
+ * TTS 合成时按此选样本和参数。空字符串或未知值时 fallback 到 neutral。
  */
 @Serializable
 data class ReplyItem(
     val replyText: String = "",
     val action: String = "",
     val directorPrompt: String = "",
-    val emoji: String = ""
+    val emoji: String = "",
+    val emotion: String = ""
 )
 
 @Serializable

@@ -85,7 +85,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.agent.ta.data.local.entity.ChatMessageEntity
 import com.agent.ta.data.model.AgentState
 import com.agent.ta.di.ServiceLocator
-import com.agent.ta.domain.AvatarResolver
 import com.agent.ta.service.AgentEngine
 import com.agent.ta.ui.theme.ReceivedBubbleShape
 import com.agent.ta.ui.theme.SentBubbleShape
@@ -192,7 +191,7 @@ fun ChatScreen(
                 }
 
                 // 正在输入 pill 气泡（消息流尾部）
-                if (isReplying && agentState != AgentState.SLEEP && agentState != AgentState.BATH) {
+                if (isReplying && agentState != AgentState.UNAVAILABLE) {
                     item { TypingBubble() }
                 }
             }
@@ -254,8 +253,6 @@ private fun ContactHeader(
                 // 头像 + 在线绿点（系统绿 #34C759）
                 Box {
                     AgentAvatar(
-                        state = agentState,
-                        replyText = null,
                         modifier = Modifier.size(40.dp),
                         circular = true
                     )
@@ -387,10 +384,7 @@ private fun TypingBubble() {
         verticalAlignment = Alignment.Top
     ) {
         // 左侧 Agent 头像
-        val agentState by AgentEngine.currentState.collectAsState()
         AgentAvatar(
-            state = agentState,
-            replyText = null,
             modifier = Modifier.size(32.dp),
             circular = true
         )
@@ -478,8 +472,6 @@ private fun MessageBubble(
         // Agent 头像（仅 Agent 消息，左侧）
         if (!isUser) {
             AgentAvatar(
-                state = AgentState.fromId(message.state) ?: AgentState.BORED,
-                replyText = message.text,
                 modifier = Modifier.size(32.dp),
                 circular = true
             )
@@ -520,55 +512,42 @@ private fun MessageBubble(
             }
 
             // ===== 气泡 =====
+            // 注：原 Surface 包裹会自带 .clip(shape) 裁掉内部 shadow，故改为 Box + shadow + clip 直接组合
             if (isUser) {
                 // 用户消息：品牌色轻微渐变 #2F8F89 → #3BA39A + 圆角22 + 柔和阴影
-                Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = Color.Transparent,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp
+                Box(
+                    modifier = Modifier
+                        .shadow(
+                            elevation = 10.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            ambientColor = Color(0x402F8F89),
+                            spotColor = Color(0x592F8F89)
+                        )
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(
+                            brush = Brush.linearGradient(
+                                colors = listOf(AiPrimary, AiPrimaryHover)
+                            )
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .shadow(
-                                elevation = 6.dp,
-                                shape = RoundedCornerShape(22.dp),
-                                ambientColor = Color(0x262F8F89),
-                                spotColor = Color(0x262F8F89)
-                            )
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(
-                                brush = Brush.linearGradient(
-                                    colors = listOf(AiPrimary, AiPrimaryHover)
-                                )
-                            )
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                    ) {
-                        MessageContent(message, isUser, isPlaying, onTogglePlay)
-                    }
+                    MessageContent(message, isUser, isPlaying, onTogglePlay)
                 }
             } else {
                 // Agent 消息：白底漂浮卡片 + 柔和阴影 + 圆角24（无描边，靠阴影建立层级）
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = Color.White,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp
+                Box(
+                    modifier = Modifier
+                        .shadow(
+                            elevation = 14.dp,
+                            shape = RoundedCornerShape(24.dp),
+                            ambientColor = Color(0x331E323C),
+                            spotColor = Color(0x4D1E323C)
+                        )
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color.White)
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .shadow(
-                                elevation = 10.dp,
-                                shape = RoundedCornerShape(24.dp),
-                                ambientColor = Color(0x0F1E323C),
-                                spotColor = Color(0x0F1E323C)
-                            )
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color.White)
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                    ) {
-                        MessageContent(message, isUser, isPlaying, onTogglePlay)
-                    }
+                    MessageContent(message, isUser, isPlaying, onTogglePlay)
                 }
             }
 
@@ -632,7 +611,7 @@ private fun MessageContent(message: ChatMessageEntity, isUser: Boolean, isPlayin
                 durationSec = message.audioDurationSec ?: 1,
                 onTogglePlay = onTogglePlay,
                 isUser = isUser,
-                modifier = Modifier.widthIn(min = 200.dp)
+                modifier = Modifier.widthIn(min = 160.dp, max = 220.dp)
             )
         }
         val hasText = !message.text.isNullOrBlank()
@@ -885,18 +864,21 @@ private fun EmojiPickerPanel(
 
 /**
  * Agent 头像
+ *
+ * 微信/QQ 式：所有消息（历史 + 新）统一显示 Agent 的"当前头像"。
+ * 当前头像 = config.agent.avatars 中第一个 file 非空的头像。
+ * Agent 想换头像时，在 Admin 调整 avatars 顺序（把新头像放第一位），
+ * 整个聊天列表会立即统一更新。
  */
 @Composable
 private fun AgentAvatar(
-    state: AgentState,
     modifier: Modifier = Modifier,
-    replyText: String? = null,
     circular: Boolean = false
 ) {
     val config by ServiceLocator.agentConfigProvider.config.collectAsState()
-    val emotionHint = AvatarResolver.inferEmotion(state)
-    val avatarPath = remember(state, config, replyText, emotionHint) {
-        AvatarResolver.resolveAvatarPath(config, state, replyText, emotionHint)
+    // 统一用当前头像（avatars 第一个），不再按消息状态/文本动态匹配
+    val avatarPath = remember(config.agent.avatars) {
+        config.agent.avatars.firstOrNull { it.file.isNotBlank() }?.file
     }
     val bitmap = remember(avatarPath) {
         avatarPath?.let { path ->

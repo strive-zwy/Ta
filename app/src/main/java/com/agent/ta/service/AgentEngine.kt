@@ -8,6 +8,7 @@ import com.agent.ta.di.ServiceLocator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +36,7 @@ object AgentEngine {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val _currentState = MutableStateFlow(AgentState.BORED)
+    private val _currentState = MutableStateFlow(AgentState.IDLE)
     val currentState: StateFlow<AgentState> = _currentState.asStateFlow()
 
     private val stateMachine = StateMachine()
@@ -47,6 +48,8 @@ object AgentEngine {
      */
     fun start(context: Context) {
         Log.d(TAG, "AgentEngine 启动")
+        // 使用 applicationContext 避免单例持有 Activity Context 导致内存泄漏
+        val appContext = context.applicationContext
 
         scope.launch {
             // 0. 从 DB 加载已导入的自定义 Agent 配置（若有），否则用默认
@@ -64,19 +67,19 @@ object AgentEngine {
             _currentState.value = stateMachine.currentState.value
 
             // 3. 注册状态切换调度
-            scheduler = StateScheduler(context)
+            scheduler = StateScheduler(appContext)
             val switches = stateMachine.getUpcomingSwitches(8)
             scheduler?.scheduleNextSwitches(switches)
 
             // 4. 启动无聊主动发起检查
-            boredInitiator = BoredInitiator(context)
+            boredInitiator = BoredInitiator(appContext)
             boredInitiator?.start()
 
             // 5. 处理被杀期间的待回复消息
-            processPendingMessages(context)
+            processPendingMessages(appContext)
 
             // 6. 检查 Onboarding 状态
-            checkOnboarding(context)
+            checkOnboarding(appContext)
         }
     }
 
@@ -91,10 +94,10 @@ object AgentEngine {
         scope.launch {
             processPendingMessages(context)
 
-            // 可主动发起的状态（BORED/HAPPY/WORK/GAME）都触发检查
-            // SLEEP/BATH 不触发
+            // 可主动发起的状态（NORMAL/BUSY/IDLE）都触发检查
+            // UNAVAILABLE 不触发
             when (newState) {
-                AgentState.BORED, AgentState.HAPPY, AgentState.WORK, AgentState.GAME -> {
+                AgentState.NORMAL, AgentState.BUSY, AgentState.IDLE -> {
                     boredInitiator?.onEnterBored()
                 }
                 else -> {}
@@ -128,7 +131,7 @@ object AgentEngine {
         if (pendingMessages.isEmpty()) return
 
         val state = _currentState.value
-        if (state == AgentState.SLEEP || state == AgentState.BATH) {
+        if (state == AgentState.UNAVAILABLE) {
             return
         }
 
@@ -223,5 +226,7 @@ object AgentEngine {
     fun stop(context: Context) {
         scheduler?.cancelAll()
         boredInitiator?.stop()
+        // 取消所有协程，避免资源泄漏
+        scope.coroutineContext.cancelChildren()
     }
 }

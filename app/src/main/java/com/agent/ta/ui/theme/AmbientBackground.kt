@@ -31,12 +31,10 @@ import com.agent.ta.data.model.AgentState
  * - 不是静态颜色，而是流动的氛围
  * - 3-4 个色彩光斑在背景缓慢漂移（用 infiniteTransition）
  * - 颜色随 Agent 当前状态变化：
- *   - SLEEP：深蓝紫调（夜晚）
- *   - WORK：深青绿调（专注）
- *   - GAME：暖橙金调（活跃）
- *   - BATH：浅青蓝调（水汽）
- *   - BORED：中性灰青调（静默）
- *   - HAPPY：暖橙金调（明亮）
+ *   - NORMAL：暖米青绿调（日常）
+ *   - BUSY：深青绿调（专注）
+ *   - IDLE：中性灰青调（闲适）
+ *   - UNAVAILABLE：深蓝紫调（夜晚休息）
  * - 大幅 blur 让光斑变得柔和如雾湖
  * - 兼容 API 24（不依赖 RenderEffect）
  *
@@ -48,7 +46,7 @@ import com.agent.ta.data.model.AgentState
  */
 @Composable
 fun AmbientBackground(
-    state: AgentState = AgentState.BORED,
+    state: AgentState = AgentState.IDLE,
     modifier: Modifier = Modifier,
     intensity: Float = 1f
 ) {
@@ -207,47 +205,33 @@ data class MistyLakePalette(
  */
 private fun AgentState.toPalette(): MistyLakePalette {
     return when (this) {
-        AgentState.SLEEP -> MistyLakePalette(
-            baseColor = Color(0xFF0E1820),          // 深夜湖
-            blob1Color = Color(0xFF1B3A5C),          // 深蓝月光
-            blob2Color = Color(0xFF2A1B5C),          // 深紫夜
-            blob3Color = Color(0xFF1B5E5C),          // 雾湖青
-            vignetteColor = Color(0xFF000000)
+        AgentState.NORMAL -> MistyLakePalette(
+            baseColor = Color(0xFFFAF8F5),           // 米杏（日常）
+            blob1Color = Color(0xFF1B5E5C),          // 雾湖青
+            blob2Color = Color(0xFFB5834B),          // 暖米橙
+            blob3Color = Color(0xFF8AB8B5),          // 浅青绿
+            vignetteColor = Color(0xFF1B5E5C)
         )
-        AgentState.WORK -> MistyLakePalette(
-            baseColor = Color(0xFFF5F2EC),           // 暖米杏
+        AgentState.BUSY -> MistyLakePalette(
+            baseColor = Color(0xFFF5F2EC),           // 暖米杏（专注）
             blob1Color = Color(0xFF1B5E5C),          // 雾湖青（专注）
             blob2Color = Color(0xFFB5834B),          // 暖米橙
             blob3Color = Color(0xFF8AB8B5),          // 浅青绿
             vignetteColor = Color(0xFF1B5E5C)
         )
-        AgentState.GAME -> MistyLakePalette(
-            baseColor = Color(0xFFFAF1E6),           // 暖米
-            blob1Color = Color(0xFFE8A555),          // 暖橙
-            blob2Color = Color(0xFFD67B5C),          // 红橙
-            blob3Color = Color(0xFFB5834B),          // 暖金
-            vignetteColor = Color(0xFFB5834B)
-        )
-        AgentState.BATH -> MistyLakePalette(
-            baseColor = Color(0xFFEFF3F4),           // 水汽白
-            blob1Color = Color(0xFFA8D5D2),          // 浅青绿
-            blob2Color = Color(0xFFC7D8DC),          // 水雾蓝
-            blob3Color = Color(0xFF1B5E5C),          // 雾湖青
-            vignetteColor = Color(0xFF1B5E5C)
-        )
-        AgentState.BORED -> MistyLakePalette(
-            baseColor = Color(0xFFFAF8F5),           // 米杏
-            blob1Color = Color(0xFF1B5E5C),          // 雾湖青
-            blob2Color = Color(0xFFB5834B),          // 暖米橙
+        AgentState.IDLE -> MistyLakePalette(
+            baseColor = Color(0xFFFAF8F5),           // 米杏（闲适）
+            blob1Color = Color(0xFFE8A555),          // 暖橙（轻松）
+            blob2Color = Color(0xFF1B5E5C),          // 雾湖青
             blob3Color = Color(0xFFE7E3DA),          // 雾米色
             vignetteColor = Color(0xFF1B5E5C)
         )
-        AgentState.HAPPY -> MistyLakePalette(
-            baseColor = Color(0xFFFDF6EC),           // 暖亮米
-            blob1Color = Color(0xFFE8A555),          // 暖橙（开心）
-            blob2Color = Color(0xFF1B5E5C),          // 雾湖青
-            blob3Color = Color(0xFFB5834B),          // 暖金
-            vignetteColor = Color(0xFFB5834B)
+        AgentState.UNAVAILABLE -> MistyLakePalette(
+            baseColor = Color(0xFF0E1820),           // 深夜湖（休息）
+            blob1Color = Color(0xFF1B3A5C),          // 深蓝月光
+            blob2Color = Color(0xFF2A1B5C),          // 深紫夜
+            blob3Color = Color(0xFF1B5E5C),          // 雾湖青
+            vignetteColor = Color(0xFF000000)
         )
     }
 }

@@ -33,7 +33,7 @@ class StateMachine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val stateLogDao: StateLogDao = ServiceLocator.stateLogDao
 
-    private val _currentState = MutableStateFlow(AgentState.BORED)
+    private val _currentState = MutableStateFlow(AgentState.IDLE)
     val currentState: StateFlow<AgentState> = _currentState
 
     // 当天作息 slots（由 DailyPlanner 生成，可被 ScheduleAdjuster 更新）
@@ -82,7 +82,7 @@ class StateMachine {
      * 根据当前时间计算应该处于的状态
      */
     private fun computeCurrentState(): AgentState {
-        return computeCurrentSlot()?.let { AgentState.fromId(it.state) } ?: AgentState.BORED
+        return computeCurrentSlot()?.let { AgentState.fromId(it.state) } ?: AgentState.IDLE
     }
 
     /**
@@ -147,11 +147,9 @@ class StateMachine {
 
     /**
      * 当前状态是否可以回复用户消息
+     * UNAVAILABLE（睡觉/洗澡等）不可回复，走待回复队列
      */
-    fun canReplyNow(): Boolean = when (_currentState.value) {
-        AgentState.SLEEP, AgentState.BATH -> false
-        AgentState.WORK, AgentState.GAME, AgentState.BORED, AgentState.HAPPY -> true
-    }
+    fun canReplyNow(): Boolean = _currentState.value != AgentState.UNAVAILABLE
 
     /**
      * 获取当前状态的回复延迟（秒）
@@ -164,11 +162,10 @@ class StateMachine {
             is com.agent.ta.data.model.ReplyDelay.Range -> (delay.min..delay.max).random().toLong()
             is com.agent.ta.data.model.ReplyDelay.Defer -> null
             null -> when (state) {
-                AgentState.WORK -> (60..300).random().toLong()
-                AgentState.GAME -> (120..300).random().toLong()
-                AgentState.BORED -> (1..10).random().toLong()
-                AgentState.HAPPY -> (1..10).random().toLong()  // 开心状态快速回复
-                AgentState.SLEEP, AgentState.BATH -> null
+                AgentState.NORMAL -> (3..8).random().toLong()
+                AgentState.BUSY -> (30..120).random().toLong()
+                AgentState.IDLE -> (1..3).random().toLong()
+                AgentState.UNAVAILABLE -> null
             }
         }
     }
@@ -203,7 +200,7 @@ class StateMachine {
             switchTime = switchTime.plusDays(1)
         }
 
-        val nextState = AgentState.fromId(nextSlot.state) ?: AgentState.BORED
+        val nextState = AgentState.fromId(nextSlot.state) ?: AgentState.IDLE
         return Pair(switchTime.toInstant().toEpochMilli(), nextState)
     }
 
@@ -240,7 +237,7 @@ class StateMachine {
             if (!switchTime.isAfter(checkTime)) {
                 switchTime = switchTime.plusDays(1)
             }
-            val nextState = AgentState.fromId(nextSlot.state) ?: AgentState.BORED
+            val nextState = AgentState.fromId(nextSlot.state) ?: AgentState.IDLE
             result.add(Pair(switchTime.toInstant().toEpochMilli(), nextState))
             checkTime = switchTime
         }

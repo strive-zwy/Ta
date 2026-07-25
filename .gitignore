@@ -15,4 +15,7 @@ local.properties
 keystore.properties
 # 日志
 *.log
+# 临时调试脚本
+check_schedule.py
+del_schedule.py
 

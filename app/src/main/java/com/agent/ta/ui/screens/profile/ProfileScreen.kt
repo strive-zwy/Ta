@@ -65,7 +65,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.ta.data.model.AgentState
 import com.agent.ta.di.ServiceLocator
-import com.agent.ta.domain.AvatarResolver
 import com.agent.ta.service.AgentEngine
 import com.agent.ta.ui.theme.VibePrimary
 import com.agent.ta.ui.theme.VibePrimaryDeep
@@ -211,7 +210,6 @@ fun ProfileScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         AgentAvatar(
-                            state = agentState,
                             modifier = Modifier
                                 .size(96.dp)
                                 .clip(CircleShape)
@@ -365,7 +363,7 @@ fun ProfileScreen(
                         )
                     }
 
-                    // 分组 D：危险操作 — 极浅红底（red-50）+ 深红标题 + 黑色详情 + 红色图标
+                    // 分组 D：危险操作 — 极浅红底（red-50）+ 深红标题 + 灰色详情 + 红色图标
                     MenuGroup(title = "危险操作", titleColor = VibeStateError, danger = true) {
                         Column {
                             MenuRow(
@@ -376,7 +374,6 @@ fun ProfileScreen(
                                 iconBgColor = Color(0xFFFECACA),
                                 danger = true,
                                 titleColor = Color(0xFFB91C1C),
-                                subtitleColor = Color.Black,
                                 onClick = { showResetChatDialog = true }
                             )
                             HorizontalDivider(
@@ -391,7 +388,6 @@ fun ProfileScreen(
                                 iconBgColor = Color(0xFFFECACA),
                                 danger = true,
                                 titleColor = Color(0xFFB91C1C),
-                                subtitleColor = Color.Black,
                                 onClick = { showResetMemoryDialog = true }
                             )
                         }
@@ -700,13 +696,14 @@ private fun MenuRow(
 
 /**
  * Agent 头像（圆形）
+ *
+ * 统一用当前头像（avatars 第一个），与聊天页保持一致。
  */
 @Composable
-private fun AgentAvatar(state: AgentState, modifier: Modifier = Modifier) {
+private fun AgentAvatar(modifier: Modifier = Modifier) {
     val config by ServiceLocator.agentConfigProvider.config.collectAsState()
-    val emotionHint = AvatarResolver.inferEmotion(state)
-    val avatarPath = remember(state, config, emotionHint) {
-        AvatarResolver.resolveAvatarPath(config, state, null, emotionHint)
+    val avatarPath = remember(config.agent.avatars) {
+        config.agent.avatars.firstOrNull { it.file.isNotBlank() }?.file
     }
     val bitmap = remember(avatarPath) {
         avatarPath?.let { path ->

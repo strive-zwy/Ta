@@ -60,27 +60,17 @@ class ScheduleAdjuster {
      * @return 调整原因（空字符串表示不调整）
      */
     fun shouldAdjust(currentState: com.agent.ta.data.model.AgentState, userMessageContent: String): String {
-        // sleep 状态下用户发消息 → Agent 可能决定"起来聊会天"
-        if (currentState == com.agent.ta.data.model.AgentState.SLEEP) {
-            val content = userMessageContent.lowercase()
-            // 用户表达想聊天 / 有急事 / 叫醒
+        val content = userMessageContent.lowercase()
+
+        // 无法回复状态下用户发消息 → Agent 可能决定"起来聊会天"
+        if (currentState == com.agent.ta.data.model.AgentState.UNAVAILABLE) {
             if (containsAny(content, listOf("聊", "陪", "想", "睡不着", "急", "帮忙", "在吗", "睡了吗"))) {
-                return "用户想聊天，我决定从睡眠状态起来陪一会儿"
+                return "用户想聊天，我决定从休息状态起来陪一会儿"
             }
         }
 
-        // bath 状态下用户发消息 → Agent 可能决定"快点洗完"
-        if (currentState == com.agent.ta.data.model.AgentState.BATH) {
-            val content = userMessageContent.lowercase()
-            if (containsAny(content, listOf("聊", "陪", "想", "急", "帮忙", "在吗"))) {
-                return "用户找我有事，我决定快点洗完澡出来回复"
-            }
-        }
-
-        // work/game 状态下，用户表达想让 Agent 陪
-        if (currentState == com.agent.ta.data.model.AgentState.WORK ||
-            currentState == com.agent.ta.data.model.AgentState.GAME) {
-            val content = userMessageContent.lowercase()
+        // 忙碌状态下，用户表达想让 Agent 陪
+        if (currentState == com.agent.ta.data.model.AgentState.BUSY) {
             if (containsAny(content, listOf("陪我", "别工作", "别玩", "过来", "想聊"))) {
                 return "用户希望我陪他，我决定放下手头的事"
             }

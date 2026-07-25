@@ -21,7 +21,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * 根据当前 Agent 的语音配置自动选择三种模型之一：
  *
  * 1. **mimo-v2.5-tts-voiceclone**（音色复刻）：
- *    - 触发条件：voiceConfig.sampleFiles 非空 或 voiceConfig.sampleFile 非空
+ *    - 触发条件：voiceConfig.emotions[*].sampleFile 非空 或 voiceConfig.sampleFile 非空
  *    - 调用方式：audio.voice = base64 编码的样本音频（DataURL 格式）
  *    - 适用场景：用户上传了参考音频样本
  *
@@ -47,15 +47,23 @@ class TtsClient {
         encodeDefaults = true
     }
 
+    // 复用 OkHttpClient 实例，避免每次调用都创建新的连接池和线程池
+    private val okHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
+
     /**
      * 合成语音
      *
      * @param text 要合成的文本
      * @param directorPrompt 导演模式指令（语速/情绪/风格等）
-     * @param voiceSamplePath 默认样本路径（v1 兼容，优先级低于 config.sampleFiles）
-     * @param config VoiceConfig（用于读取 sampleFiles / voiceDescription / voiceParams）
-     * @param emotionHint 情绪提示（neutral/happy/sad/angry/excited/soft/serious），
-     *                    用于从 sampleFiles 中选择最匹配的样本
+     * @param voiceSamplePath 默认样本路径（v1 兼容，优先级低于 config.emotions[emotion]）
+     * @param config VoiceConfig（用于读取 emotions[emotion] / voiceDescription）
+     * @param emotionHint 情绪标签（neutral/happy/calm），用于选择对应情绪的样本和参数
      * @return 音频文件字节数组，失败返回 null
      */
     suspend fun synthesize(
@@ -66,14 +74,14 @@ class TtsClient {
         emotionHint: String? = null
     ): ByteArray? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try {
-            // 1. 解析样本路径（优先 v2 sampleFiles，其次 v1 sampleFile，最后调用方传入）
+            // 1. 解析样本路径（优先 config.emotions[emotion]，其次 v1 sampleFile，最后调用方传入）
             val resolvedSample = resolveSamplePath(config, voiceSamplePath, emotionHint)
             // 2. 根据样本和音色描述选择模型
             val mode = selectMode(resolvedSample, config)
             Log.d(TAG, "TTS 模式：$mode，samplePath=$resolvedSample，voiceDescription=${config?.voiceDescription?.take(30)}")
 
-            // 3. 注入 voice_params 到 directorPrompt
-            val finalDirectorPrompt = buildDirectorWithParams(directorPrompt, config)
+            // 3. 注入对应情绪的 voice_params 到 directorPrompt
+            val finalDirectorPrompt = buildDirectorWithParams(directorPrompt, config, emotionHint)
 
             // 4. 根据模式构造请求
             val request = when (mode) {
@@ -83,11 +91,7 @@ class TtsClient {
             }
             val requestJson = json.encodeToString(VoiceCloneRequest.serializer(), request)
 
-            // 5. 发送请求
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .build()
+            // 5. 发送请求（复用 OkHttpClient 实例）
             val body = requestJson.toRequestBody("application/json; charset=utf-8".toMediaType())
             val url = prefs.ttsBaseUrl.trimEnd('/') + "/chat/completions"
             val req = okhttp3.Request.Builder()
@@ -97,7 +101,7 @@ class TtsClient {
                 .post(body)
                 .build()
 
-            client.newCall(req).execute().use { resp ->
+            okHttpClient.newCall(req).execute().use { resp ->
                 val rawBody = resp.body?.string() ?: ""
                 if (!resp.isSuccessful) {
                     Log.e(TAG, "TTS HTTP ${resp.code}（$mode）：${rawBody.take(500)}")
@@ -212,50 +216,33 @@ class TtsClient {
     }
 
     /**
-     * 解析样本路径
-     *
-     * 优先级：
-     * 1. v2 多情绪样本：按 emotionHint 匹配 → 未匹配到回退 primary → 都没有则取第一个
-     * 2. v1 单样本 sampleFile
-     * 3. 调用方传入的 voiceSamplePath 兜底
+     * 解析样本路径：
+     * 1. 优先用 config.emotions[emotionHint] 的样本（fallback 到 neutral）
+     * 2. 回退到调用方传入的 voiceSamplePath
      */
     private fun resolveSamplePath(
         config: VoiceConfig?,
         fallbackPath: String?,
         emotionHint: String?
     ): String? {
-        if (config != null && config.sampleFiles.isNotEmpty()) {
-            // 1. 按 emotionHint 匹配
-            val matched = emotionHint?.takeIf { it.isNotBlank() }?.let { hint ->
-                config.sampleFiles.firstOrNull { it.emotion.equals(hint, ignoreCase = true) }
-            }
-            if (matched != null) return matched.file
-
-            // 2. primary 样本
-            val primary = config.sampleFiles.firstOrNull { it.primary }
-            if (primary != null) return primary.file
-
-            // 3. 第一个样本
-            return config.sampleFiles.first().file
+        if (config != null) {
+            // 用 VoiceConfig.sampleFileFor 处理 fallback 链：
+            // emotion → neutral → v1 sampleFile
+            return config.sampleFileFor(emotionHint)
         }
-
-        // 回退到 v1 sampleFile
-        val v1Path = config?.sampleFile?.takeIf { it.isNotBlank() }
-        if (!v1Path.isNullOrBlank()) return v1Path
-
-        // 最后兜底：调用方传入的路径
         return fallbackPath?.takeIf { it.isNotBlank() }
     }
 
     /**
-     * 把 voice_params 注入到 directorPrompt（作为对 TTS 模型的提示）
+     * 把对应情绪的 voiceParams 注入到 directorPrompt（作为对 TTS 模型的提示）
      */
     private fun buildDirectorWithParams(
         baseDirectorPrompt: String,
-        config: VoiceConfig?
+        config: VoiceConfig?,
+        emotionHint: String?
     ): String {
         if (config == null) return baseDirectorPrompt
-        val params = config.voiceParams
+        val params = config.voiceParamsFor(emotionHint)
         if (params.isEmpty() && config.voiceDescription.isBlank()) return baseDirectorPrompt
 
         // 音色设计模式不需要把 voiceDescription 重复注入（它已经是 user message 主体）
@@ -318,9 +305,8 @@ class TtsClient {
 
     private suspend fun downloadAudio(url: String): ByteArray? {
         return try {
-            val client = okhttp3.OkHttpClient()
             val request = okhttp3.Request.Builder().url(url).build()
-            client.newCall(request).execute().use { response ->
+            okHttpClient.newCall(request).execute().use { response ->
                 response.body?.bytes()
             }
         } catch (e: Exception) {
@@ -364,7 +350,7 @@ class TtsClient {
         val config = ServiceLocator.agentConfigProvider.get().voice
         val resolvedSample = resolveSamplePath(config, voiceSamplePath, null)
         val mode = selectMode(resolvedSample, config)
-        val finalDirectorPrompt = buildDirectorWithParams(directorPrompt, config)
+        val finalDirectorPrompt = buildDirectorWithParams(directorPrompt, config, null)
 
         val request = when (mode) {
             TtsMode.VOICECLONE -> {
@@ -395,10 +381,6 @@ class TtsClient {
         Log.d(TAG, "诊断请求体（$mode）：${requestJson.take(500)}...")
 
         return@withContext try {
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .build()
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val body = requestJson.toRequestBody(mediaType)
             val url = baseUrl.trimEnd('/') + "/chat/completions"
@@ -408,7 +390,7 @@ class TtsClient {
                 .addHeader("Content-Type", "application/json")
                 .post(body)
                 .build()
-            client.newCall(req).execute().use { resp ->
+            okHttpClient.newCall(req).execute().use { resp ->
                 val code = resp.code
                 val rawBody = resp.body?.string() ?: ""
                 val preview = rawBody.take(2000)

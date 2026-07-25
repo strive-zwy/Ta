@@ -258,13 +258,13 @@ private fun PlayButton(
 ) {
     Box(
         modifier = Modifier
-            .size(48.dp)
+            .size(34.dp)
             .scale(scale)
             .shadow(
-                elevation = 4.dp,
+                elevation = 6.dp,
                 shape = CircleShape,
-                ambientColor = Color(0x142F8F89),
-                spotColor = Color(0x142F8F89)
+                ambientColor = Color(0x292F8F89),
+                spotColor = Color(0x292F8F89)
             )
             .clip(CircleShape)
             .background(
@@ -281,7 +281,7 @@ private fun PlayButton(
             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
             contentDescription = if (isPlaying) "暂停" else "播放",
             tint = Color.White,
-            modifier = Modifier.size(24.dp)
+            modifier = Modifier.size(18.dp)
         )
     }
 }
@@ -350,8 +350,8 @@ private fun WaveIndicator(isPlaying: Boolean, isUser: Boolean) {
 private fun WaveBar(heightFraction: Float, color: Color) {
     Box(
         modifier = Modifier
-            .width(3.dp)
-            .height((24 * heightFraction).dp)
+            .width(2.5.dp)
+            .height((14 * heightFraction).dp)
             .clip(RoundedCornerShape(2.dp))
             .background(color.copy(alpha = 0.85f))
     )

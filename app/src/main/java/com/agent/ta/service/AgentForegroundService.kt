@@ -70,12 +70,10 @@ class AgentForegroundService : Service() {
         scope.launch {
             AgentEngine.currentState.collect { state ->
                 val text = when (state) {
-                    AgentState.SLEEP -> "$agentName 正在睡觉..."
-                    AgentState.WORK -> "$agentName 正在工作中..."
-                    AgentState.GAME -> "$agentName 正在打游戏..."
-                    AgentState.BATH -> "$agentName 正在洗澡..."
-                    AgentState.BORED -> "$agentName 正在无聊中..."
-                    AgentState.HAPPY -> "$agentName 心情不错..."
+                    AgentState.NORMAL -> "$agentName 在线..."
+                    AgentState.BUSY -> "$agentName 正在忙碌..."
+                    AgentState.IDLE -> "$agentName 正在空闲..."
+                    AgentState.UNAVAILABLE -> "$agentName 暂时无法回复..."
                 }
                 val notification = notificationHelper.buildForegroundNotification(text)
                 val manager = getSystemService(NotificationManager::class.java)

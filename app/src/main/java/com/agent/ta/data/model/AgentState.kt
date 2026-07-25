@@ -3,30 +3,34 @@ package com.agent.ta.data.model
 /**
  * Agent 状态枚举
  *
- * 与 Admin 端 avatar.Mood / behavior.ValidStates 对齐：
- * - default: 兜底状态（Admin v2 新增，App 端映射为 BORED 行为）
- * - happy: 开心（Admin v2 新增，App 端按 GAME 处理回复延迟和主动发起）
+ * 按能否回复 + 回复积极性分为 4 种状态：
+ * - NORMAL：日常状态，可回复，正常延迟
+ * - BUSY：忙碌状态，可回复但慢，长延迟
+ * - IDLE：空闲状态，可回复且快，短延迟，更易主动发起
+ * - UNAVAILABLE：无法回复（睡觉/洗澡等），走待回复队列
  *
- * 注意：App 端不直接使用 DEFAULT/HAPPY 作为状态机状态，
- * 但 AgentConfig.avatars 的 mood 字段可能取这些值，
- * AvatarResolver 会把 "default" 映射为兜底头像。
+ * 情绪（neutral/happy/calm）由 LLM 根据上下文在每条回复中自主判断，
+ * 与状态解耦——状态控制行为逻辑，情绪控制语音表现。
  */
 enum class AgentState(val id: String, val displayName: String) {
-    SLEEP("sleep", "睡觉"),
-    WORK("work", "工作"),
-    GAME("game", "游戏"),
-    BATH("bath", "洗澡"),
-    BORED("bored", "无聊"),
-    HAPPY("happy", "开心");
+    NORMAL("normal", "正常"),
+    BUSY("busy", "忙碌"),
+    IDLE("idle", "空闲"),
+    UNAVAILABLE("unavailable", "无法回复");
 
     companion object {
         /**
-         * 从字符串 id 解析状态
-         * - "default" 或空字符串回退为 BORED（兜底）
-         * - 其他值精确匹配
+         * 从字符串 id 解析状态，兼容旧状态值映射：
+         * - default / "" / bored → IDLE
+         * - happy / neutral → NORMAL
+         * - work / game → BUSY
+         * - sleep / bath → UNAVAILABLE
          */
         fun fromId(id: String): AgentState? = when (id.lowercase().trim()) {
-            "default", "" -> BORED
+            "default", "", "bored" -> IDLE
+            "happy", "neutral" -> NORMAL
+            "work", "game" -> BUSY
+            "sleep", "bath" -> UNAVAILABLE
             else -> entries.find { it.id == id.lowercase().trim() }
         }
     }
@@ -57,4 +61,3 @@ enum class MessageStatus(val id: String) {
         fun fromId(id: String): MessageStatus? = entries.find { it.id == id }
     }
 }
-

@@ -299,19 +299,21 @@ fun AgentConfigScreen(
                 .padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 导入配置 — 主操作：青绿色填充 + 白字
+            // 导入配置 — 主操作：柔和蓝渐变填充 + 白字
+            val importBlue = Color(0xFF5B8DEF)
+            val importBlueDeep = Color(0xFF3B7EA1)
             Row(
                 modifier = Modifier
                     .weight(1f)
                     .shadow(
                         elevation = 3.dp,
                         shape = RoundedCornerShape(16.dp),
-                        ambientColor = AiPrimary.copy(alpha = 0.3f),
-                        spotColor = AiPrimary.copy(alpha = 0.3f)
+                        ambientColor = importBlue.copy(alpha = 0.3f),
+                        spotColor = importBlue.copy(alpha = 0.3f)
                     )
                     .clip(RoundedCornerShape(16.dp))
                     .background(
-                        Brush.linearGradient(listOf(AiPrimary, AiPrimaryDeep))
+                        Brush.linearGradient(listOf(importBlue, importBlueDeep))
                     )
                     .clickable(enabled = !importing && !exporting) {
                         importLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
@@ -334,13 +336,14 @@ fun AgentConfigScreen(
                     color = Color.White
                 )
             }
-            // 导出配置 — 次操作：白底 + 品牌色描边 + 品牌色字
+            // 导出配置 — 次操作：白底 + 柔和紫描边 + 柔和紫字
+            val exportPurple = Color(0xFF9B8AC4)
             Row(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(16.dp))
                     .background(AiCard)
-                    .border(BorderStroke(1.5.dp, AiPrimary.copy(alpha = 0.4f)), RoundedCornerShape(16.dp))
+                    .border(BorderStroke(1.5.dp, exportPurple.copy(alpha = 0.5f)), RoundedCornerShape(16.dp))
                     .clickable(enabled = !importing && !exporting) {
                         exportLauncher.launch("agent_${agent.name.ifBlank { "agent" }}.zip")
                     }
@@ -351,7 +354,7 @@ fun AgentConfigScreen(
                 Icon(
                     imageVector = Icons.Default.Download,
                     contentDescription = null,
-                    tint = AiPrimary,
+                    tint = exportPurple,
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
@@ -359,7 +362,7 @@ fun AgentConfigScreen(
                     text = "导出配置",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = AiPrimary
+                    color = exportPurple
                 )
             }
         }

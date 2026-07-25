@@ -140,41 +140,43 @@ class AgentConfigImporter(private val context: Context) {
             avatar.copy(file = localFile?.absolutePath ?: avatar.file)
         }
 
-        // 音频样本：
-        // - v1 单样本：sampleFile 为空时允许通过（默认无样本，运行时降级系统 TTS）
-        // - v2 多样本：sampleFiles 列表，校验每条文件是否存在，并把路径改写为本地绝对路径
+        // 音频样本：改写 v1 sampleFile + emotions 里每个情绪的 sampleFile
+        // - v1 sampleFile 允许为空（运行时降级系统 TTS）
+        // - emotions 里每个情绪的 sampleFile 允许为空（fallback 到 neutral）
         val newVoice = config.voice.let { v ->
-            // 改写多样本列表
-            val newSampleFiles = v.sampleFiles.mapNotNull { sf ->
-                val localFile = resolveAndCheck(baseDir, sf.file, extractedFiles)
-                if (localFile == null) {
-                    Log.w(TAG, "voice.sample_files 中文件未找到：${sf.file}，跳过该样本")
-                    null
-                } else {
-                    sf.copy(file = localFile.absolutePath)
-                }
-            }
-            // 改写 v1 兼容字段 sampleFile
+            // 改写 v1 sampleFile
             val newSampleFile = if (v.sampleFile.isBlank()) {
                 ""
             } else {
                 val localFile = resolveAndCheck(baseDir, v.sampleFile, extractedFiles)
                 if (localFile == null) {
-                    // v2 兼容：旧 sampleFile 找不到时，尝试用 sampleFiles 中的主样本兜底
-                    val primary = newSampleFiles.firstOrNull { it.primary }
-                    if (primary != null) {
-                        Log.w(TAG, "voice.sample_file 不存在，用 sample_files 中的 primary 兜底：${primary.file}")
-                        primary.file
+                    // v1 sampleFile 不存在时，尝试用 emotions[neutral] 的样本兜底
+                    val neutralSample = v.emotions[com.agent.ta.data.model.VoiceEmotionConfig.NEUTRAL]?.sampleFile
+                    val neutralLocal = neutralSample?.let { resolveAndCheck(baseDir, it, extractedFiles) }
+                    if (neutralLocal != null) {
+                        Log.w(TAG, "voice.sample_file 不存在，用 emotions[neutral] 兜底：${neutralLocal.absolutePath}")
+                        neutralLocal.absolutePath
                     } else {
-                        throw IllegalArgumentException("voice.sample_file 在配置包中不存在：${v.sampleFile}")
+                        // 都没有，允许通过（neutral 样本可在 Admin UI 后续配置）
+                        Log.w(TAG, "voice.sample_file 不存在且无 neutral 样本兜底：${v.sampleFile}")
+                        ""
                     }
                 } else {
                     localFile.absolutePath
                 }
             }
+
+            // 改写 emotions 里每个情绪的 sampleFile
+            val newEmotions = v.emotions.mapValues { (_, emotionCfg) ->
+                val newPath = emotionCfg.sampleFile.takeIf { it.isNotBlank() }?.let { path ->
+                    resolveAndCheck(baseDir, path, extractedFiles)?.absolutePath ?: path
+                } ?: emotionCfg.sampleFile
+                emotionCfg.copy(sampleFile = newPath)
+            }
+
             v.copy(
                 sampleFile = newSampleFile,
-                sampleFiles = newSampleFiles
+                emotions = newEmotions
             )
         }
 

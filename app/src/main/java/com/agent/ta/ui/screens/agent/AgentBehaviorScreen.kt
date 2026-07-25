@@ -1,13 +1,23 @@
 package com.agent.ta.ui.screens.agent
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -17,817 +27,813 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.RangeSlider
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.ta.data.model.BehaviorConfig
 import com.agent.ta.data.model.EmojiBehavior
 import com.agent.ta.data.model.ReplyDelay
 import com.agent.ta.data.model.StateInitiate
-import com.agent.ta.data.model.StateInitiateCandidate
-import com.agent.ta.data.model.TimeWindow
 import com.agent.ta.di.ServiceLocator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/**
- * 状态码 → 中文名映射（与设计稿 chat-agent-behavior.html 一致）
- * key 与 AgentState.id 对齐（小写），与配置数据一致
- * 顺序：开心/无聊/工作/游戏/睡觉/洗澡
- */
+// ===== 行为配置页面设计色板 =====
+// 复用 AgentConfigComponents 中的共享 Ai* 色板，保持与 Agent 配置页面一致
+// 状态色仅作为局部点缀（Badge / 图标 / Slider / Switch）
+private val StateColorNormal = AiPrimary              // 正常 - 青绿（主色）
+private val StateColorBusy = Color(0xFF7B6EF6)        // 忙碌 - 紫
+private val StateColorIdle = Color(0xFF4FA3E0)        // 空闲 - 天蓝
+
+private fun stateColor(stateKey: String): Color = when (stateKey) {
+    "normal" -> StateColorNormal
+    "busy" -> StateColorBusy
+    "idle" -> StateColorIdle
+    else -> AiPrimary
+}
+
 private val STATE_LABELS: LinkedHashMap<String, String> = linkedMapOf(
-    "happy" to "开心",
-    "bored" to "无聊",
-    "work" to "工作",
-    "game" to "游戏",
-    "sleep" to "睡觉",
-    "bath" to "洗澡"
+    "normal" to "正常",
+    "busy" to "忙碌",
+    "idle" to "空闲",
+    "unavailable" to "无法回复"
 )
 
+private fun stateSubtitle(stateKey: String): String = when (stateKey) {
+    "normal" -> "可回复 · 标准积极性"
+    "busy" -> "可回复 · 慢 / 简短"
+    "idle" -> "可回复 · 快 / 主动"
+    "unavailable" -> "不回复"
+    else -> ""
+}
+
+private fun defaultStateHint(stateKey: String): String = when (stateKey) {
+    "normal" -> "日常状态，语气平和自然，回复长度适中，积极参与对话。像平时和朋友聊天一样随意。"
+    "busy" -> "正在忙碌，语速偏快，回复简短直接，可能会提及正在处理的事务。不闲聊，结束时可能说'先去忙了'。"
+    "idle" -> "空闲状态，乐于交流，话变多，会主动找话题或分享趣事。随意拖音，慵懒俏皮，偶尔撒娇求关注。"
+    "unavailable" -> "无法回复，处于睡觉或洗澡等状态，不会发送消息。"
+    else -> "该状态下的语气、语速、情绪、回复风格指导"
+}
+
 /**
- * 行为配置页面（Vibe Chat 风格，参考设计稿 chat-agent-behavior.html）
+ * 行为配置页面（现代简洁版）
  *
- * 编辑 AgentConfig.behavior 字段：
- * - 回复延迟 replyDelaySec（每个状态：延迟回复 min/max 或 暂不回复 Defer）
- * - 状态导演提示 stateDirectorHints（每个状态多行文本）
- * - Emoji 配置（enabled + preferredEmojis + maxPerMessage + 各状态发送频率 frequencyPerState）
- * - 各状态主动发起 perStateInitiate（可折叠卡片：启用/触发间隔/触发概率/冷却/时间窗/候选消息）
- *
- * 底部保存按钮调用 AgentConfigEditor.update() 写入 behavior 字段。
+ * 设计语言：Apple Settings × Linear × Notion
+ * - 浅灰背景 + 白色单层 Card + 极淡阴影
+ * - 状态色仅作为 Badge / 图标点缀
+ * - 信息层级：状态名 18sp 加粗 + 13sp 灰色描述
+ * - 留白代替边框，8px 栅格间距
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentBehaviorScreen(onBack: () -> Unit) {
     val editor = ServiceLocator.agentConfigEditor
     val behavior = remember { editor.get().behavior }
+    val allStates = remember { linkedSetOf("normal", "busy", "idle") }
 
-    // 合并 STATE_LABELS 的固定状态与配置中已有的状态 key
-    val allStates = remember {
-        linkedSetOf<String>().apply {
-            addAll(STATE_LABELS.keys)
-            addAll(behavior.replyDelaySec.keys)
-            addAll(behavior.perStateInitiate.keys)
+    fun ReplyDelay?.rangeOr(defaultMin: Int, defaultMax: Int): Pair<Float, Float> =
+        (this as? ReplyDelay.Range)?.let { it.min.toFloat() to it.max.toFloat() }
+            ?: (defaultMin.toFloat() to defaultMax.toFloat())
+
+    val replyDelayMap = remember {
+        mutableStateMapOf<String, Pair<Float, Float>>().apply {
+            this["idle"] = behavior.replyDelaySec["idle"].rangeOr(1, 3)
+            this["normal"] = behavior.replyDelaySec["normal"].rangeOr(3, 8)
+            this["busy"] = behavior.replyDelaySec["busy"].rangeOr(30, 120)
         }
     }
 
-    // ===== 回复延迟：3 档位（秒回 / 正常 / 忙碌），用 RangeSlider 编辑 =====
-    // 状态 → 档位映射：neutral→正常, happy/bored→秒回, work/game→忙碌, sleep/bath 走 pending 队列不配
-    // 读取时从代表状态取值；保存时把档位值映射回各状态写入 replyDelaySec
-    fun ReplyDelay?.rangeOr(defaultMin: Int, defaultMax: Int): Pair<Float, Float> =
-        (this as? ReplyDelay.Range)?.let { it.min.toFloat() to it.max.toFloat() } ?: (defaultMin.toFloat() to defaultMax.toFloat())
-
-    val (instantMin, instantMax) = remember {
-        behavior.replyDelaySec["happy"].rangeOr(1, 3)   // 秒回档：开心/无聊
-    }
-    var replyInstantMin by remember { mutableStateOf(instantMin) }
-    var replyInstantMax by remember { mutableStateOf(instantMax) }
-
-    val (normalMin, normalMax) = remember {
-        behavior.replyDelaySec["neutral"].rangeOr(3, 8)  // 正常档：默认
-    }
-    var replyNormalMin by remember { mutableStateOf(normalMin) }
-    var replyNormalMax by remember { mutableStateOf(normalMax) }
-
-    val (busyMin, busyMax) = remember {
-        behavior.replyDelaySec["work"].rangeOr(30, 120)  // 忙碌档：工作/游戏
-    }
-    var replyBusyMin by remember { mutableStateOf(busyMin) }
-    var replyBusyMax by remember { mutableStateOf(busyMax) }
-
-    // ===== 状态导演提示 =====
     val stateHints = remember {
         mutableStateMapOf<String, String>().apply {
-            allStates.forEach { state ->
-                this[state] = behavior.stateDirectorHints[state] ?: ""
-            }
+            allStates.forEach { state -> this[state] = behavior.stateDirectorHints[state] ?: "" }
         }
     }
 
-    // ===== Emoji 配置 =====
-    var emojiEnabled by remember { mutableStateOf(behavior.emoji.enabled) }
-    var maxPerMessage by remember { mutableStateOf(behavior.emoji.maxPerMessage.toString()) }
-    val preferredEmojis = remember { behavior.emoji.preferredEmojis.toMutableStateList() }
-    var emojiInput by remember { mutableStateOf("") }
-
-    // Emoji 各状态发送频率（0f-1f）
-    val emojiFrequency = remember {
-        mutableStateMapOf<String, Float>().apply {
-            allStates.forEach { state ->
-                this[state] = behavior.emoji.frequencyPerState[state] ?: 0f
-            }
-        }
-    }
-
-    // ===== 各状态主动发起 =====
     val initiateEnabled = remember {
         mutableStateMapOf<String, Boolean>().apply {
             allStates.forEach { state -> this[state] = behavior.perStateInitiate[state]?.enabled ?: false }
         }
     }
-    val initiateInterval = remember {
+    val initiateLevel = remember {
         mutableStateMapOf<String, String>().apply {
             allStates.forEach { state ->
-                this[state] = (behavior.perStateInitiate[state]?.intervalMin ?: 60).toString()
+                this[state] = behavior.perStateInitiate[state]?.initiateLevel ?: "normal"
             }
         }
     }
-    val initiateProbability = remember {
-        mutableStateMapOf<String, String>().apply {
-            allStates.forEach { state ->
-                this[state] = (behavior.perStateInitiate[state]?.probability ?: 0.2f).toString()
-            }
-        }
-    }
-    val initiateCooldown = remember {
-        mutableStateMapOf<String, String>().apply {
-            allStates.forEach { state ->
-                this[state] = (behavior.perStateInitiate[state]?.cooldownMin ?: 30).toString()
-            }
-        }
-    }
-    val initiateTimeStart = remember {
-        mutableStateMapOf<String, String>().apply {
-            allStates.forEach { state ->
-                this[state] = behavior.perStateInitiate[state]?.timeWindow?.start ?: ""
-            }
-        }
-    }
-    val initiateTimeEnd = remember {
-        mutableStateMapOf<String, String>().apply {
-            allStates.forEach { state ->
-                this[state] = behavior.perStateInitiate[state]?.timeWindow?.end ?: ""
-            }
-        }
-    }
-    // 候选消息：每个状态一个 SnapshotStateList<String>（仅存 text）
-    val initiateCandidates = remember {
-        mutableStateMapOf<String, SnapshotStateList<String>>().apply {
-            allStates.forEach { state ->
-                this[state] = mutableStateListOf<String>().apply {
-                    addAll(behavior.perStateInitiate[state]?.candidates?.map { it.text } ?: emptyList())
-                }
-            }
-        }
-    }
-    val initiateCandidateInput = remember { mutableStateMapOf<String, String>() }
-    // 折叠展开状态
-    val initiateExpanded = remember { mutableStateMapOf<String, Boolean>() }
 
     var justSaved by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(AiBg)
-    ) {
-        VibeTopBar(title = "行为配置", onBack = onBack)
+    Column(modifier = Modifier.fillMaxSize().background(AiBg)) {
+        VibeTopBar(title = "行为配置", subtitle = "回复延迟 · 状态导演 · 主动发起", onBack = onBack)
         Box(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 16.dp)
             ) {
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // ===== 卡片1：回复延迟（3 档位） =====
-                ConfigCard(title = "回复延迟（秒）") {
-                    Text(
-                        text = "按忙碌程度分 3 档，Agent 根据当前状态自动选用；睡觉/洗澡走待回复队列，不在此配置。",
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                        color = AiTextSecondary
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    ReplyDelayTierRow(
-                        tierLabel = "秒回档",
-                        tierHint = "开心 / 无聊",
-                        minValue = replyInstantMin,
-                        maxValue = replyInstantMax,
-                        onMinChange = { replyInstantMin = it },
-                        onMaxChange = { replyInstantMax = it }
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    ReplyDelayTierRow(
-                        tierLabel = "正常档",
-                        tierHint = "默认",
-                        minValue = replyNormalMin,
-                        maxValue = replyNormalMax,
-                        onMinChange = { replyNormalMin = it },
-                        onMaxChange = { replyNormalMax = it }
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    ReplyDelayTierRow(
-                        tierLabel = "忙碌档",
-                        tierHint = "工作 / 游戏",
-                        minValue = replyBusyMin,
-                        maxValue = replyBusyMax,
-                        onMinChange = { replyBusyMin = it },
-                        onMaxChange = { replyBusyMax = it }
-                    )
-                }
-
-                // ===== 卡片2：状态导演提示 =====
-                ConfigCard(title = "状态导演提示") {
-                    allStates.forEachIndexed { index, state ->
-                        if (index > 0) Spacer(Modifier.height(8.dp))
-                        StateHintRow(
+                // 三个状态合并为一张大卡片，每行用分割线分隔
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .shadow(
+                            elevation = 4.dp,
+                            shape = RoundedCornerShape(24.dp),
+                            ambientColor = AiShadowColor,
+                            spotColor = AiShadowColor
+                        )
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(AiCard)
+                ) {
+                    allStates.forEachIndexed { idx, state ->
+                        StateBehaviorRow(
                             stateKey = state,
                             stateLabel = STATE_LABELS[state] ?: state,
-                            value = stateHints[state] ?: "",
-                            onValueChange = { stateHints[state] = it }
+                            stateHint = stateHints[state] ?: "",
+                            onStateHintChange = { stateHints[state] = it },
+                            replyDelay = replyDelayMap[state],
+                            onReplyDelayChange = { replyDelayMap[state] = it },
+                            initiateEnabled = initiateEnabled[state] ?: false,
+                            initiateLevel = initiateLevel[state] ?: "normal",
+                            onInitiateEnabledChange = { initiateEnabled[state] = it },
+                            onInitiateLevelChange = { initiateLevel[state] = it },
+                            showTopDivider = idx != 0
                         )
                     }
                 }
-
-                // ===== 卡片3：Emoji 配置 =====
-                ConfigCard(title = "Emoji 配置") {
-                    // 启用开关
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "启用 Emoji",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = AiTextPrimary
-                            )
-                            Text(
-                                text = "Agent 自主决策发送",
-                                fontSize = 12.sp,
-                                color = AiTextSecondary
-                            )
-                        }
-                        Switch(
-                            checked = emojiEnabled,
-                            onCheckedChange = { emojiEnabled = it },
-                            colors = SwitchDefaults.colors(
-                                checkedTrackColor = AiPrimary
-                            )
-                        )
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    VibeTextField(
-                        value = maxPerMessage,
-                        onValueChange = { maxPerMessage = it.filter { c -> c.isDigit() } },
-                        label = "单条上限",
-                        placeholder = "如：2",
-                        singleLine = true
-                    )
-
-                    Spacer(Modifier.height(10.dp))
-                    SectionLabel("首选 Emoji 白名单")
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        preferredEmojis.forEach { emoji ->
-                            VibeChip(text = emoji, onDelete = { preferredEmojis.remove(emoji) }, chipType = VibeChipType.EMOJI)
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    VibeTextField(
-                        value = emojiInput,
-                        onValueChange = { emojiInput = it },
-                        label = "添加 Emoji",
-                        placeholder = "如：😊 / ❤️",
-                        singleLine = true,
-                        trailingIcon = {
-                            BehaviorAddIconButton(enabled = emojiInput.isNotBlank()) {
-                                if (emojiInput.isNotBlank()) {
-                                    preferredEmojis.add(emojiInput.trim())
-                                    emojiInput = ""
-                                }
-                            }
-                        }
-                    )
-
-                    // 各状态发送频率
-                    Spacer(Modifier.height(10.dp))
-                    SectionLabel("各状态发送频率")
-                    allStates.forEachIndexed { index, state ->
-                        if (index > 0) Spacer(Modifier.height(4.dp))
-                        EmojiFrequencyRow(
-                            stateKey = state,
-                            stateLabel = STATE_LABELS[state] ?: state,
-                            frequency = emojiFrequency[state] ?: 0f,
-                            onFrequencyChange = { emojiFrequency[state] = it }
-                        )
-                    }
-                }
-
-                // ===== 卡片4：各状态主动发起 =====
-                ConfigCard(title = "各状态主动发起") {
-                    Text(
-                        text = "每个状态可独立配置主动发起",
-                        fontSize = 12.sp,
-                        color = AiTextSecondary
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    allStates.forEachIndexed { index, state ->
-                        if (index > 0) Spacer(Modifier.height(4.dp))
-                        InitiateExpandableCard(
-                            stateKey = state,
-                            stateLabel = STATE_LABELS[state] ?: state,
-                            expanded = initiateExpanded[state] ?: false,
-                            onExpandedChange = { initiateExpanded[state] = it },
-                            enabled = initiateEnabled[state] ?: false,
-                            intervalMin = initiateInterval[state] ?: "",
-                            probability = initiateProbability[state] ?: "",
-                            cooldown = initiateCooldown[state] ?: "",
-                            timeStart = initiateTimeStart[state] ?: "",
-                            timeEnd = initiateTimeEnd[state] ?: "",
-                            candidates = initiateCandidates[state] ?: mutableStateListOf(),
-                            candidateInput = initiateCandidateInput[state] ?: "",
-                            onEnabledChange = { initiateEnabled[state] = it },
-                            onIntervalChange = { initiateInterval[state] = it },
-                            onProbabilityChange = { initiateProbability[state] = it },
-                            onCooldownChange = { initiateCooldown[state] = it },
-                            onTimeStartChange = { initiateTimeStart[state] = it },
-                            onTimeEndChange = { initiateTimeEnd[state] = it },
-                            onCandidateInputChange = { initiateCandidateInput[state] = it },
-                            onCandidateAdd = {
-                                val text = initiateCandidateInput[state] ?: ""
-                                if (text.isNotBlank()) {
-                                    initiateCandidates[state]?.add(text.trim())
-                                    initiateCandidateInput[state] = ""
-                                }
-                            },
-                            onCandidateDelete = { idx ->
-                                initiateCandidates[state]?.removeAt(idx)
-                            }
-                        )
-                    }
-                }
-
                 Spacer(Modifier.height(80.dp))
             }
-        }
 
-        // ===== 底部保存按钮 =====
-        BehaviorSaveButton(
-            modifier = Modifier.align(Alignment.BottomCenter),
-            justSaved = justSaved,
-            onClick = {
-                // 回复延迟：3 档位映射到各状态
-                // 秒回档 → happy / bored；正常档 → neutral；忙碌档 → work / game
-                // sleep / bath 走 pending 队列，保留 Defer
-                val instantRange = ReplyDelay.Range(replyInstantMin.toInt(), replyInstantMax.toInt())
-                val normalRange = ReplyDelay.Range(replyNormalMin.toInt(), replyNormalMax.toInt())
-                val busyRange = ReplyDelay.Range(replyBusyMin.toInt(), replyBusyMax.toInt())
-                val newReplyDelay = mapOf(
-                    "happy" to instantRange,
-                    "bored" to instantRange,
-                    "neutral" to normalRange,
-                    "work" to busyRange,
-                    "game" to busyRange,
-                    "sleep" to ReplyDelay.Defer,
-                    "bath" to ReplyDelay.Defer
-                )
-                // Emoji：包含各状态频率
-                val newEmoji = EmojiBehavior(
-                    enabled = emojiEnabled,
-                    frequencyPerState = buildMap {
-                        allStates.forEach { state ->
-                            put(state, emojiFrequency[state] ?: 0f)
+            // 底部悬浮保存按钮
+            SaveActionBar(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                justSaved = justSaved,
+                onClick = {
+                    val newReplyDelay = buildMap<String, ReplyDelay> {
+                        replyDelayMap.forEach { (state, range) ->
+                            put(state, ReplyDelay.Range(range.first.toInt(), range.second.toInt()))
                         }
-                    },
-                    preferredEmojis = preferredEmojis.toList(),
-                    maxPerMessage = maxPerMessage.toIntOrNull() ?: 1
-                )
-                // 主动发起：保留已有候选的 emotion/moodAfter/weight，仅更新 text
-                val newInitiate = buildMap<String, StateInitiate> {
-                    allStates.forEach { state ->
-                        val existing = behavior.perStateInitiate[state]
-                        val existingCandidates = existing?.candidates ?: emptyList()
-                        val newCandidates = initiateCandidates[state]?.mapIndexed { idx, text ->
-                            val existingCandidate = existingCandidates.getOrNull(idx)
-                            StateInitiateCandidate(
-                                text = text,
-                                emotion = existingCandidate?.emotion ?: "",
-                                moodAfter = existingCandidate?.moodAfter ?: "",
-                                weight = existingCandidate?.weight ?: 1
+                        put("unavailable", ReplyDelay.Defer)
+                    }
+                    val newInitiate = buildMap<String, StateInitiate> {
+                        allStates.forEach { state ->
+                            val existing = behavior.perStateInitiate[state]
+                            put(
+                                state,
+                                (existing ?: StateInitiate()).copy(
+                                    enabled = initiateEnabled[state] ?: false,
+                                    initiateLevel = initiateLevel[state] ?: "normal"
+                                )
                             )
-                        } ?: emptyList()
-                        put(
-                            state,
-                            (existing ?: StateInitiate()).copy(
-                                enabled = initiateEnabled[state] ?: false,
-                                intervalMin = initiateInterval[state]?.toIntOrNull() ?: 60,
-                                probability = initiateProbability[state]?.toFloatOrNull() ?: 0.2f,
-                                cooldownMin = initiateCooldown[state]?.toIntOrNull() ?: 30,
-                                timeWindow = TimeWindow(
-                                    start = initiateTimeStart[state] ?: "",
-                                    end = initiateTimeEnd[state] ?: ""
-                                ),
-                                candidates = newCandidates
-                            )
-                        )
+                        }
+                    }
+                    val newBehavior = BehaviorConfig(
+                        replyDelaySec = newReplyDelay,
+                        boredInitiate = behavior.boredInitiate,
+                        stateDirectorHints = stateHints.toMap(),
+                        emoji = EmojiBehavior(),
+                        perStateInitiate = newInitiate,
+                        typingIndicatorDuration = behavior.typingIndicatorDuration,
+                        messageLengthHints = behavior.messageLengthHints
+                    )
+                    scope.launch {
+                        editor.update { config -> config.copy(behavior = newBehavior) }
+                        justSaved = true
+                        delay(1000)
+                        justSaved = false
                     }
                 }
-                val newBehavior = BehaviorConfig(
-                    replyDelaySec = newReplyDelay,
-                    boredInitiate = behavior.boredInitiate,
-                    stateDirectorHints = stateHints.toMap(),
-                    emoji = newEmoji,
-                    perStateInitiate = newInitiate,
-                    typingIndicatorDuration = behavior.typingIndicatorDuration,
-                    messageLengthHints = behavior.messageLengthHints
-                )
-                scope.launch {
-                    editor.update { config ->
-                        config.copy(behavior = newBehavior)
-                    }
-                    justSaved = true
-                    delay(1000)
-                    justSaved = false
-                }
-            }
-        )
+            )
         }
     }
 }
 
-/**
- * 回复延迟档位行：档位名称 + 适用状态提示 + RangeSlider + 数值显示
- *
- * 用于 3 档位配置（秒回档 / 正常档 / 忙碌档）。
- */
+// =============================================================
+// 状态行为行（大卡片内的一行，顶部带分割线，可独立折叠）
+// =============================================================
 @Composable
-private fun ReplyDelayTierRow(
-    tierLabel: String,
-    tierHint: String,
-    minValue: Float,
-    maxValue: Float,
-    onMinChange: (Float) -> Unit,
-    onMaxChange: (Float) -> Unit
+private fun StateBehaviorRow(
+    stateKey: String,
+    stateLabel: String,
+    stateHint: String,
+    onStateHintChange: (String) -> Unit,
+    replyDelay: Pair<Float, Float>?,
+    onReplyDelayChange: (Pair<Float, Float>) -> Unit,
+    initiateEnabled: Boolean,
+    initiateLevel: String,
+    onInitiateEnabledChange: (Boolean) -> Unit,
+    onInitiateLevelChange: (String) -> Unit,
+    showTopDivider: Boolean
 ) {
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
+    val accent = stateColor(stateKey)
+    val subtitle = stateSubtitle(stateKey)
+
     Column(modifier = Modifier.fillMaxWidth()) {
-        // 第一行：档位名称 + 适用状态提示
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = tierLabel,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = AiTextPrimary
-            )
-            Text(
-                text = "· $tierHint",
-                fontSize = 12.sp,
-                color = AiTextTertiary,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = "${minValue.toInt()}-${maxValue.toInt()}s",
-                fontSize = 12.sp,
-                color = AiPrimary,
-                fontWeight = FontWeight.Medium
-            )
+        if (showTopDivider) {
+            HorizontalDivider(thickness = 1.dp, color = AiBorder)
         }
-        Spacer(Modifier.height(4.dp))
-        // 第二行：RangeSlider（min ~ max）
-        RangeSlider(
-            value = minValue..maxValue,
-            onValueChange = { range ->
-                onMinChange(range.start)
-                onMaxChange(range.endInclusive)
-            },
-            valueRange = 0f..300f,
-            steps = 29,  // 10 秒一档：300 / 10 - 1 = 29
-            modifier = Modifier.fillMaxWidth(),
-            colors = SliderDefaults.colors(
-                activeTrackColor = AiPrimary,
-                inactiveTrackColor = AiBorder,
-                thumbColor = AiPrimary
-            )
-        )
-    }
-}
 
-/** 状态导演提示行：状态标签 + 多行文本框 */
-@Composable
-private fun StateHintRow(
-    stateKey: String,
-    stateLabel: String,
-    value: String,
-    onValueChange: (String) -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        StateChip(text = stateLabel, stateKey = stateKey)
-        Spacer(Modifier.height(4.dp))
-        VibeTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = "提示文本",
-            placeholder = "该状态下的提示文本",
-            singleLine = false
-        )
-    }
-}
-
-/** Emoji 各状态发送频率行：状态标签 + Slider(0-1) + 数值显示 */
-@Composable
-private fun EmojiFrequencyRow(
-    stateKey: String,
-    stateLabel: String,
-    frequency: Float,
-    onFrequencyChange: (Float) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        StateChip(text = stateLabel, stateKey = stateKey)
-        Slider(
-            value = frequency,
-            onValueChange = onFrequencyChange,
-            valueRange = 0f..1f,
-            steps = 19,
-            modifier = Modifier.weight(1f),
-            colors = SliderDefaults.colors(
-                thumbColor = AiPrimary,
-                activeTrackColor = AiPrimary,
-                inactiveTrackColor = AiBorder
-            )
-        )
-        Text(
-            text = "%.2f".format(frequency),
-            fontSize = 12.sp,
-            color = AiPrimary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.width(40.dp)
-        )
-    }
-}
-
-/**
- * 各状态主动发起：可折叠卡片
- * 展开后显示 6 项：启用 / 触发间隔 / 触发概率 / 冷却 / 时间窗 / 候选消息
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun InitiateExpandableCard(
-    stateKey: String,
-    stateLabel: String,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    enabled: Boolean,
-    intervalMin: String,
-    probability: String,
-    cooldown: String,
-    timeStart: String,
-    timeEnd: String,
-    candidates: SnapshotStateList<String>,
-    candidateInput: String,
-    onEnabledChange: (Boolean) -> Unit,
-    onIntervalChange: (String) -> Unit,
-    onProbabilityChange: (String) -> Unit,
-    onCooldownChange: (String) -> Unit,
-    onTimeStartChange: (String) -> Unit,
-    onTimeEndChange: (String) -> Unit,
-    onCandidateInputChange: (String) -> Unit,
-    onCandidateAdd: () -> Unit,
-    onCandidateDelete: (Int) -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // 折叠头部（点击展开/收起）
+        // 头部行：圆点 + 标题 + 描述 + 展开图标
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onExpandedChange(!expanded) }
-                .padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            StateChip(text = stateLabel, stateKey = stateKey)
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(accent)
+                    )
+                    Text(
+                        text = stateLabel,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AiTextPrimary
+                    )
+                }
+                Text(
+                    text = subtitle,
+                    fontSize = 12.sp,
+                    color = AiTextTertiary,
+                    modifier = Modifier.padding(top = 2.dp, start = 16.dp)
+                )
+            }
             Icon(
                 imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
+                contentDescription = if (expanded) "收起" else "展开",
                 tint = AiTextTertiary,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(20.dp)
             )
         }
+
         // 展开内容
-        if (expanded) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(tween(220)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(180)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(AiInputBg)
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
-                // 启用
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "启用",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = AiTextSecondary
-                    )
-                    Switch(
-                        checked = enabled,
-                        onCheckedChange = onEnabledChange,
-                        colors = SwitchDefaults.colors(
-                            checkedTrackColor = AiPrimary
-                        )
+                if (replyDelay != null) {
+                    ReplyDelaySection(
+                        minValue = replyDelay.first,
+                        maxValue = replyDelay.second,
+                        onMinChange = { onReplyDelayChange(it to replyDelay.second) },
+                        onMaxChange = { onReplyDelayChange(replyDelay.first to it) },
+                        accent = accent
                     )
                 }
-                // 触发间隔（分钟）
-                VibeTextField(
-                    value = intervalMin,
-                    onValueChange = { onIntervalChange(it.filter { c -> c.isDigit() }) },
-                    label = "触发间隔（分钟）",
-                    placeholder = "如：60",
-                    singleLine = true
+
+                DirectorHintSection(
+                    stateKey = stateKey,
+                    hint = stateHint,
+                    onHintChange = onStateHintChange,
+                    accent = accent
                 )
-                // 触发概率
-                VibeTextField(
-                    value = probability,
-                    onValueChange = { onProbabilityChange(it.filter { c -> c.isDigit() || c == '.' }) },
-                    label = "触发概率",
-                    placeholder = "如：0.3",
-                    singleLine = true
-                )
-                // 冷却（分钟）
-                VibeTextField(
-                    value = cooldown,
-                    onValueChange = { onCooldownChange(it.filter { c -> c.isDigit() }) },
-                    label = "冷却（分钟）",
-                    placeholder = "如：30",
-                    singleLine = true
-                )
-                // 时间窗
-                SectionLabel("时间窗")
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        VibeTextField(
-                            value = timeStart,
-                            onValueChange = onTimeStartChange,
-                            label = "开始",
-                            placeholder = "09:00",
-                            singleLine = true
-                        )
-                    }
-                    Box(modifier = Modifier.weight(1f)) {
-                        VibeTextField(
-                            value = timeEnd,
-                            onValueChange = onTimeEndChange,
-                            label = "结束",
-                            placeholder = "23:00",
-                            singleLine = true
-                        )
-                    }
-                }
-                // 候选消息
-                SectionLabel("候选消息")
-                if (candidates.isNotEmpty()) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        candidates.forEachIndexed { idx, text ->
-                            VibeChip(
-                                text = text.ifBlank { "(空)" },
-                                onDelete = { onCandidateDelete(idx) },
-                                chipType = VibeChipType.NEUTRAL
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                }
-                VibeTextField(
-                    value = candidateInput,
-                    onValueChange = onCandidateInputChange,
-                    label = "添加候选",
-                    placeholder = "输入候选消息",
-                    singleLine = true,
-                    trailingIcon = {
-                        BehaviorAddIconButton(enabled = candidateInput.isNotBlank()) {
-                            onCandidateAdd()
-                        }
-                    }
+
+                InitiateSection(
+                    enabled = initiateEnabled,
+                    onEnabledChange = onInitiateEnabledChange,
+                    level = initiateLevel,
+                    onLevelChange = onInitiateLevelChange,
+                    accent = accent
                 )
             }
         }
     }
 }
 
+// =============================================================
+// 回复延迟模块
+// =============================================================
+@Composable
+private fun ReplyDelaySection(
+    minValue: Float,
+    maxValue: Float,
+    onMinChange: (Float) -> Unit,
+    onMaxChange: (Float) -> Unit,
+    accent: Color
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "回复延迟",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = AiTextSecondary
+            )
+            Text(
+                text = "${minValue.toInt()}-${maxValue.toInt()} 秒",
+                fontSize = 13.sp,
+                color = accent,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        SimpleRangeSlider(
+            minValue = minValue,
+            maxValue = maxValue,
+            onMinChange = onMinChange,
+            onMaxChange = onMaxChange,
+            accent = accent
+        )
+    }
+}
+
 /**
- * 状态彩色小标签（按状态分色，对齐设计稿 chat-agent-behavior.html）
- *
- * 各状态配色：
- * - happy（开心）→ chip-amber
- * - work（工作）→ chip-primary（青绿）
- * - sleep（睡觉）→ chip-muted（灰色）
- * - bath（洗澡）→ chip-pink
- * - game（游戏）→ chip-green
- * - bored（无聊）→ chip-indigo
- * - 默认/其他（含 neutral）→ chip-primary
+ * iOS 风格双滑块 RangeSlider：与语音配置页 IosStyleSlider 视觉统一
+ * - 5dp 高自绘渐变 track（min→max 区间为渐变色，两端为灰色）
+ * - 7dp 白色 thumb + 情绪色光环
+ * - 拖动时显示数值气泡
+ * - 5s 量化吸附
  */
 @Composable
-private fun StateChip(text: String, stateKey: String = "") {
-    val (bgColor, fgColor) = when (stateKey) {
-        "happy" -> AiChipAmberBg to AiChipAmberFg
-        "work"  -> AiChipPrimaryBg to AiChipPrimaryFg
-        "sleep" -> AiChipMutedBg to AiChipMutedFg
-        "bath"  -> AiChipPinkBg to AiChipPinkFg
-        "game"  -> AiChipGreenBg to AiChipGreenFg
-        "bored" -> AiChipIndigoBg to AiChipIndigoFg
-        else    -> AiChipPrimaryBg to AiChipPrimaryFg
-    }
+private fun SimpleRangeSlider(
+    minValue: Float,
+    maxValue: Float,
+    onMinChange: (Float) -> Unit,
+    onMaxChange: (Float) -> Unit,
+    accent: Color
+) {
+    val range = 0f..300f
+    val span = range.endInclusive - range.start
+    val minFrac = ((minValue - range.start) / span).coerceIn(0f, 1f)
+    val maxFrac = ((maxValue - range.start) / span).coerceIn(0f, 1f)
+    val gradientEndColor = lerp(accent, Color.White, 0.45f)
+
+    var draggingMin by remember { mutableStateOf(false) }
+    var draggingMax by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
-            .width(60.dp)
-            .clip(RoundedCornerShape(50))
-            .background(bgColor)
-            .padding(vertical = 4.dp),
-        contentAlignment = Alignment.Center
+            .fillMaxWidth()
+            .height(40.dp)
+            .drawBehind {
+                val trackHeight = 5.dp.toPx()
+                val trackY = size.height - trackHeight - 2.dp.toPx()
+                val cornerRadius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
+                val minPosX = size.width * minFrac
+                val maxPosX = size.width * maxFrac
+
+                // 1. inactive track（灰色底，整条）
+                drawRoundRect(
+                    color = AiBorder,
+                    topLeft = Offset(0f, trackY),
+                    size = Size(size.width, trackHeight),
+                    cornerRadius = cornerRadius
+                )
+
+                // 2. active track（渐变填充，min→max 区间）
+                val activeWidth = (maxPosX - minPosX).coerceAtLeast(0f)
+                if (activeWidth > 0f) {
+                    val activeBrush = Brush.horizontalGradient(
+                        colors = listOf(accent, gradientEndColor),
+                        startX = minPosX,
+                        endX = maxPosX
+                    )
+                    drawRoundRect(
+                        brush = activeBrush,
+                        topLeft = Offset(minPosX, trackY),
+                        size = Size(activeWidth, trackHeight),
+                        cornerRadius = cornerRadius
+                    )
+                }
+
+                // 3. 两个 thumb：min 和 max
+                val thumbRadius = 7.dp.toPx()
+                val thumbY = trackY + trackHeight / 2f
+                listOf(
+                    Triple(minPosX, draggingMin, minValue),
+                    Triple(maxPosX, draggingMax, maxValue)
+                ).forEach { (thumbX, isDragging, thumbValue) ->
+                    // 外圈光环
+                    drawCircle(
+                        color = accent.copy(alpha = 0.28f),
+                        radius = thumbRadius + 3.dp.toPx(),
+                        center = Offset(thumbX, thumbY)
+                    )
+                    // 白色实心圆
+                    drawCircle(
+                        color = Color.White,
+                        radius = thumbRadius,
+                        center = Offset(thumbX, thumbY)
+                    )
+
+                    // 拖动时显示数值气泡
+                    if (isDragging) {
+                        val valueText = "${thumbValue.toInt()}"
+                        val textPaint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.WHITE
+                            textSize = 28f
+                            typeface = android.graphics.Typeface.create(
+                                android.graphics.Typeface.DEFAULT,
+                                android.graphics.Typeface.BOLD
+                            )
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            isAntiAlias = true
+                        }
+                        val fontMetrics = textPaint.fontMetrics
+                        val textHeight = fontMetrics.descent - fontMetrics.ascent
+                        val bubblePadH = 14f
+                        val bubblePadV = 6f
+                        val bubbleWidth = textPaint.measureText(valueText) + bubblePadH * 2
+                        val bubbleHeight = textHeight + bubblePadV * 2
+                        val bubbleBottom = thumbY - thumbRadius - 8.dp.toPx()
+                        val bubbleTop = bubbleBottom - bubbleHeight
+                        val bubbleLeft = (thumbX - bubbleWidth / 2f)
+                            .coerceIn(0f, size.width - bubbleWidth)
+
+                        drawRoundRect(
+                            color = accent,
+                            topLeft = Offset(bubbleLeft, bubbleTop),
+                            size = Size(bubbleWidth, bubbleHeight),
+                            cornerRadius = CornerRadius(bubbleHeight / 2f, bubbleHeight / 2f)
+                        )
+                        val arrowHalfWidth = 4.dp.toPx()
+                        val arrowTipY = bubbleBottom + 1f
+                        val arrowBaseY = bubbleBottom
+                        val arrowCenterX = thumbX.coerceIn(
+                            bubbleLeft + arrowHalfWidth,
+                            bubbleLeft + bubbleWidth - arrowHalfWidth
+                        )
+                        val arrowPath = android.graphics.Path().apply {
+                            moveTo(arrowCenterX - arrowHalfWidth, arrowBaseY)
+                            lineTo(arrowCenterX + arrowHalfWidth, arrowBaseY)
+                            lineTo(arrowCenterX, arrowTipY)
+                            close()
+                        }
+                        drawIntoCanvas { canvas ->
+                            canvas.nativeCanvas.drawPath(arrowPath, android.graphics.Paint().apply {
+                                color = accent.toArgb()
+                                isAntiAlias = true
+                            })
+                        }
+                        val textCenterX = bubbleLeft + bubbleWidth / 2f
+                        val textBaseline = bubbleTop + bubblePadV - fontMetrics.ascent
+                        drawIntoCanvas { canvas ->
+                            canvas.nativeCanvas.drawText(
+                                valueText,
+                                textCenterX,
+                                textBaseline,
+                                textPaint
+                            )
+                        }
+                    }
+                }
+            }
     ) {
-        Text(
-            text = text,
-            fontSize = 11.sp,
-            color = fgColor,
-            fontWeight = FontWeight.Medium
+        RangeSlider(
+            value = minValue..maxValue,
+            onValueChange = { values ->
+                val step = 5f
+                val newMin = (values.start / step).toInt() * step
+                val newMax = (values.endInclusive / step).toInt() * step
+                if (newMin <= newMax) {
+                    // 判断拖动的是哪个 thumb（比较变化量）
+                    if (newMin != minValue) draggingMin = true
+                    if (newMax != maxValue) draggingMax = true
+                    onMinChange(newMin)
+                    onMaxChange(newMax)
+                }
+            },
+            valueRange = range,
+            onValueChangeFinished = {
+                draggingMin = false
+                draggingMax = false
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = Color.Transparent,
+                activeTrackColor = Color.Transparent,
+                inactiveTrackColor = Color.Transparent,
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent
+            ),
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
 
-/** 输入框尾部圆形添加按钮 */
+// =============================================================
+// 导演提示模块（行式 Cell，点击展开编辑）
+// =============================================================
 @Composable
-private fun BehaviorAddIconButton(enabled: Boolean, onClick: () -> Unit) {
+private fun DirectorHintSection(
+    stateKey: String,
+    hint: String,
+    onHintChange: (String) -> Unit,
+    accent: Color
+) {
+    var editing by rememberSaveable(stateKey) { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 标题行
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { editing = !editing },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "导演提示",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = AiTextSecondary
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!editing) {
+                    Text(
+                        text = if (hint.isBlank()) "未配置" else "已配置 ${hint.length} 字",
+                        fontSize = 12.sp,
+                        color = if (hint.isBlank()) AiTextTertiary else AiTextSecondary
+                    )
+                }
+                Icon(
+                    imageVector = if (editing) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (editing) "收起" else "编辑",
+                    tint = AiTextTertiary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = editing,
+            enter = fadeIn(tween(220)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(180)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+        ) {
+            Column(modifier = Modifier.padding(top = 10.dp)) {
+                SimpleTextField(
+                    value = hint,
+                    onValueChange = onHintChange,
+                    placeholder = defaultStateHint(stateKey),
+                    singleLine = false
+                )
+            }
+        }
+    }
+}
+
+// =============================================================
+// 主动发起模块（标准 Setting Cell + 频率 Segmented Control）
+// =============================================================
+@Composable
+private fun InitiateSection(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    level: String,
+    onLevelChange: (String) -> Unit,
+    accent: Color
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // Setting Cell：标题 + 辅助说明 + Switch
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "主动发起",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AiTextSecondary
+                )
+                Text(
+                    text = "允许 AI 主动开启聊天",
+                    fontSize = 12.sp,
+                    color = AiTextTertiary
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = accent,
+                    uncheckedTrackColor = AiBorder
+                )
+            )
+        }
+
+        // 频率 Segmented Control（仅在启用时显示）
+        AnimatedVisibility(
+            visible = enabled,
+            enter = fadeIn(tween(220)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(180)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+        ) {
+            Column(modifier = Modifier.padding(top = 14.dp)) {
+                Text(
+                    text = "主动发起频率",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = AiTextSecondary
+                )
+                Spacer(Modifier.height(8.dp))
+                SegmentedLevelSelector(
+                    level = level,
+                    onLevelChange = onLevelChange,
+                    accent = accent
+                )
+            }
+        }
+    }
+}
+
+// =============================================================
+// Segmented Control 风格的档位选择器
+// =============================================================
+@Composable
+private fun SegmentedLevelSelector(
+    level: String,
+    onLevelChange: (String) -> Unit,
+    accent: Color
+) {
+    val levels = StateInitiate.ALL_LEVELS
+    val labels = levels.map { StateInitiate.levelToLabel(it) }
+
     Box(
         modifier = Modifier
-            .size(24.dp)
-            .clip(RoundedCornerShape(50))
-            .background(if (enabled) AiPrimary.copy(alpha = 0.12f) else AiBorder)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(AiBorder)
+            .padding(3.dp)
     ) {
-        Icon(
-            imageVector = Icons.Default.Add,
-            contentDescription = "添加",
-            tint = AiPrimary,
-            modifier = Modifier.size(16.dp)
+        // 用 Row 均分布局 + 选中项背景动画
+        Row(modifier = Modifier.fillMaxWidth()) {
+            levels.forEachIndexed { idx, lvl ->
+                val isSelected = lvl == level
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (isSelected) AiCard else Color.Transparent)
+                        .clickable { onLevelChange(lvl) }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = labels[idx],
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (isSelected) accent else AiTextSecondary
+                    )
+                }
+            }
+        }
+    }
+}
+
+// =============================================================
+// 简洁文本输入框
+// =============================================================
+@Composable
+private fun SimpleTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    singleLine: Boolean = true
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (focused) AiInputBgFocused else AiInputBg)
+            .border(
+                width = 1.dp,
+                color = if (focused) AiPrimary.copy(alpha = 0.3f) else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        if (value.isEmpty()) {
+            Text(
+                text = placeholder,
+                fontSize = 13.sp,
+                color = AiTextTertiary
+            )
+        }
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = singleLine,
+            interactionSource = interactionSource,
+            textStyle = TextStyle(
+                fontSize = 13.sp,
+                color = AiTextPrimary,
+                lineHeight = 20.sp
+            ),
+            cursorBrush = SolidColor(AiPrimary),
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
 
-/** AI Studio 保存按钮（委托共享 AiSaveButton） */
+// =============================================================
+// 底部悬浮保存按钮（56dp 高度，圆角 18dp，渐变主色）
+// =============================================================
 @Composable
-private fun BehaviorSaveButton(modifier: Modifier = Modifier, justSaved: Boolean, onClick: () -> Unit) {
-    AiSaveButton(justSaved = justSaved, onClick = onClick, modifier = modifier)
+private fun SaveActionBar(
+    modifier: Modifier = Modifier,
+    justSaved: Boolean,
+    onClick: () -> Unit
+) {
+    val scale by animateFloatAsState(
+        targetValue = if (justSaved) 0.98f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "saveScale"
+    )
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .background(AiBg)
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .graphicsLayer(scaleX = scale, scaleY = scale)
+                .shadow(
+                    elevation = 4.dp,
+                    shape = RoundedCornerShape(18.dp),
+                    ambientColor = AiPrimary.copy(alpha = 0.3f),
+                    spotColor = AiPrimary.copy(alpha = 0.3f)
+                )
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.horizontalGradient(listOf(AiPrimary, AiPrimaryDeep)))
+                .clickable { onClick() },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (justSaved) "已保存" else "保存修改",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White
+            )
+        }
+    }
 }
