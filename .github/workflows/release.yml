@@ -16,6 +16,10 @@ concurrency:
   group: release-build-${{ github.ref }}
   cancel-in-progress: true
 
+# 显式声明 GITHUB_TOKEN 所需权限（默认 token 无写权限会 403）
+permissions:
+  contents: write   # 创建 release / 上传资源
+
 jobs:
   release:
     name: Build & Release APK
