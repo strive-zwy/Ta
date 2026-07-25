@@ -46,7 +46,7 @@ jobs:
       #   KEY_PASSWORD        - key 密码
       # 未配置时，build.gradle.kts 会自动 fallback 到 debug 签名
       - name: Decode release keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KEYSTORE_BASE64 != ''
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
