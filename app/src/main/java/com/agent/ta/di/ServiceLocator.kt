@@ -28,6 +28,8 @@ import com.agent.ta.infrastructure.observer.RecentConversationObserver
 import com.agent.ta.infrastructure.observer.TimeContextObserver
 import com.agent.ta.infrastructure.time.TimeContext
 import com.agent.ta.state.memory.MemoryStore
+import com.agent.ta.cognitive.summary.ConversationSummarizer
+import com.agent.ta.cognitive.thinkact.ThinkActDecider
 
 /**
  * 手动依赖容器，替代 Hilt/Dagger
@@ -154,6 +156,33 @@ object ServiceLocator {
      * 封装 MemoryDao，提供分级查询和召回接口
      */
     val memoryStore: MemoryStore by lazy { MemoryStore(memoryDao) }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // L2 认知层（v2 架构新增）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** ConversationSummaryDao（L2 摘要持久化） */
+    val conversationSummaryDao: com.agent.ta.data.local.dao.ConversationSummaryDao
+        get() = database.conversationSummaryDao()
+
+    /**
+     * 对话摘要生成器（分桶机制 + L1 内存缓存 + L2 Room DB + 后台预热）
+     *
+     * 每 20 条消息生成一个摘要（150字内），注入 Prompt Zone B 节省 Token
+     */
+    val conversationSummarizer: ConversationSummarizer by lazy {
+        ConversationSummarizer(llmClient, conversationSummaryDao, chatMessageDao, appScope)
+    }
+
+    /**
+     * Think/Act 决策器（主动发起的 Think/Act 解耦）
+     *
+     * - Think 阶段：判断是否适合主动发起（含 [SKIP] 否决权）
+     * - Act 阶段：基于 persona 呈现话题
+     *
+     * 由 Heartbeat 在状态变化时调用
+     */
+    val thinkActDecider: ThinkActDecider by lazy { ThinkActDecider(llmClient) }
 
     /**
      * 工具注册中心（v3 通用工具系统）

@@ -74,17 +74,19 @@ class PromptBuilder {
         currentActivity: String? = null,
         activityAnchor: ActivityAnchor? = null,
         isInitiate: Boolean = false,
+        initiateTopic: String = "",
         todaySchedule: List<DailySlot> = emptyList(),
         isPendingCatchup: Boolean = false,
         isConfigMode: Boolean = false,
         continuousRound: Int = 0,
-        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList()
+        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList(),
+        conversationSummary: String? = null
     ): List<ChatMessage> {
         val consecutiveInboundCount = if (isPendingCatchup) 1 else countTrailingInbound(recentMessages)
         val systemPrompt = buildSystemPrompt(
             config, state, userNickname, memories, isOnboarding,
-            currentActivity, activityAnchor, isInitiate, todaySchedule, consecutiveInboundCount,
-            isPendingCatchup, isConfigMode, continuousRound, observerSnapshots
+            currentActivity, activityAnchor, isInitiate, initiateTopic, todaySchedule, consecutiveInboundCount,
+            isPendingCatchup, isConfigMode, continuousRound, observerSnapshots, conversationSummary
         )
         return listOf(ChatMessage("system", systemPrompt)) + recentMessages
     }
@@ -115,12 +117,14 @@ class PromptBuilder {
         currentActivity: String?,
         activityAnchor: ActivityAnchor?,
         isInitiate: Boolean,
+        initiateTopic: String,
         todaySchedule: List<DailySlot>,
         consecutiveInboundCount: Int = 1,
         isPendingCatchup: Boolean = false,
         isConfigMode: Boolean = false,
         continuousRound: Int = 0,
-        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList()
+        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList(),
+        conversationSummary: String? = null
     ): String {
         val sb = StringBuilder()
 
@@ -132,9 +136,9 @@ class PromptBuilder {
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone B: Reference (中间参考)
-        // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导 + 观察者数据
+        // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导 + 观察者数据 + 对话摘要
         // ═══════════════════════════════════════════════════════════════════════
-        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots)
+        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots, conversationSummary)
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone C: Recency (结尾锚定)
@@ -142,7 +146,7 @@ class PromptBuilder {
         // ═══════════════════════════════════════════════════════════════════════
         buildZoneC(
             sb, config, state, userNickname, activityAnchor, currentActivity,
-            isInitiate, isPendingCatchup, isConfigMode, isOnboarding,
+            isInitiate, initiateTopic, isPendingCatchup, isConfigMode, isOnboarding,
             consecutiveInboundCount, continuousRound, todaySchedule
         )
 
@@ -234,7 +238,8 @@ class PromptBuilder {
         userNickname: String,
         memories: List<MemoryEntity>,
         todaySchedule: List<DailySlot>,
-        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList()
+        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList(),
+        conversationSummary: String? = null
     ) {
         sb.appendLine("═══ Zone B: 背景参考（上下文信息）═══")
         sb.appendLine()
@@ -242,6 +247,14 @@ class PromptBuilder {
         val persona = config.agent.persona
         val identity = config.identity
         val hasIdentity = identity.worldSetting.isNotBlank() || identity.personalityCore.isNotBlank()
+
+        // 对话摘要注入（v2 L2 认知层，节省 Token 保持上下文连贯）
+        // 摘要由 ConversationSummarizer 分桶生成，记录了之前对话的要点
+        if (!conversationSummary.isNullOrBlank()) {
+            sb.appendLine("【之前聊过（对话摘要）】")
+            sb.appendLine(conversationSummary)
+            sb.appendLine()
+        }
 
         // 身份详情
         if (hasIdentity) {
@@ -417,6 +430,7 @@ class PromptBuilder {
         activityAnchor: ActivityAnchor?,
         currentActivity: String?,
         isInitiate: Boolean,
+        initiateTopic: String,
         isPendingCatchup: Boolean,
         isConfigMode: Boolean,
         isOnboarding: Boolean,
@@ -428,7 +442,7 @@ class PromptBuilder {
         sb.appendLine()
 
         // 当前场景
-        buildSceneGuidance(sb, state, activityAnchor, currentActivity, isInitiate, isPendingCatchup, consecutiveInboundCount, continuousRound)
+        buildSceneGuidance(sb, state, activityAnchor, currentActivity, isInitiate, initiateTopic, isPendingCatchup, consecutiveInboundCount, continuousRound)
 
         // 回复逻辑一致性约束（核心规则，放在 Zone C 让 LLM 生成前最后看到）
         buildConsistencyRules(sb, activityAnchor, currentActivity)
@@ -484,6 +498,9 @@ class PromptBuilder {
 
     /**
      * 当前场景引导（回复/主动发起/补回复）
+     *
+     * v2 增强：主动发起场景注入 ThinkActDecider 的 topicHint，
+     * 让 LLM 基于 persona 自然呈现话题（而非机械执行 Think 输出）
      */
     private fun buildSceneGuidance(
         sb: StringBuilder,
@@ -491,6 +508,7 @@ class PromptBuilder {
         activityAnchor: ActivityAnchor?,
         currentActivity: String?,
         isInitiate: Boolean,
+        initiateTopic: String,
         isPendingCatchup: Boolean,
         consecutiveInboundCount: Int,
         continuousRound: Int
@@ -503,6 +521,18 @@ class PromptBuilder {
             sb.appendLine("可能是：分享刚发生的事 / 突然想起什么 / 吐槽具体的烦恼 / 关心对方在干嘛 / 兴奋地讲刚想到的点子 / 或者就是一句简短的碎碎念")
             sb.appendLine("也可能此刻你正专注做事，没什么想说的，那就只发 1 条简短的（甚至可以是「...」表示沉默）")
             sb.appendLine("不要硬凑，不要套模板（不要每次都摸鱼/吐槽累）。真实的你在工作/游戏时会有各种状态，此刻的你想说什么就说什么")
+
+            // v2 注入 ThinkActDecider 的话题引导
+            if (initiateTopic.isNotBlank()) {
+                sb.appendLine()
+                sb.appendLine("【Think 模块话题引导（参考，不要机械执行）】")
+                sb.appendLine(initiateTopic)
+                sb.appendLine()
+                sb.appendLine("以上是 Think 模块基于观察给出的topic 方向。")
+                sb.appendLine("请基于自己的人格、当前活动、与用户的关系，自然地呈现这个话题——")
+                sb.appendLine("可以是顺着话题说、也可以是借题发挥、甚至可以只取其中一点展开。")
+                sb.appendLine("不要生硬地按 topic 发言，要像真人想到什么事就随口说出来那样自然。")
+            }
         } else if (isPendingCatchup) {
             sb.appendLine("【当前是补回复场景】")
             sb.appendLine("用户在之前的状态（你当时处于无法回复状态，如睡觉/洗澡）发了一些消息给你，你那时没来得及回复。")

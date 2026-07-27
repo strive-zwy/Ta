@@ -54,6 +54,7 @@ class ChatInteractor(private val context: Context) {
     private val memoryDao = ServiceLocator.memoryDao
     private val memoryStore = ServiceLocator.memoryStore
     private val observerRegistry = ServiceLocator.observerRegistry
+    private val conversationSummarizer = ServiceLocator.conversationSummarizer
     private val futureEventDao = ServiceLocator.futureEventDao
     private val prefs = ServiceLocator.userPreferences
     private val configProvider = ServiceLocator.agentConfigProvider
@@ -337,15 +338,19 @@ class ChatInteractor(private val context: Context) {
     /**
      * Agent 主动发起对话（无聊时 / Onboarding）
      *
+     * v2 集成 ThinkActDecider：
+     * - topicHint 由 ThinkActDecider.act() 生成，包含话题方向 + persona 引导
+     * - topicHint 为空时退化为 v1 行为（无引导，LLM 即兴发挥）
+     *
      * 主动发起的回复任务也纳入 currentReplyJob，
      * 用户发新消息时会取消正在进行的主动发起剩余条目。
      */
-    fun agentInitiate() {
+    fun agentInitiate(topicHint: String = "") {
         currentReplyJobRef.get()?.cancel()
         currentReplyJobRef.set(scope.launch {
             try {
                 _isReplying.value = true
-                generateAgentReply(isInitiate = true)
+                generateAgentReply(isInitiate = true, initiateTopic = topicHint)
             } finally {
                 _isReplying.value = false
                 currentReplyJobRef.set(null)
@@ -383,7 +388,8 @@ class ChatInteractor(private val context: Context) {
         isOnboarding: Boolean = false,
         isPendingCatchup: Boolean = false,
         isConfigMode: Boolean = false,
-        continuousRound: Int = 0
+        continuousRound: Int = 0,
+        initiateTopic: String = ""
     ) {
         try {
             // 跨天检测：确保作息是今天的（避免 App 跨天运行时基于前一天作息回复）
@@ -429,7 +435,11 @@ class ChatInteractor(private val context: Context) {
             // 解决 MochiBot "主回复路径错失状态" 的核心问题
             val observerSnapshots = observerRegistry.collectAll()
 
-            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor + 观察者数据注入）
+            // 获取历史对话摘要（v2 L2 认知层，注入 Zone B 节省 Token 保持上下文连贯）
+            val currentBucketId = conversationSummarizer.getCurrentBucketId()
+            val priorSummary = conversationSummarizer.getPriorSummaries(currentBucketId)
+
+            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor + 观察者数据 + 对话摘要）
             val llmMessages = promptBuilder.build(
                 config = configProvider.get(),
                 state = com.agent.ta.service.AgentEngine.currentState.value,
@@ -440,11 +450,13 @@ class ChatInteractor(private val context: Context) {
                 currentActivity = com.agent.ta.service.AgentEngine.getCurrentActivity(),
                 activityAnchor = activityAnchor,
                 isInitiate = isInitiate,
+                initiateTopic = initiateTopic,
                 todaySchedule = com.agent.ta.service.AgentEngine.getTodaySchedule(),
                 isPendingCatchup = isPendingCatchup,
                 isConfigMode = isConfigMode,
                 continuousRound = continuousRound,
-                observerSnapshots = observerSnapshots
+                observerSnapshots = observerSnapshots,
+                conversationSummary = priorSummary
             )
 
             // 调 LLM（支持工具调用）+ 一致性校验重试循环
