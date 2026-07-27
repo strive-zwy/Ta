@@ -1,0 +1,103 @@
+package com.agent.ta.infrastructure.observer
+
+import com.agent.ta.di.ServiceLocator
+import com.agent.ta.domain.anchor.ActivityAnchorManager
+import com.agent.ta.service.AgentEngine
+
+/**
+ * 活动锚点观察者（L0 基础设施层）
+ *
+ * 职责：
+ * 1. 监控当前 ActivityAnchor 的状态（活动内容、进度、是否过期）
+ * 2. 锚点过期时通过 hasDelta=true 通知 Heartbeat
+ * 3. 提供 promptHint 供主回复路径注入 Prompt
+ *
+ * 与 ActivityAnchorManager 的关系：
+ * - ActivityAnchorManager 是状态持有者（L1）
+ * - ActivityAnchorObserver 是状态读取者（L0），负责向 ObserverRegistry 暴露快照
+ *
+ * hasDelta 判定：
+ * - 活动内容变化（如从"健身"切换到"洗澡"）
+ * - 进度阶段变化（刚开始 → 进行中 → 快结束 → 已超时）
+ * - 来源变化（LLM → SCHEDULE）
+ */
+class ActivityAnchorObserver : Observer {
+
+    override val id: String = "activity_anchor"
+
+    private var lastActivity: String = ""
+    private var lastProgressStage: String = ""
+    private var lastSource: String = ""
+
+    override suspend fun collect(): ObserverSnapshot {
+        val anchor = AgentEngine.getCurrentActivityAnchor()
+        val timestamp = System.currentTimeMillis()
+
+        return if (anchor != null) {
+            val progress = anchor.progressDescription(timestamp)
+            val sourceTag = when (anchor.source) {
+                com.agent.ta.domain.anchor.AnchorSource.LLM -> "你之前设置的"
+                com.agent.ta.domain.anchor.AnchorSource.SCHEDULE -> "作息表当前时段"
+                com.agent.ta.domain.anchor.AnchorSource.INFERRED -> "推断"
+            }
+
+            val promptHint = buildString {
+                appendLine("【活动锚点观察】")
+                appendLine("当前活动：${anchor.activity}（$sourceTag）")
+                appendLine("进度：$progress")
+                appendLine("时段：${anchor.slotStart}-${anchor.slotEnd}")
+            }
+
+            ObserverSnapshot(
+                observerId = id,
+                timestamp = timestamp,
+                data = mapOf(
+                    "activity" to anchor.activity,
+                    "progress" to progress,
+                    "source" to anchor.source.name,
+                    "state" to anchor.state.id,
+                    "remaining_minutes" to anchor.remainingMinutes(timestamp)
+                ),
+                promptHint = promptHint
+            )
+        } else {
+            ObserverSnapshot(
+                observerId = id,
+                timestamp = timestamp,
+                data = emptyMap(),
+                promptHint = "【活动锚点观察】当前无活动锚点"
+            )
+        }
+    }
+
+    override fun hasDelta(current: ObserverSnapshot, previous: ObserverSnapshot?): Boolean {
+        if (previous == null) return true
+
+        val currentActivity = current.data["activity"] as? String ?: ""
+        val currentProgress = current.data["progress"] as? String ?: ""
+        val currentSource = current.data["source"] as? String ?: ""
+
+        // 进度阶段变化（刚开始 → 进行中 → 快结束 → 已超时）
+        val currentStage = extractProgressStage(currentProgress)
+        val previousStage = extractProgressStage(lastProgressStage)
+
+        val activityChanged = currentActivity != lastActivity
+        val stageChanged = currentStage != previousStage
+        val sourceChanged = currentSource != lastSource
+
+        return activityChanged || stageChanged || sourceChanged
+    }
+
+    /**
+     * 从进度描述中提取阶段（用于判断阶段切换）
+     */
+    private fun extractProgressStage(progress: String): String {
+        return when {
+            progress.contains("刚开始") -> "started"
+            progress.contains("快结束") -> "ending"
+            progress.contains("已超时") -> "expired"
+            progress.contains("已进行") -> "ongoing"
+            else -> "unknown"
+        }
+    }
+}

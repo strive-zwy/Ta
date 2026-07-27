@@ -93,6 +93,16 @@ object AgentEngine {
 
             // 6. 检查 Onboarding 状态
             checkOnboarding(appContext)
+
+            // 7. 注册内置观察者并启动心跳（L0 基础设施层）
+            //    阶段4: 仅记录日志验证 Observer 工作
+            //    阶段6: 注入 ThinkActDecider 处理状态变化
+            ServiceLocator.registerObserversIfNeeded()
+            ServiceLocator.heartbeat.start { changedSnapshots ->
+                Log.d(TAG, "Heartbeat 检测到状态变化：${changedSnapshots.map { it.observerId }}")
+                // 阶段6 将在此调用 thinkActDecider.think(changedSnapshots)
+            }
+            Log.d(TAG, "L0 基础设施层已启动（Observer + Heartbeat）")
         }
     }
 
@@ -234,6 +244,11 @@ object AgentEngine {
      * 获取当前时段的具体活动（如"去杭州拍戏"），供 PromptBuilder 让 LLM 知道当前在做什么
      */
     fun getCurrentActivity(): String? = stateMachine.getCurrentSlot()?.activity
+
+    /**
+     * 获取当前时段（供 Observer 读取，不触发状态切换）
+     */
+    fun getCurrentSlot(): com.agent.ta.data.model.DailySlot? = stateMachine.getCurrentSlot()
 
     /**
      * 获取当前有效的活动锚点（应用侧权威状态）

@@ -21,9 +21,21 @@ import com.agent.ta.domain.tool.builtin.WebSearchTool
 import com.agent.ta.domain.tool.builtin.TodoTool
 import com.agent.ta.domain.tool.builtin.MemoryTool
 import com.agent.ta.domain.tool.builtin.SetActivityTool
+import com.agent.ta.infrastructure.heartbeat.Heartbeat
+import com.agent.ta.infrastructure.observer.ActivityAnchorObserver
+import com.agent.ta.infrastructure.observer.ObserverRegistry
+import com.agent.ta.infrastructure.observer.RecentConversationObserver
+import com.agent.ta.infrastructure.observer.TimeContextObserver
+import com.agent.ta.infrastructure.time.TimeContext
 
 /**
  * 手动依赖容器，替代 Hilt/Dagger
+ *
+ * 分层注册（v2 架构）：
+ * - L0 基础设施层: observerRegistry / heartbeat / timeContext
+ * - L1 状态层: activityAnchorManager / memoryStore (阶段5)
+ * - L2 认知层: conversationSummarizer / thinkActDecider (阶段6)
+ * - L3 执行层: chatInteractor / toolRegistry / llmClient / ttsClient
  */
 object ServiceLocator {
 
@@ -78,6 +90,54 @@ object ServiceLocator {
      * - LLM 锚点过期后自动回退到作息表派生
      */
     val activityAnchorManager: ActivityAnchorManager by lazy { ActivityAnchorManager(app) }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // L0 基础设施层（v2 架构新增）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** 统一时间上下文（Asia/Shanghai 时区） */
+    val timeContext: TimeContext by lazy { TimeContext.getInstance() }
+
+    /**
+     * 观察者注册中心
+     *
+     * 注册的观察者：
+     * - ActivityAnchorObserver: 监控活动锚点过期/变化
+     * - TimeContextObserver: 监控时段切换/跨天
+     * - RecentConversationObserver: 监控用户长时间未响应
+     *
+     * 使用方式：
+     * - 主回复路径: registry.collectAll() 获取完整快照注入 Prompt
+     * - 心跳路径: registry.collectChanged() 仅获取变化触发 Think
+     */
+    val observerRegistry: ObserverRegistry by lazy { ObserverRegistry() }
+
+    /**
+     * 心跳调度器（每分钟 tick）
+     *
+     * 启动时机：AgentEngine.start() 中调用 heartbeat.start()
+     * 停止时机：通常不需要停止，前台服务存活期间持续运行
+     *
+     * 阶段4: 仅记录日志验证 Observer 工作
+     * 阶段6: 注入 ThinkActDecider 处理状态变化
+     */
+    val heartbeat: Heartbeat by lazy { Heartbeat(observerRegistry, appScope) }
+
+    /** 观察者是否已注册（避免重复注册） */
+    @Volatile
+    private var observersRegistered: Boolean = false
+
+    /**
+     * 注册内置观察者（首次访问时调用）
+     * 在 AgentEngine.start() 中触发，确保 DB 和作息表已就绪
+     */
+    suspend fun registerObserversIfNeeded() {
+        if (observersRegistered) return
+        observersRegistered = true
+        observerRegistry.register(ActivityAnchorObserver())
+        observerRegistry.register(TimeContextObserver())
+        observerRegistry.register(RecentConversationObserver())
+    }
 
     /**
      * 工具注册中心（v3 通用工具系统）
