@@ -5,6 +5,7 @@ import android.util.Log
 import com.agent.ta.data.local.entity.OnboardingStateEntity
 import com.agent.ta.data.model.AgentState
 import com.agent.ta.di.ServiceLocator
+import com.agent.ta.domain.anchor.ActivityAnchor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -73,6 +74,10 @@ object AgentEngine {
             stateMachine.init(slots, config.behavior.replyDelaySec)
             _currentState.value = stateMachine.currentState.value
 
+            // 2.5 初始化活动锚点管理器（从作息表当前时段派生 SCHEDULE anchor）
+            ServiceLocator.activityAnchorManager.getEffectiveAnchor(slots)
+            Log.d(TAG, "活动锚点已初始化：${getCurrentActivityAnchor()?.activity ?: "无"}")
+
             // 3. 注册状态切换调度
             scheduler = StateScheduler(appContext)
             val switches = stateMachine.getUpcomingSwitches(8)
@@ -102,6 +107,10 @@ object AgentEngine {
         stateMachine.switchTo(newState)
         _currentState.value = newState
         val newSlot = stateMachine.getCurrentSlot()
+
+        // 时段切换 → 通知 ActivityAnchorManager 清除 LLM anchor 并派生新 SCHEDULE anchor
+        // 这确保活动锚点始终与当前时段一致，避免 LLM 凭空改变活动状态
+        ServiceLocator.activityAnchorManager.onSlotChanged(stateMachine.getTodaySlots())
 
         scope.launch {
             processPendingMessages(context)
@@ -155,6 +164,8 @@ object AgentEngine {
         _currentState.value = stateMachine.currentState.value
         val switches = stateMachine.getUpcomingSwitches(8)
         scheduler?.scheduleNextSwitches(switches)
+        // 作息更新后刷新活动锚点（可能当前时段活动已改变）
+        ServiceLocator.activityAnchorManager.getEffectiveAnchor(newSlots)
         Log.d(TAG, "作息已更新（局部调整），${newSlots.size} 个时段")
     }
 
@@ -214,6 +225,8 @@ object AgentEngine {
         _currentState.value = stateMachine.currentState.value
         val switches = stateMachine.getUpcomingSwitches(8)
         scheduler?.scheduleNextSwitches(switches)
+        // 跨天加载新作息后刷新活动锚点
+        ServiceLocator.activityAnchorManager.onSlotChanged(slots)
         Log.d(TAG, "作息已更新为今天的（$today），${slots.size} 个时段，当前活动：${getCurrentActivity()}")
     }
 
@@ -221,6 +234,20 @@ object AgentEngine {
      * 获取当前时段的具体活动（如"去杭州拍戏"），供 PromptBuilder 让 LLM 知道当前在做什么
      */
     fun getCurrentActivity(): String? = stateMachine.getCurrentSlot()?.activity
+
+    /**
+     * 获取当前有效的活动锚点（应用侧权威状态）
+     *
+     * 优先级：
+     * - LLM 通过 set_activity 工具设置的锚点（未过期时优先）
+     * - 作息表当前时段派生的锚点（兜底）
+     *
+     * 供 PromptBuilder 注入 system prompt，让 LLM 始终锚定真实活动状态，
+     * 避免前后回复活动状态矛盾（如上一轮说"去洗澡了"，下一轮说"还在健身"）。
+     */
+    fun getCurrentActivityAnchor(): ActivityAnchor? {
+        return ServiceLocator.activityAnchorManager.getEffectiveAnchor(stateMachine.getTodaySlots())
+    }
 
     /**
      * 获取今日全天作息（供 PromptBuilder 注入，让 Agent 对话时参考全天安排，不会前后矛盾）
@@ -291,6 +318,8 @@ object AgentEngine {
         scheduler?.cancelAll()
         val switches = stateMachine.getUpcomingSwitches(8)
         scheduler?.scheduleNextSwitches(switches)
+        // Agent 切换后清除旧 anchor，从新作息派生
+        ServiceLocator.activityAnchorManager.onSlotChanged(slots)
         Log.d(TAG, "配置变更后已重新加载作息与调度（Agent 切换），slots=${slots.size}，当前活动：${getCurrentActivity()}")
     }
 

@@ -10,6 +10,7 @@ import com.agent.ta.data.remote.LlmClient.ToolCallResponse
 import com.agent.ta.data.remote.dto.ChatMessage
 import com.agent.ta.data.remote.dto.ReplyItem
 import com.agent.ta.di.ServiceLocator
+import com.agent.ta.domain.consistency.ReplyConsistencyValidator
 import com.agent.ta.domain.tool.ToolContext
 import com.agent.ta.service.NotificationHelper
 import com.agent.ta.util.SystemTtsSynthesizer
@@ -57,6 +58,7 @@ class ChatInteractor(private val context: Context) {
     private val notificationHelper = NotificationHelper(context)
     private val scheduleAdjuster = ScheduleAdjuster()
     private val systemTtsSynthesizer = SystemTtsSynthesizer(context)
+    private val consistencyValidator = ReplyConsistencyValidator()
 
     /**
      * 用户发送消息
@@ -387,18 +389,28 @@ class ChatInteractor(private val context: Context) {
 
             // 取最近 20 条消息作为上下文
             val recentMessages = chatDao.getAll().takeLast(20)
+            // 构造带 [MM-DD HH:MM] 时间戳前缀的 ChatMessage
+            // 让 LLM 感知对话节奏，避免跨轮次活动状态矛盾（如上一轮说"去洗澡了"，这一轮说"还在健身"）
+            val timestampFormat = java.time.format.DateTimeFormatter
+                .ofPattern("MM-dd HH:mm")
+                .withZone(java.time.ZoneId.of("Asia/Shanghai"))
             val chatMessages = recentMessages.map { msg ->
                 // 纯 emoji 消息 text=null，需要把 emoji 也带上，否则 LLM 看不到
-                val content = buildString {
+                val rawContent = buildString {
                     if (!msg.emoji.isNullOrBlank()) append(msg.emoji)
                     if (!msg.text.isNullOrBlank()) {
                         if (isNotEmpty()) append(" ")
                         append(msg.text)
                     }
                 }
+                val timePrefix = try {
+                    "[" + timestampFormat.format(java.time.Instant.ofEpochMilli(msg.createdAt)) + "] "
+                } catch (e: Exception) {
+                    ""
+                }
                 ChatMessage(
                     role = if (msg.direction == "inbound") "user" else "assistant",
-                    content = content
+                    content = timePrefix + rawContent
                 )
             }
 
@@ -406,7 +418,10 @@ class ChatInteractor(private val context: Context) {
             val memories = memoryDao.getTopMemories(20)
             adjustMemoryImportance(memories)
 
-            // 构造 LLM 请求
+            // 获取当前活动锚点（应用侧权威状态，优先于 currentActivity）
+            val activityAnchor = com.agent.ta.service.AgentEngine.getCurrentActivityAnchor()
+
+            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor 注入）
             val llmMessages = promptBuilder.build(
                 config = configProvider.get(),
                 state = com.agent.ta.service.AgentEngine.currentState.value,
@@ -415,6 +430,7 @@ class ChatInteractor(private val context: Context) {
                 recentMessages = chatMessages,
                 isOnboarding = isOnboarding,
                 currentActivity = com.agent.ta.service.AgentEngine.getCurrentActivity(),
+                activityAnchor = activityAnchor,
                 isInitiate = isInitiate,
                 todaySchedule = com.agent.ta.service.AgentEngine.getTodaySchedule(),
                 isPendingCatchup = isPendingCatchup,
@@ -422,12 +438,40 @@ class ChatInteractor(private val context: Context) {
                 continuousRound = continuousRound
             )
 
-            // 调 LLM（支持工具调用）
-            val reply = callLlmWithToolSupport(
+            // 调 LLM（支持工具调用）+ 一致性校验重试循环
+            // 校验失败时追加修正指令重试，最多 MAX_CONSISTENCY_RETRIES 次
+            var reply = callLlmWithToolSupport(
                 messages = llmMessages,
                 isConfigMode = isConfigMode,
                 isPendingCatchup = isPendingCatchup
             )
+            var consistencyRetryCount = 0
+            var currentMessages = llmMessages
+            while (consistencyRetryCount < MAX_CONSISTENCY_RETRIES) {
+                coroutineContext.ensureActive()
+                val validationResult = consistencyValidator.validate(reply, activityAnchor, chatMessages)
+                if (validationResult.passed) {
+                    if (consistencyRetryCount > 0) {
+                        Log.d(TAG, "一致性校验通过（重试 $consistencyRetryCount 次后）")
+                    }
+                    break
+                }
+                Log.w(TAG, "一致性校验失败（第 ${consistencyRetryCount + 1} 次），重试中：${validationResult.issues.joinToString("; ")}")
+                // 追加修正指令作为 system 消息，让 LLM 修正后重新回复
+                currentMessages = currentMessages + ChatMessage(
+                    role = "system",
+                    content = validationResult.correctionHint
+                )
+                reply = callLlmWithToolSupport(
+                    messages = currentMessages,
+                    isConfigMode = isConfigMode,
+                    isPendingCatchup = isPendingCatchup
+                )
+                consistencyRetryCount++
+            }
+            if (consistencyRetryCount >= MAX_CONSISTENCY_RETRIES) {
+                Log.w(TAG, "一致性校验重试达上限($MAX_CONSISTENCY_RETRIES)，使用最后一次回复")
+            }
 
             // 存记忆
             reply.memoryUpdates.forEach { update ->
@@ -970,6 +1014,9 @@ class ChatInteractor(private val context: Context) {
 
         // 工具调用最大轮次（防死循环）
         private const val MAX_TOOL_ROUNDS = 3
+
+        // 一致性校验最大重试次数（校验失败时追加修正指令重试）
+        private const val MAX_CONSISTENCY_RETRIES = 2
 
         // 当前进行中的回复任务（跨实例共享，用户发新消息时取消）
         // 使用 AtomicReference 避免竞态条件
