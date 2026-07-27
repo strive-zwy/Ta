@@ -235,6 +235,9 @@ class TtsClient {
 
     /**
      * 把对应情绪的 voiceParams 注入到 directorPrompt（作为对 TTS 模型的提示）
+     *
+     * voiceParams 中的数值（如 speed=1.0）会被转换为语义描述（如"适中"），
+     * 让 TTS 模型更容易理解用户意图，而不是依赖数值精度。
      */
     private fun buildDirectorWithParams(
         baseDirectorPrompt: String,
@@ -242,18 +245,29 @@ class TtsClient {
         emotionHint: String?
     ): String {
         if (config == null) return baseDirectorPrompt
+        // 声音风格未开启：不注入声学参数，让 TTS 模型自主分析语气/语速/音量
+        if (!config.styleEnabled) {
+            val sb = StringBuilder(baseDirectorPrompt)
+            if (baseDirectorPrompt.isNotBlank() && !baseDirectorPrompt.endsWith("\n")) {
+                sb.appendLine()
+            }
+            if (config.voiceDescription.isNotBlank()) {
+                sb.appendLine("声音描述：${config.voiceDescription}")
+            }
+            appendNaturalnessGuide(sb)
+            return sb.toString()
+        }
         val params = config.voiceParamsFor(emotionHint)
-        if (params.isEmpty() && config.voiceDescription.isBlank()) return baseDirectorPrompt
-
-        // 音色设计模式不需要把 voiceDescription 重复注入（它已经是 user message 主体）
-        // 只在非 voicedesign 模式下注入 voiceDescription
         val sb = StringBuilder(baseDirectorPrompt)
         if (baseDirectorPrompt.isNotBlank() && !baseDirectorPrompt.endsWith("\n")) {
             sb.appendLine()
         }
+        if (params.isEmpty() && config.voiceDescription.isBlank()) {
+            // 没有声学参数也没有声音描述，只注入自然度引导
+            appendNaturalnessGuide(sb)
+            return sb.toString()
+        }
         sb.appendLine("【声学参数】")
-        // voiceDescription 仅在 voiceclone 和 preset 模式下作为提示注入
-        // voicedesign 模式下 voiceDescription 已是 user message 主体，不重复
         if (params.isNotEmpty()) {
             params.forEach { (key, value) ->
                 if (value.isNotBlank()) {
@@ -265,10 +279,18 @@ class TtsClient {
                         "intonation" -> "语调"
                         else -> key
                     }
-                    sb.appendLine("- $label：$value")
+                    // speed/pitch 等数值转为语义描述，帮助 TTS 模型理解
+                    val semantic = when (key) {
+                        "speed" -> describeSpeedSemantically(value.toFloatOrNull())
+                        "pitch" -> describePitchSemantically(value.toFloatOrNull())
+                        else -> value
+                    }
+                    sb.appendLine("- $label：$semantic")
                 }
             }
         }
+        // 自然度通用指导
+        appendNaturalnessGuide(sb)
         if (config.punctuationStyle.isNotBlank()) {
             sb.appendLine("标点风格：${config.punctuationStyle}")
         }
@@ -276,6 +298,56 @@ class TtsClient {
             sb.appendLine("口头缀词处理：${config.fillerWordsHandling}")
         }
         return sb.toString()
+    }
+
+    /**
+     * 自然度引导：注入到 TTS prompt，提升语音自然度
+     *
+     * 针对 MiMo TTS 模型，引导其：
+     * - 像真人说话一样有呼吸节奏和停顿
+     * - 语气词自然融入而非生硬
+     * - 句末语调符合语境（疑问上扬/陈述收住/感叹加强）
+     * - 避免机械感和磕绊
+     */
+    private fun appendNaturalnessGuide(sb: StringBuilder) {
+        sb.appendLine("【自然度要求】")
+        sb.appendLine("- 像真人对面聊天一样说话，有呼吸节奏，句子之间用短暂停顿分隔（不是机械停顿）")
+        sb.appendLine("- 语气词（啊、呢、嘛、吧、哦）自然融入句末，不要每句都加，也不要一句不加")
+        sb.appendLine("- 句末语调符合语义：疑问句轻微上扬，陈述句自然收住，感叹句略加强")
+        sb.appendLine("- 避免一字一顿的机械感，避免重复磕绊，长句中间可适当换气")
+        sb.appendLine("- 情绪自然流露，不要夸张表演，像和朋友随意聊天")
+    }
+
+    /**
+     * 把 speed 数值转为语义描述
+     * 与 AgentVoiceScreen 的档位值对应：
+     *   0.75 → 偏慢 / 0.9 → 适中偏慢 / 1.0 → 适中 / 1.15 → 偏快 / 1.4 → 较快
+     */
+    private fun describeSpeedSemantically(speed: Float?): String {
+        if (speed == null) return "适中"
+        return when {
+            speed <= 0.8f -> "偏慢，从容不迫"
+            speed <= 0.95f -> "适中偏慢，自然柔和"
+            speed <= 1.05f -> "适中，自然说话节奏"
+            speed <= 1.25f -> "偏快，但吐字清晰"
+            else -> "较快，语速明快"
+        }
+    }
+
+    /**
+     * 把 pitch 数值转为语义描述
+     * 与 AgentVoiceScreen 的档位值对应：
+     *   0.75 → 低沉 / 0.9 → 偏低 / 1.0 → 自然 / 1.2 → 清亮 / 1.5 → 高亢
+     */
+    private fun describePitchSemantically(pitch: Float?): String {
+        if (pitch == null) return "自然"
+        return when {
+            pitch <= 0.8f -> "低沉"
+            pitch <= 0.95f -> "偏低，沉稳"
+            pitch <= 1.05f -> "自然"
+            pitch <= 1.3f -> "偏高，明亮"
+            else -> "高亢"
+        }
     }
 
     /**

@@ -57,11 +57,30 @@ data class ConfigUpdate(
 
 /**
  * 作息调整请求（由 LLM 输出，ChatInteractor 检查 shouldAdjust 后调用 ScheduleAdjuster）
+ *
+ * v3 事件驱动架构：LLM 输出具体的调整类型和参数，ScheduleAdjuster 局部修改 slots
+ * 不再调 LLM 重新生成全天作息（省一次调用 + 保留已完成时段）
+ *
+ * 事件类型：
+ * - EXTEND: 延长当前时段（如打游戏上瘾多玩会儿）
+ * - SHORTEN: 缩短当前时段（如提前结束工作）
+ * - SKIP: 跳过下一时段（如不洗澡直接睡觉）
+ * - REPLACE: 替换当前时段活动内容（如把"工作"改为"陪用户聊天"）
+ * - INSERT: 当前时段后插入新时段（如加一段陪聊时间）
+ * - SHIFT: 后移后续时段（如所有时段顺延 30 分钟）
  */
 @Serializable
 data class ScheduleAdjustment(
     val shouldAdjust: Boolean = false,
-    val reason: String = ""
+    val reason: String = "",
+    /** 调整类型：EXTEND / SHORTEN / SKIP / REPLACE / INSERT / SHIFT，空字符串表示未指定 */
+    val adjustmentType: String = "",
+    /** 调整参数（分钟数）：EXTEND/SHORTEN/SHIFT 的时长，INSERT 的新时段时长 */
+    val durationMinutes: Int = 0,
+    /** REPLACE/INSERT 的新活动内容 */
+    val newActivity: String = "",
+    /** REPLACE/INSERT 的新状态：normal/busy/idle/unavailable */
+    val newState: String = ""
 )
 
 /**

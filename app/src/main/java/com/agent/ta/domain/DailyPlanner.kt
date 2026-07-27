@@ -65,29 +65,38 @@ class DailyPlanner {
 
     /**
      * 强制重新规划当天作息（用于 Agent 主动调整）
+     *
+     * @param isAgentSwitch 是否为切换 Agent 场景（导入新 Agent）
+     *        true 时不注入历史记忆/对话/作息历史，避免新 Agent 沿用旧 Agent 风格
      */
     suspend fun regenerateTodaySchedule(
         config: AgentConfig,
         zoneId: ZoneId = ZoneId.of("Asia/Shanghai"),
-        reason: String = ""
+        reason: String = "",
+        isAgentSwitch: Boolean = false
     ): List<DailySlot> = withContext(Dispatchers.IO) {
         val today = LocalDate.now(zoneId).format(DATE_FORMAT)
-        generateTodaySchedule(config, zoneId, today, reason)
+        generateTodaySchedule(config, zoneId, today, reason, isAgentSwitch)
     }
 
     /**
      * 调用 LLM 生成当天作息
+     *
+     * @param isAgentSwitch 是否为切换 Agent 场景（导入新 Agent）
+     *        true 时不注入历史记忆/对话/作息历史，避免新 Agent 沿用旧 Agent 风格
      */
     private suspend fun generateTodaySchedule(
         config: AgentConfig,
         zoneId: ZoneId,
         dateStr: String,
-        adjustReason: String = ""
+        adjustReason: String = "",
+        isAgentSwitch: Boolean = false
     ): List<DailySlot> {
         try {
             val now = LocalDateTime.now(zoneId)
-            val memories = memoryDao.getTopMemories(20)
-            val recentChats = chatMessageDao.getAll().takeLast(10)
+            // 切换 Agent 时不注入旧 Agent 的历史记忆/对话/作息，只用新 persona 生成
+            val memories = if (isAgentSwitch) emptyList() else memoryDao.getTopMemories(20)
+            val recentChats = if (isAgentSwitch) emptyList() else chatMessageDao.getAll().takeLast(10)
 
             // 清理过期未来事件（今天之前的）
             val today = now.toLocalDate()
@@ -97,10 +106,28 @@ class DailyPlanner {
             val weekLater = today.plusDays(7).format(DATE_FORMAT)
             val futureEvents = futureEventDao.getRange(dateStr, weekLater)
 
-            // 生成昨天回顾（如果昨天有作息记录但还没生成回顾）
-            generateYesterdayRecall(today, zoneId)
+            // 查询近 7 天作息历史（切换 Agent 时不注入，避免沿用旧 Agent 作息风格）
+            val recentActivities = if (isAgentSwitch) {
+                RecentActivitiesSummary(emptyMap(), emptyMap())
+            } else {
+                buildRecentActivitiesSummary(today, zoneId, days = 7)
+            }
 
-            val systemPrompt = buildPlanPrompt(config, now, memories, recentChats, futureEvents, adjustReason)
+            // 生成昨天回顾（如果昨天有作息记录但还没生成回顾）
+            if (!isAgentSwitch) {
+                generateYesterdayRecall(today, zoneId)
+                // 生成昨天对话摘要（让 Agent 记得昨天和用户聊了什么内容）
+                try {
+                    DailySummaryGenerator().generateSummaryForDate(today.minusDays(1), zoneId)
+                } catch (e: Exception) {
+                    Log.w(TAG, "生成昨日对话摘要失败（不影响作息生成）", e)
+                }
+            }
+
+            val systemPrompt = buildPlanPrompt(
+                config, now, memories, recentChats, futureEvents,
+                recentActivities, adjustReason
+            )
             val messages = listOf(
                 ChatMessage("system", systemPrompt),
                 ChatMessage("user", "请规划你今天的作息时间表。")
@@ -173,6 +200,9 @@ class DailyPlanner {
 
     /**
      * 构造作息规划 prompt
+     *
+     * v3 增强：注入近 7 天作息历史 + 活动频次统计 + 多样性引导规则，
+     * 避免每天作息高度重复（用户反馈"最近几天的作息都大差不差"）
      */
     private fun buildPlanPrompt(
         config: AgentConfig,
@@ -180,6 +210,7 @@ class DailyPlanner {
         memories: List<MemoryEntity>,
         recentChats: List<com.agent.ta.data.local.entity.ChatMessageEntity>,
         futureEvents: List<FutureEventEntity>,
+        recentActivities: RecentActivitiesSummary,
         adjustReason: String
     ): String {
         val persona = config.agent.persona
@@ -206,6 +237,35 @@ class DailyPlanner {
         sb.appendLine("当前时间：$dateStr $weekDay ${now.toLocalTime().truncatedTo(ChronoUnit.MINUTES)}")
         val isWeekend = now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY
         sb.appendLine("今天是${if (isWeekend) "周末" else "工作日"}")
+        sb.appendLine()
+
+        // 近 7 天作息历史（核心：让 LLM 知道最近做了什么，避免重复）
+        if (recentActivities.activitiesByDate.isNotEmpty()) {
+            sb.appendLine("【重要】你最近 7 天的作息历史（避免今天重复）：")
+            recentActivities.activitiesByDate.entries.sortedByDescending { it.key }.forEach { (date, acts) ->
+                val nonSleepActs = acts.filter { it.isNotBlank() && it != "睡觉" }
+                if (nonSleepActs.isNotEmpty()) {
+                    sb.appendLine("- $date：${nonSleepActs.joinToString("、")}")
+                }
+            }
+            sb.appendLine()
+
+            // 高频活动提示
+            val highFreq = recentActivities.frequency.entries
+                .filter { it.value >= 2 && it.key.isNotBlank() && it.key != "睡觉" }
+                .sortedByDescending { it.value }
+                .take(5)
+            if (highFreq.isNotEmpty()) {
+                sb.appendLine("最近频繁出现的活动（今天建议换换花样）：")
+                highFreq.forEach { (act, count) ->
+                    sb.appendLine("- $act（${count}次）")
+                }
+                sb.appendLine()
+            }
+        }
+
+        // 活动灵感库（基于 persona.interests + 状态类型提示，引导多样性）
+        sb.appendLine(buildActivitySuggestions(persona, isWeekend))
         sb.appendLine()
 
         // 近期记忆
@@ -282,9 +342,91 @@ class DailyPlanner {
         sb.appendLine("- 结合记忆中的近期活动，避免重复或补充未完成的事")
         sb.appendLine("- 时间不要全部卡整点：起床、吃饭、休息等时段用真实的小时+分钟（如 07:23 / 12:45 / 18:17），像真人作息而不是课表")
         sb.appendLine("- 但睡觉/工作这种长时段可以是整点或半点（如 02:00 / 09:30）")
+        // 多样性硬规则
+        sb.appendLine("- 【重要多样性要求】今天至少有 1-2 个时段做最近 3 天没做过的活动，不要简单复制历史作息")
+        sb.appendLine("- 避免每天都用同样的活动名（如不要每天都「玩游戏」「工作」「洗澡」），换换说法和内容（如「打新出的塞尔达」「赶设计稿」「泡澡放松」）")
+        sb.appendLine("- activity 描述要具体（如「看《三体》第3章」而非「看书」；「整理书桌」「刷 B 站」「试新菜谱」「下楼散步」）")
 
         return sb.toString()
     }
+
+    /**
+     * 提取近 N 天的活动统计
+     *
+     * @return RecentActivitiesSummary 包含按日期分组的活动列表 + 活动频次 Map
+     */
+    private suspend fun buildRecentActivitiesSummary(
+        today: LocalDate,
+        zoneId: ZoneId,
+        days: Int = 7
+    ): RecentActivitiesSummary {
+        val startDate = today.minusDays(days.toLong()).format(DATE_FORMAT)
+        val endDate = today.minusDays(1).format(DATE_FORMAT)  // 不含今天
+        val recentSchedules = try {
+            dailyScheduleDao.getRange(startDate, endDate)
+        } catch (e: Exception) {
+            Log.w(TAG, "查询近 $days 天作息失败", e)
+            return RecentActivitiesSummary(emptyMap(), emptyMap())
+        }
+
+        // 按日期分组的活动列表
+        val byDate = mutableMapOf<String, List<String>>()
+        val frequency = mutableMapOf<String, Int>()
+
+        recentSchedules.forEach { entity ->
+            val slots = parseSlots(entity.slotsJson)
+            if (slots.isNotEmpty()) {
+                byDate[entity.date] = slots.map { it.activity }
+                slots.forEach { slot ->
+                    val activity = slot.activity.trim()
+                    if (activity.isNotBlank()) {
+                        frequency[activity] = (frequency[activity] ?: 0) + 1
+                    }
+                }
+            }
+        }
+
+        return RecentActivitiesSummary(byDate, frequency)
+    }
+
+    /**
+     * 基于人格兴趣生成活动灵感提示
+     *
+     * 不是硬性要求，只是给 LLM 提供多样化活动的灵感菜单
+     * LLM 可以从中挑选，也可以自由发挥
+     */
+    private fun buildActivitySuggestions(persona: com.agent.ta.data.model.Persona, isWeekend: Boolean): String {
+        val sb = StringBuilder()
+        sb.appendLine("【活动灵感库】（参考用，不必全部采用，鼓励自由发挥）：")
+
+        // 用户配置的兴趣
+        if (persona.interests.isNotEmpty()) {
+            sb.appendLine("- 你的兴趣：${persona.interests.joinToString("、")}")
+        }
+
+        // 按状态分类的活动灵感
+        sb.appendLine(if (isWeekend) {
+            "- 周末灵感：出门逛街/看展览/见朋友/做顿大餐/看一部电影/整理房间/运动/咖啡馆发呆/追剧/玩新游戏"
+        } else {
+            "- 工作日灵感：专注工作/学习新技能/午休时看会儿书/下班运动/做简单的饭/处理琐事/和家人朋友通话"
+        })
+        sb.appendLine("- idle 状态灵感：刷手机/听播客/发呆/喝茶/撸猫/看窗外/整理桌面/随便画两笔")
+        sb.appendLine("- unavailable 状态灵感：洗澡/泡澡/午睡/冥想/做家务/做饭")
+        sb.appendLine("- 创意活动（让生活有质感）：尝试新菜谱/学一首歌/写日记/拍照记录/做手工/逛书店/散步去没去过的地方")
+        sb.appendLine("- 社交活动：和朋友聊天/回复消息/玩多人游戏/视频通话")
+
+        return sb.toString()
+    }
+
+    /**
+     * 近期活动统计结果
+     */
+    private data class RecentActivitiesSummary(
+        /** 按日期分组的活动列表（key=日期 "yyyy-MM-dd"，value=该日所有时段的 activity） */
+        val activitiesByDate: Map<String, List<String>>,
+        /** 活动频次（key=activity 文本，value=出现次数） */
+        val frequency: Map<String, Int>
+    )
 
     /**
      * 从 LLM 回复中解析 slots

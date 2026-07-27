@@ -69,13 +69,14 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.agent.ta.domain.AgentConfigExporter
 import com.agent.ta.domain.AgentImportManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 // 功能图标辅助色（低饱和，仅本页使用；Ai* 主色板见 AgentConfigComponents.kt）
@@ -106,12 +107,12 @@ fun AgentConfigScreen(
     onImport: () -> Unit = {},
     onExport: () -> Unit = {}
 ) {
-    val config = remember { ServiceLocator.agentConfigProvider.get() }
+    // 监听配置 Flow：导入后 provider 刷新 → config 更新 → UI 自动重组显示新数据
+    val config by ServiceLocator.agentConfigProvider.config.collectAsState()
     val agent = config.agent
 
     // ===== SAF 导出/导入 launcher 接入 =====
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var exporting by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
 
@@ -119,7 +120,9 @@ fun AgentConfigScreen(
         ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
         if (uri != null) {
-            scope.launch {
+            // 使用应用级 scope（SupervisorJob 不被 composition 生命周期取消）+ 主线程
+            // 保证 Compose state 修改在主线程，避免线程安全崩溃
+            ServiceLocator.appScope.launch(Dispatchers.Main) {
                 exporting = true
                 try {
                     val name = AgentConfigExporter().export(context, uri)
@@ -138,7 +141,7 @@ fun AgentConfigScreen(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            scope.launch {
+            ServiceLocator.appScope.launch(Dispatchers.Main) {
                 importing = true
                 try {
                     val name = AgentImportManager(context).import(uri)

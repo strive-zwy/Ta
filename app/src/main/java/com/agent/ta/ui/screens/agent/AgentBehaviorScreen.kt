@@ -37,8 +37,6 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.RangeSlider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -80,7 +78,7 @@ import kotlinx.coroutines.launch
 
 // ===== 行为配置页面设计色板 =====
 // 复用 AgentConfigComponents 中的共享 Ai* 色板，保持与 Agent 配置页面一致
-// 状态色仅作为局部点缀（Badge / 图标 / Slider / Switch）
+// 状态色仅作为局部点缀（Badge / 图标 / 档位 / Switch）
 private val StateColorNormal = AiPrimary              // 正常 - 青绿（主色）
 private val StateColorBusy = Color(0xFF7B6EF6)        // 忙碌 - 紫
 private val StateColorIdle = Color(0xFF4FA3E0)        // 空闲 - 天蓝
@@ -329,10 +327,9 @@ private fun StateBehaviorRow(
             ) {
                 if (replyDelay != null) {
                     ReplyDelaySection(
-                        minValue = replyDelay.first,
-                        maxValue = replyDelay.second,
-                        onMinChange = { onReplyDelayChange(it to replyDelay.second) },
-                        onMaxChange = { onReplyDelayChange(replyDelay.first to it) },
+                        stateKey = stateKey,
+                        currentRange = replyDelay,
+                        onRangeChange = onReplyDelayChange,
                         accent = accent
                     )
                 }
@@ -357,216 +354,105 @@ private fun StateBehaviorRow(
 }
 
 // =============================================================
-// 回复延迟模块
+// 回复延迟模块（档位选择版）
 // =============================================================
-@Composable
-private fun ReplyDelaySection(
-    minValue: Float,
-    maxValue: Float,
-    onMinChange: (Float) -> Unit,
-    onMaxChange: (Float) -> Unit,
-    accent: Color
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "回复延迟",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = AiTextSecondary
-            )
-            Text(
-                text = "${minValue.toInt()}-${maxValue.toInt()} 秒",
-                fontSize = 13.sp,
-                color = accent,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        SimpleRangeSlider(
-            minValue = minValue,
-            maxValue = maxValue,
-            onMinChange = onMinChange,
-            onMaxChange = onMaxChange,
-            accent = accent
-        )
-    }
-}
 
 /**
- * iOS 风格双滑块 RangeSlider：与语音配置页 IosStyleSlider 视觉统一
- * - 5dp 高自绘渐变 track（min→max 区间为渐变色，两端为灰色）
- * - 7dp 白色 thumb + 情绪色光环
- * - 拖动时显示数值气泡
- * - 5s 量化吸附
+ * 每个状态的回复延迟档位配置
+ *
+ * 3 档选择：快 / 适中 / 慢
+ * 每档对应一个秒数范围，不同状态的范围不同（idle 较短、busy 较长）
  */
 @Composable
-private fun SimpleRangeSlider(
-    minValue: Float,
-    maxValue: Float,
-    onMinChange: (Float) -> Unit,
-    onMaxChange: (Float) -> Unit,
+private fun ReplyDelaySection(
+    stateKey: String,
+    currentRange: Pair<Float, Float>,
+    onRangeChange: (Pair<Float, Float>) -> Unit,
     accent: Color
 ) {
-    val range = 0f..300f
-    val span = range.endInclusive - range.start
-    val minFrac = ((minValue - range.start) / span).coerceIn(0f, 1f)
-    val maxFrac = ((maxValue - range.start) / span).coerceIn(0f, 1f)
-    val gradientEndColor = lerp(accent, Color.White, 0.45f)
+    // 各状态的 3 档延迟范围（min..max 秒）
+    val delayLevels: List<Triple<String, Int, Int>> = when (stateKey) {
+        "idle" -> listOf(
+            Triple("快", 1, 2),
+            Triple("适中", 2, 5),
+            Triple("慢", 5, 10)
+        )
+        "normal" -> listOf(
+            Triple("快", 2, 5),
+            Triple("适中", 5, 10),
+            Triple("慢", 10, 20)
+        )
+        "busy" -> listOf(
+            Triple("快", 10, 30),
+            Triple("适中", 30, 60),
+            Triple("慢", 60, 120)
+        )
+        else -> listOf(
+            Triple("快", 1, 3),
+            Triple("适中", 3, 8),
+            Triple("慢", 8, 15)
+        )
+    }
 
-    var draggingMin by remember { mutableStateOf(false) }
-    var draggingMax by remember { mutableStateOf(false) }
+    // 当前值匹配哪个档位
+    val currentMin = currentRange.first.toInt()
+    val currentMax = currentRange.second.toInt()
+    val selectedIndex = delayLevels.indexOfFirst { (_, min, max) ->
+        min == currentMin && max == currentMax
+    }.let { if (it >= 0) it else 1 }  // 默认"适中"
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(40.dp)
-            .drawBehind {
-                val trackHeight = 5.dp.toPx()
-                val trackY = size.height - trackHeight - 2.dp.toPx()
-                val cornerRadius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
-                val minPosX = size.width * minFrac
-                val maxPosX = size.width * maxFrac
-
-                // 1. inactive track（灰色底，整条）
-                drawRoundRect(
-                    color = AiBorder,
-                    topLeft = Offset(0f, trackY),
-                    size = Size(size.width, trackHeight),
-                    cornerRadius = cornerRadius
-                )
-
-                // 2. active track（渐变填充，min→max 区间）
-                val activeWidth = (maxPosX - minPosX).coerceAtLeast(0f)
-                if (activeWidth > 0f) {
-                    val activeBrush = Brush.horizontalGradient(
-                        colors = listOf(accent, gradientEndColor),
-                        startX = minPosX,
-                        endX = maxPosX
-                    )
-                    drawRoundRect(
-                        brush = activeBrush,
-                        topLeft = Offset(minPosX, trackY),
-                        size = Size(activeWidth, trackHeight),
-                        cornerRadius = cornerRadius
-                    )
-                }
-
-                // 3. 两个 thumb：min 和 max
-                val thumbRadius = 7.dp.toPx()
-                val thumbY = trackY + trackHeight / 2f
-                listOf(
-                    Triple(minPosX, draggingMin, minValue),
-                    Triple(maxPosX, draggingMax, maxValue)
-                ).forEach { (thumbX, isDragging, thumbValue) ->
-                    // 外圈光环
-                    drawCircle(
-                        color = accent.copy(alpha = 0.28f),
-                        radius = thumbRadius + 3.dp.toPx(),
-                        center = Offset(thumbX, thumbY)
-                    )
-                    // 白色实心圆
-                    drawCircle(
-                        color = Color.White,
-                        radius = thumbRadius,
-                        center = Offset(thumbX, thumbY)
-                    )
-
-                    // 拖动时显示数值气泡
-                    if (isDragging) {
-                        val valueText = "${thumbValue.toInt()}"
-                        val textPaint = android.graphics.Paint().apply {
-                            color = android.graphics.Color.WHITE
-                            textSize = 28f
-                            typeface = android.graphics.Typeface.create(
-                                android.graphics.Typeface.DEFAULT,
-                                android.graphics.Typeface.BOLD
-                            )
-                            textAlign = android.graphics.Paint.Align.CENTER
-                            isAntiAlias = true
-                        }
-                        val fontMetrics = textPaint.fontMetrics
-                        val textHeight = fontMetrics.descent - fontMetrics.ascent
-                        val bubblePadH = 14f
-                        val bubblePadV = 6f
-                        val bubbleWidth = textPaint.measureText(valueText) + bubblePadH * 2
-                        val bubbleHeight = textHeight + bubblePadV * 2
-                        val bubbleBottom = thumbY - thumbRadius - 8.dp.toPx()
-                        val bubbleTop = bubbleBottom - bubbleHeight
-                        val bubbleLeft = (thumbX - bubbleWidth / 2f)
-                            .coerceIn(0f, size.width - bubbleWidth)
-
-                        drawRoundRect(
-                            color = accent,
-                            topLeft = Offset(bubbleLeft, bubbleTop),
-                            size = Size(bubbleWidth, bubbleHeight),
-                            cornerRadius = CornerRadius(bubbleHeight / 2f, bubbleHeight / 2f)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "回复延迟",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = AiTextSecondary
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(50))
+                .background(AiInputBg)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            delayLevels.forEachIndexed { index, (label, min, max) ->
+                val isActive = index == selectedIndex
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(50))
+                        .then(
+                            if (isActive) Modifier.shadow(
+                                elevation = 3.dp,
+                                shape = RoundedCornerShape(50),
+                                ambientColor = accent.copy(alpha = 0.3f),
+                                spotColor = accent.copy(alpha = 0.3f)
+                            ) else Modifier
                         )
-                        val arrowHalfWidth = 4.dp.toPx()
-                        val arrowTipY = bubbleBottom + 1f
-                        val arrowBaseY = bubbleBottom
-                        val arrowCenterX = thumbX.coerceIn(
-                            bubbleLeft + arrowHalfWidth,
-                            bubbleLeft + bubbleWidth - arrowHalfWidth
-                        )
-                        val arrowPath = android.graphics.Path().apply {
-                            moveTo(arrowCenterX - arrowHalfWidth, arrowBaseY)
-                            lineTo(arrowCenterX + arrowHalfWidth, arrowBaseY)
-                            lineTo(arrowCenterX, arrowTipY)
-                            close()
+                        .background(if (isActive) accent else Color.Transparent)
+                        .clickable {
+                            onRangeChange(min.toFloat() to max.toFloat())
                         }
-                        drawIntoCanvas { canvas ->
-                            canvas.nativeCanvas.drawPath(arrowPath, android.graphics.Paint().apply {
-                                color = accent.toArgb()
-                                isAntiAlias = true
-                            })
-                        }
-                        val textCenterX = bubbleLeft + bubbleWidth / 2f
-                        val textBaseline = bubbleTop + bubblePadV - fontMetrics.ascent
-                        drawIntoCanvas { canvas ->
-                            canvas.nativeCanvas.drawText(
-                                valueText,
-                                textCenterX,
-                                textBaseline,
-                                textPaint
-                            )
-                        }
-                    }
+                        .padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (isActive) Color.White else AiTextSecondary
+                    )
+                    Text(
+                        text = "${min}-${max}秒",
+                        fontSize = 10.sp,
+                        fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal,
+                        color = if (isActive) Color.White.copy(alpha = 0.85f) else AiTextTertiary
+                    )
                 }
             }
-    ) {
-        RangeSlider(
-            value = minValue..maxValue,
-            onValueChange = { values ->
-                val step = 5f
-                val newMin = (values.start / step).toInt() * step
-                val newMax = (values.endInclusive / step).toInt() * step
-                if (newMin <= newMax) {
-                    // 判断拖动的是哪个 thumb（比较变化量）
-                    if (newMin != minValue) draggingMin = true
-                    if (newMax != maxValue) draggingMax = true
-                    onMinChange(newMin)
-                    onMaxChange(newMax)
-                }
-            },
-            valueRange = range,
-            onValueChangeFinished = {
-                draggingMin = false
-                draggingMax = false
-            },
-            colors = SliderDefaults.colors(
-                thumbColor = Color.Transparent,
-                activeTrackColor = Color.Transparent,
-                inactiveTrackColor = Color.Transparent,
-                activeTickColor = Color.Transparent,
-                inactiveTickColor = Color.Transparent
-            ),
-            modifier = Modifier.fillMaxWidth()
-        )
+        }
     }
 }
 

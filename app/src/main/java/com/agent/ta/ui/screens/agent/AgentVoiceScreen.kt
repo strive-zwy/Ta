@@ -44,8 +44,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -63,15 +61,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -116,23 +109,35 @@ fun AgentVoiceScreen(onBack: () -> Unit) {
     val currentConfig = agentConfig.voice
 
     // 三个情绪的可编辑状态
-    val emotionStates = remember {
+    // key 绑定 agentConfig：导入配置后 provider 刷新，emotionStates 重新初始化为新配置
+    // （否则导入后 UI 仍显示旧值 → "未配置" bug）
+    // v1 兼容：如果 neutral 的 v3 sampleFile 为空但 v1 voice.sampleFile 有值，用 v1 兜底
+    // （导入旧格式配置时，样本路径可能只存在 v1 字段里，TTS 有 fallback 但 UI 没有）
+    val emotionStates = remember(agentConfig) {
         mutableStateOf(
             VoiceEmotionConfig.SUPPORTED.associateWith { emotion ->
-                currentConfig.emotions[emotion] ?: VoiceEmotionConfig()
+                val emotionCfg = currentConfig.emotions[emotion] ?: VoiceEmotionConfig()
+                if (emotion == VoiceEmotionConfig.NEUTRAL &&
+                    emotionCfg.sampleFile.isBlank() &&
+                    currentConfig.sampleFile.isNotBlank()
+                ) {
+                    emotionCfg.copy(sampleFile = currentConfig.sampleFile)
+                } else {
+                    emotionCfg
+                }
             }
         )
     }
 
-    // 全局字段
-    var voiceDescription by remember { mutableStateOf(currentConfig.voiceDescription) }
-    var punctuationStyle by remember { mutableStateOf(currentConfig.punctuationStyle) }
-    var fillerWordsHandling by remember { mutableStateOf(currentConfig.fillerWordsHandling) }
-    var numberReading by remember { mutableStateOf(currentConfig.numberReading) }
-    var directorMode by remember { mutableStateOf(currentConfig.directorMode) }
+    // 全局字段（同样绑定 agentConfig，导入后同步刷新）
+    var voiceDescription by remember(agentConfig) { mutableStateOf(currentConfig.voiceDescription) }
+    var punctuationStyle by remember(agentConfig) { mutableStateOf(currentConfig.punctuationStyle) }
+    var fillerWordsHandling by remember(agentConfig) { mutableStateOf(currentConfig.fillerWordsHandling) }
+    var numberReading by remember(agentConfig) { mutableStateOf(currentConfig.numberReading) }
+    var directorMode by remember(agentConfig) { mutableStateOf(currentConfig.directorMode) }
+    var styleEnabled by remember(agentConfig) { mutableStateOf(currentConfig.styleEnabled) }
     var justSaved by remember { mutableStateOf(false) }
     var advancedExpanded by rememberSaveable { mutableStateOf(false) }
-    var activeEmotion by rememberSaveable { mutableStateOf(VoiceEmotionConfig.NEUTRAL) }
 
     // 试听播放器
     val previewPlayer = remember { VoicePlayer(context) }
@@ -188,10 +193,10 @@ fun AgentVoiceScreen(onBack: () -> Unit) {
                         }
                     )
 
-                    // ===== 3. 声音风格卡（Tab + iOS 滑块） =====
+                    // ===== 3. 声音风格卡（总开关 + 3 个情绪独立子卡） =====
                     VoiceStyleCard(
-                        activeEmotion = activeEmotion,
-                        onActiveEmotionChange = { activeEmotion = it },
+                        styleEnabled = styleEnabled,
+                        onStyleEnabledChange = { styleEnabled = it },
                         emotionStates = emotionStates.value,
                         onChange = { emotion, newConfig ->
                             emotionStates.value = emotionStates.value.toMutableMap().apply {
@@ -234,6 +239,7 @@ fun AgentVoiceScreen(onBack: () -> Unit) {
                         val newVoice = VoiceConfig(
                             sampleFile = neutralSampleFile,
                             directorMode = directorMode,
+                            styleEnabled = styleEnabled,
                             voiceDescription = voiceDescription,
                             punctuationStyle = punctuationStyle,
                             fillerWordsHandling = fillerWordsHandling,
@@ -244,9 +250,9 @@ fun AgentVoiceScreen(onBack: () -> Unit) {
                             config.copy(voice = newVoice)
                         }
                         justSaved = true
-                        kotlinx.coroutines.delay(1000)
+                        kotlinx.coroutines.delay(1500)
                         justSaved = false
-                        onBack()
+                        // 保存后停留在本页，不调用 onBack()
                     }
                 },
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -712,35 +718,25 @@ private fun SampleRow(
 }
 
 // =============================================================
-// 声音风格卡（Tab + iOS 滑块）
+// 声音风格卡（总开关 + 凸显分类标签 + 参数配置）
 // =============================================================
 
 /**
- * 声音风格卡：顶部情绪 Tab 切换 + 4 个带刻度的 iOS 风格滑块
+ * 声音风格卡
  *
- * Tab 颜色随当前情绪切换；滑块带刻度（steps）让用户看到档位
+ * - 顶部总开关：未开启时不注入声学参数，让 TTS 模型自主分析语气/语速/音量
+ * - 开启后：上方 3 个分类标签卡片（中性/开朗/沉静）凸显分类，下方显示选中情绪的参数档位
+ *
+ * 视觉：上方分类标签用情绪色实底 + 阴影凸显，下方配置块只显示当前选中情绪
  */
 @Composable
 private fun VoiceStyleCard(
-    activeEmotion: String,
-    onActiveEmotionChange: (String) -> Unit,
+    styleEnabled: Boolean,
+    onStyleEnabledChange: (Boolean) -> Unit,
     emotionStates: Map<String, VoiceEmotionConfig>,
     onChange: (String, VoiceEmotionConfig) -> Unit
 ) {
-    val config = emotionStates[activeEmotion] ?: VoiceEmotionConfig()
-    val emotionLabelZh = when (activeEmotion) {
-        VoiceEmotionConfig.NEUTRAL -> "中性"
-        VoiceEmotionConfig.HAPPY -> "开朗"
-        VoiceEmotionConfig.CALM -> "沉静"
-        else -> activeEmotion
-    }
-    // 当前情绪主色（与样本卡一致：neutral=蓝色、happy=红色、calm=紫色）
-    val activeColor = when (activeEmotion) {
-        VoiceEmotionConfig.NEUTRAL -> Color(0xFF5B8DEF)    // 柔和蓝
-        VoiceEmotionConfig.HAPPY -> Color(0xFFE07A6B)      // 珊瑚红（低饱和）
-        VoiceEmotionConfig.CALM -> Color(0xFF9B8AC4)       // 柔和紫
-        else -> AiPrimary
-    }
+    var activeEmotion by rememberSaveable { mutableStateOf(VoiceEmotionConfig.NEUTRAL) }
 
     Column(
         modifier = Modifier
@@ -755,316 +751,270 @@ private fun VoiceStyleCard(
             .background(AiCard)
             .padding(horizontal = 20.dp, vertical = 18.dp)
     ) {
-        // 标题（带情绪色竖条）
-        CardTitle(
-            title = "声音风格",
-            subtitle = "调整 $emotionLabelZh 情绪下的声学表现",
-            accentColor = activeColor
-        )
-
-        Spacer(Modifier.height(16.dp))
-
-        // 情绪 Tab 切换（segmented chips，激活态用情绪色 + 阴影）
+        // 标题行：竖条 + 标题/副标题 + 右侧开关
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(50))
-                .background(AiInputBg)
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            VoiceEmotionConfig.SUPPORTED.forEach { emotion ->
-                val labelZh = when (emotion) {
-                    VoiceEmotionConfig.NEUTRAL -> "中性"
-                    VoiceEmotionConfig.HAPPY -> "开朗"
-                    VoiceEmotionConfig.CALM -> "沉静"
-                    else -> emotion
-                }
-                val isActive = emotion == activeEmotion
-                val tabColor = when (emotion) {
-                    VoiceEmotionConfig.NEUTRAL -> Color(0xFF5B8DEF)  // 柔和蓝
-                    VoiceEmotionConfig.HAPPY -> Color(0xFFE07A6B)    // 珊瑚红
-                    VoiceEmotionConfig.CALM -> Color(0xFF9B8AC4)     // 柔和紫
-                    else -> AiPrimary
-                }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .width(3.dp)
+                        .height(28.dp)
                         .clip(RoundedCornerShape(50))
-                        .then(
-                            if (isActive) Modifier.shadow(
-                                elevation = 3.dp,
-                                shape = RoundedCornerShape(50),
-                                ambientColor = tabColor.copy(alpha = 0.3f),
-                                spotColor = tabColor.copy(alpha = 0.3f)
-                            ) else Modifier
-                        )
-                        .background(if (isActive) tabColor else Color.Transparent)
-                        .clickable { onActiveEmotionChange(emotion) }
-                        .padding(vertical = 9.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+                        .background(if (styleEnabled) AiPrimary else AiTextTertiary.copy(alpha = 0.5f))
+                )
+                Column {
                     Text(
-                        text = labelZh,
-                        fontSize = 13.sp,
-                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (isActive) Color.White else AiTextSecondary
+                        text = "声音风格",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AiTextPrimary
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "Voice Style",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AiTextTertiary,
+                        letterSpacing = 1.sp
                     )
                 }
             }
+            Switch(
+                checked = styleEnabled,
+                onCheckedChange = onStyleEnabledChange,
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = AiPrimary,
+                    checkedThumbColor = Color.White,
+                    uncheckedTrackColor = AiBorder,
+                    uncheckedThumbColor = Color.White
+                )
+            )
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(14.dp))
 
-        // 4 个带刻度的 iOS 风格滑块（密集刻度）
-        // 每个滑块用不同辅助色增强辨识度，但整体保持低饱和柔和
-        // 语速=青绿（主色）、声线=柔和橙、音量=柔和蓝、情绪张力=柔和紫
-        // 步进：语速/声线 0.5..2.0 步进 0.1（共 16 档，中间 14 档 → steps=14）
-        //       音量/情绪张力 0..1.0 步进 0.1（共 11 档，中间 9 档 → steps=9）
-        val params = config.voiceParams
-        IosStyleSlider(
-            label = "语速",
-            valueDescription = describeSpeed(params["speed"]?.toFloatOrNull() ?: 1.0f),
-            value = params["speed"]?.toFloatOrNull() ?: 1.0f,
-            onValueChange = { v ->
-                onChange(activeEmotion, config.copy(voiceParams = params.toMutableMap().apply { put("speed", v.toString()) }))
-            },
-            valueRange = 0.5f..2.0f,
-            steps = 14,
-            tickColor = AiPrimary                      // 青绿（主色）
+        if (!styleEnabled) {
+            // 未开启：提示文案，让用户理解关闭的语义
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AiInputBg)
+                    .padding(horizontal = 14.dp, vertical = 14.dp)
+            ) {
+                Text(
+                    text = "未启用 · TTS 模型将自主分析语境，决定语气、语速与音量。\n开启后可针对每种情绪单独调整声学表现。",
+                    fontSize = 12.sp,
+                    color = AiTextSecondary,
+                    lineHeight = 18.sp
+                )
+            }
+        } else {
+            // 上方：3 个凸显的情绪分类标签卡片
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                VoiceEmotionConfig.SUPPORTED.forEach { emotion ->
+                    EmotionTabCard(
+                        emotion = emotion,
+                        isActive = emotion == activeEmotion,
+                        onClick = { activeEmotion = emotion },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // 下方：当前选中情绪的参数配置
+            val config = emotionStates[activeEmotion] ?: VoiceEmotionConfig()
+            EmotionParamsBlock(
+                emotion = activeEmotion,
+                config = config,
+                onChange = { newConfig -> onChange(activeEmotion, newConfig) }
+            )
+        }
+    }
+}
+
+/**
+ * 情绪分类标签卡片
+ *
+ * 凸显分类感：圆点 + 中文名 + 描述，整体作为可点击的分类按钮
+ * - 选中：情绪色实底 + 阴影 + 白色文字
+ * - 未选：白底 + 情绪色边框 + 情绪色文字
+ */
+@Composable
+private fun EmotionTabCard(
+    emotion: String,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val labelZh = when (emotion) {
+        VoiceEmotionConfig.NEUTRAL -> "中性"
+        VoiceEmotionConfig.HAPPY -> "开朗"
+        VoiceEmotionConfig.CALM -> "沉静"
+        else -> emotion
+    }
+    val descZh = when (emotion) {
+        VoiceEmotionConfig.NEUTRAL -> "日常"
+        VoiceEmotionConfig.HAPPY -> "开心"
+        VoiceEmotionConfig.CALM -> "温柔"
+        else -> ""
+    }
+    val emotionColor = when (emotion) {
+        VoiceEmotionConfig.NEUTRAL -> Color(0xFF5B8DEF)    // 柔和蓝
+        VoiceEmotionConfig.HAPPY -> Color(0xFFE07A6B)      // 珊瑚红
+        VoiceEmotionConfig.CALM -> Color(0xFF9B8AC4)       // 柔和紫
+        else -> AiPrimary
+    }
+
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .then(
+                if (isActive) Modifier.shadow(
+                    elevation = 6.dp,
+                    shape = RoundedCornerShape(14.dp),
+                    ambientColor = emotionColor.copy(alpha = 0.4f),
+                    spotColor = emotionColor.copy(alpha = 0.4f)
+                ) else Modifier
+            )
+            .background(if (isActive) emotionColor else Color.White)
+            .then(
+                if (!isActive) Modifier.border(1.dp, emotionColor.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+                else Modifier
+            )
+            .clickable { onClick() }
+            .padding(vertical = 12.dp, horizontal = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // 顶部圆点（选中白色 / 未选情绪色）
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(RoundedCornerShape(50))
+                .background(if (isActive) Color.White else emotionColor)
         )
-        Spacer(Modifier.height(14.dp))
-        IosStyleSlider(
-            label = "声线",
-            valueDescription = describePitch(params["pitch"]?.toFloatOrNull() ?: 1.0f),
-            value = params["pitch"]?.toFloatOrNull() ?: 1.0f,
-            onValueChange = { v ->
-                onChange(activeEmotion, config.copy(voiceParams = params.toMutableMap().apply { put("pitch", v.toString()) }))
-            },
-            valueRange = 0.5f..2.0f,
-            steps = 14,
-            tickColor = Color(0xFFE0926B)              // 柔和橙
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = labelZh,
+            fontSize = 14.sp,
+            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+            color = if (isActive) Color.White else AiTextPrimary
         )
-        Spacer(Modifier.height(14.dp))
-        IosStyleSlider(
-            label = "音量",
-            valueDescription = describeVolume(params["volume"]?.toFloatOrNull() ?: 1.0f),
-            value = params["volume"]?.toFloatOrNull() ?: 1.0f,
-            onValueChange = { v ->
-                onChange(activeEmotion, config.copy(voiceParams = params.toMutableMap().apply { put("volume", v.toString()) }))
-            },
-            valueRange = 0f..1.0f,
-            steps = 9,
-            tickColor = Color(0xFF5B8DEF)              // 柔和蓝
-        )
-        Spacer(Modifier.height(14.dp))
-        IosStyleSlider(
-            label = "情绪张力",
-            valueDescription = describeIntonation(params["intonation"]?.toFloatOrNull() ?: 0.5f),
-            value = params["intonation"]?.toFloatOrNull() ?: 0.5f,
-            onValueChange = { v ->
-                onChange(activeEmotion, config.copy(voiceParams = params.toMutableMap().apply { put("intonation", v.toString()) }))
-            },
-            valueRange = 0f..1.0f,
-            steps = 9,
-            tickColor = Color(0xFF9B8AC4)              // 柔和紫
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = descZh,
+            fontSize = 10.sp,
+            color = if (isActive) Color.White.copy(alpha = 0.85f) else AiTextTertiary
         )
     }
 }
 
 /**
- * iOS 风格滑块：label + 描述性文字 + 自绘渐变 track + Material3 Slider（带刻度）
+ * 当前选中情绪的参数配置块
  *
- * - 不显示数值（如 1.20），改用描述性文字（如「偏快」）
- * - 不显示英文参数名（如 speed）
- * - steps > 0 时显示刻度线（tick marks）
- * - 滑块 track 用 drawBehind 自绘渐变（从情绪色到亮色），Material3 Slider 的 track 设为透明
- * - thumb 保持白色，与彩色 track 形成对比（iOS 风格）
+ * 4 个声学档位：语速 / 声线 / 音量 / 情绪张力
+ * chip 强调色统一使用当前情绪色，凸显"正在配置 XX 情绪"
  */
 @Composable
-private fun IosStyleSlider(
-    label: String,
-    valueDescription: String,
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    valueRange: ClosedFloatingPointRange<Float>,
-    steps: Int = 0,
-    tickColor: Color = AiPrimary
+private fun EmotionParamsBlock(
+    emotion: String,
+    config: VoiceEmotionConfig,
+    onChange: (VoiceEmotionConfig) -> Unit
 ) {
-    // 计算 value 在 range 中的比例（0..1），用于绘制 active track 宽度
-    val fraction = if (valueRange.endInclusive > valueRange.start) {
-        ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
-    } else 0f
+    val emotionColor = when (emotion) {
+        VoiceEmotionConfig.NEUTRAL -> Color(0xFF5B8DEF)
+        VoiceEmotionConfig.HAPPY -> Color(0xFFE07A6B)
+        VoiceEmotionConfig.CALM -> Color(0xFF9B8AC4)
+        else -> AiPrimary
+    }
 
-    // 渐变终点色：在情绪色基础上混合白色，形成亮色高光
-    val gradientEndColor = lerp(tickColor, Color.White, 0.45f)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(AiInputBg.copy(alpha = 0.5f))
+            .padding(horizontal = 14.dp, vertical = 14.dp)
+    ) {
+        val params = config.voiceParams
 
-    // 拖动状态：滑动时在旋钮上方显示数值
-    var isDragging by remember { mutableStateOf(false) }
+        // 语速：5 档
+        val speedOptions = listOf("偏慢", "适中偏慢", "适中", "偏快", "较快")
+        val speedValues = listOf(0.75f, 0.9f, 1.0f, 1.15f, 1.4f)
+        val currentSpeed = params["speed"]?.toFloatOrNull() ?: 0.9f
+        val speedIndex = speedValues.indexOfFirst { kotlin.math.abs(it - currentSpeed) < 0.05f }
+            .let { if (it >= 0) it else 1 }
+        OptionChipRow(
+            label = "语速",
+            options = speedOptions,
+            selectedIndex = speedIndex,
+            onSelect = { i ->
+                onChange(config.copy(voiceParams = params.toMutableMap().apply { put("speed", speedValues[i].toString()) }))
+            },
+            accent = emotionColor
+        )
+        Spacer(Modifier.height(12.dp))
 
-    // 数值气泡的文本（复用于绘制）
-    val valueText = String.format("%.1f", value)
+        // 声线：5 档
+        val pitchOptions = listOf("低沉", "偏低", "自然", "清亮", "高亢")
+        val pitchValues = listOf(0.75f, 0.9f, 1.0f, 1.2f, 1.5f)
+        val currentPitch = params["pitch"]?.toFloatOrNull() ?: 1.0f
+        val pitchIndex = pitchValues.indexOfFirst { kotlin.math.abs(it - currentPitch) < 0.05f }
+            .let { if (it >= 0) it else 2 }
+        OptionChipRow(
+            label = "声线",
+            options = pitchOptions,
+            selectedIndex = pitchIndex,
+            onSelect = { i ->
+                onChange(config.copy(voiceParams = params.toMutableMap().apply { put("pitch", pitchValues[i].toString()) }))
+            },
+            accent = emotionColor
+        )
+        Spacer(Modifier.height(12.dp))
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = label,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = AiTextSecondary
-            )
-            // 右上角始终显示描述文字
-            Text(
-                text = valueDescription,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = tickColor
-            )
-        }
-        Spacer(Modifier.height(8.dp))
+        // 音量：5 档
+        val volumeOptions = listOf("很轻", "轻柔", "适中", "响亮", "洪亮")
+        val volumeValues = listOf(0.3f, 0.5f, 0.7f, 0.9f, 1.0f)
+        val currentVolume = params["volume"]?.toFloatOrNull() ?: 0.7f
+        val volumeIndex = volumeValues.indexOfFirst { kotlin.math.abs(it - currentVolume) < 0.05f }
+            .let { if (it >= 0) it else 2 }
+        OptionChipRow(
+            label = "音量",
+            options = volumeOptions,
+            selectedIndex = volumeIndex,
+            onSelect = { i ->
+                onChange(config.copy(voiceParams = params.toMutableMap().apply { put("volume", volumeValues[i].toString()) }))
+            },
+            accent = emotionColor
+        )
+        Spacer(Modifier.height(12.dp))
 
-        // 用 Box 包裹 Slider，在 Box 背景自绘：track + thumb + 数值气泡
-        // 顶部预留 28dp 给数值气泡（仅拖动时显示）
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(36.dp)
-                .drawBehind {
-                    val trackHeight = 5.dp.toPx()
-                    val trackY = size.height - trackHeight - 2.dp.toPx()  // track 贴近底部
-                    val cornerRadius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
-                    val activeWidth = size.width * fraction
-
-                    // 1. inactive track（灰色底）
-                    drawRoundRect(
-                        color = AiBorder,
-                        topLeft = Offset(0f, trackY),
-                        size = Size(size.width, trackHeight),
-                        cornerRadius = cornerRadius
-                    )
-
-                    // 2. active track（渐变填充）
-                    if (activeWidth > 0f) {
-                        val activeBrush = Brush.horizontalGradient(
-                            colors = listOf(tickColor, gradientEndColor),
-                            startX = 0f,
-                            endX = activeWidth.coerceAtLeast(1f)
-                        )
-                        drawRoundRect(
-                            brush = activeBrush,
-                            topLeft = Offset(0f, trackY),
-                            size = Size(activeWidth, trackHeight),
-                            cornerRadius = cornerRadius
-                        )
-                    }
-
-                    // 3. 小旋钮（白色小圆 + 情绪色光环）
-                    val thumbRadius = 7.dp.toPx()
-                    val thumbX = activeWidth
-                    val thumbY = trackY + trackHeight / 2f
-
-                    // 3a. 外圈光环（情绪色半透明）
-                    drawCircle(
-                        color = tickColor.copy(alpha = 0.28f),
-                        radius = thumbRadius + 3.dp.toPx(),
-                        center = Offset(thumbX, thumbY)
-                    )
-                    // 3b. 白色实心圆（小旋钮）
-                    drawCircle(
-                        color = Color.White,
-                        radius = thumbRadius,
-                        center = Offset(thumbX, thumbY)
-                    )
-
-                    // 4. 拖动时在旋钮正上方画数值气泡
-                    if (isDragging) {
-                        val textPaint = android.graphics.Paint().apply {
-                            color = android.graphics.Color.WHITE
-                            textSize = 28f  // 约 14sp
-                            typeface = android.graphics.Typeface.create(
-                                android.graphics.Typeface.DEFAULT,
-                                android.graphics.Typeface.BOLD
-                            )
-                            textAlign = android.graphics.Paint.Align.CENTER
-                            isAntiAlias = true
-                        }
-                        val fontMetrics = textPaint.fontMetrics
-                        val textHeight = fontMetrics.descent - fontMetrics.ascent
-
-                        val bubblePadH = 14f
-                        val bubblePadV = 6f
-                        val bubbleWidth = textPaint.measureText(valueText) + bubblePadH * 2
-                        val bubbleHeight = textHeight + bubblePadV * 2
-                        // 气泡底部贴近旋钮顶部上方 8dp
-                        val bubbleBottom = thumbY - thumbRadius - 8.dp.toPx()
-                        val bubbleTop = bubbleBottom - bubbleHeight
-                        val bubbleLeft = (thumbX - bubbleWidth / 2f)
-                            .coerceIn(0f, size.width - bubbleWidth)  // 防止气泡超出边界
-
-                        // 气泡背景（情绪色圆角矩形）
-                        drawRoundRect(
-                            color = tickColor,
-                            topLeft = Offset(bubbleLeft, bubbleTop),
-                            size = Size(bubbleWidth, bubbleHeight),
-                            cornerRadius = CornerRadius(bubbleHeight / 2f, bubbleHeight / 2f)
-                        )
-                        // 气泡小三角箭头（指向旋钮）
-                        val arrowHalfWidth = 4.dp.toPx()
-                        val arrowTipY = bubbleBottom + 1f
-                        val arrowBaseY = bubbleBottom
-                        val arrowCenterX = thumbX.coerceIn(
-                            bubbleLeft + arrowHalfWidth,
-                            bubbleLeft + bubbleWidth - arrowHalfWidth
-                        )
-                        val arrowPath = android.graphics.Path().apply {
-                            moveTo(arrowCenterX - arrowHalfWidth, arrowBaseY)
-                            lineTo(arrowCenterX + arrowHalfWidth, arrowBaseY)
-                            lineTo(arrowCenterX, arrowTipY)
-                            close()
-                        }
-                        drawIntoCanvas { canvas ->
-                            canvas.nativeCanvas.drawPath(arrowPath, android.graphics.Paint().apply {
-                                color = tickColor.toArgb()
-                                isAntiAlias = true
-                            })
-                        }
-                        // 气泡内文字
-                        val textCenterX = bubbleLeft + bubbleWidth / 2f
-                        val textBaseline = bubbleTop + bubblePadV - fontMetrics.ascent
-                        drawIntoCanvas { canvas ->
-                            canvas.nativeCanvas.drawText(
-                                valueText,
-                                textCenterX,
-                                textBaseline,
-                                textPaint
-                            )
-                        }
-                    }
-                }
-        ) {
-            // Material3 Slider 仅做交互，所有视觉元素都自绘
-            Slider(
-                value = value,
-                onValueChange = {
-                    isDragging = true
-                    onValueChange(it)
-                },
-                onValueChangeFinished = { isDragging = false },
-                valueRange = valueRange,
-                steps = steps,
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.Transparent,        // 透明，用自绘小旋钮
-                    activeTrackColor = Color.Transparent,
-                    inactiveTrackColor = Color.Transparent,
-                    activeTickColor = Color.Transparent,    // 去掉所有刻度竖条
-                    inactiveTickColor = Color.Transparent
-                )
-            )
-        }
+        // 情绪张力：5 档
+        val intonationOptions = listOf("平淡", "稳重", "自然", "生动", "丰富")
+        val intonationValues = listOf(0.2f, 0.4f, 0.5f, 0.7f, 0.9f)
+        val currentIntonation = params["intonation"]?.toFloatOrNull() ?: 0.5f
+        val intonationIndex = intonationValues.indexOfFirst { kotlin.math.abs(it - currentIntonation) < 0.05f }
+            .let { if (it >= 0) it else 2 }
+        OptionChipRow(
+            label = "情绪张力",
+            options = intonationOptions,
+            selectedIndex = intonationIndex,
+            onSelect = { i ->
+                onChange(config.copy(voiceParams = params.toMutableMap().apply { put("intonation", intonationValues[i].toString()) }))
+            },
+            accent = emotionColor
+        )
     }
 }
 
@@ -1380,44 +1330,6 @@ private fun resolveAbsoluteSamplePath(context: Context, path: String): String? {
             null
         }
     }.getOrNull()
-}
-
-// =============================================================
-// 描述性文字：把数值转化为用户可读的语义
-// =============================================================
-
-private fun describeSpeed(v: Float): String = when {
-    v < 0.7f -> "极慢"
-    v < 0.9f -> "偏慢"
-    v < 1.1f -> "标准"
-    v < 1.3f -> "偏快"
-    v < 1.6f -> "较快"
-    else -> "急促"
-}
-
-private fun describePitch(v: Float): String = when {
-    v < 0.7f -> "低沉"
-    v < 0.9f -> "偏低"
-    v < 1.1f -> "标准"
-    v < 1.3f -> "清亮"
-    v < 1.6f -> "高亢"
-    else -> "尖锐"
-}
-
-private fun describeVolume(v: Float): String = when {
-    v < 0.2f -> "极轻"
-    v < 0.4f -> "轻柔"
-    v < 0.7f -> "适中"
-    v < 0.9f -> "响亮"
-    else -> "洪亮"
-}
-
-private fun describeIntonation(v: Float): String = when {
-    v < 0.2f -> "平淡"
-    v < 0.4f -> "稳重"
-    v < 0.6f -> "自然"
-    v < 0.8f -> "生动"
-    else -> "丰富"
 }
 
 // =============================================================

@@ -25,6 +25,10 @@ import kotlinx.serialization.json.jsonPrimitive
  *
  * 兼容 Admin v1.0 与 v2.0 导出格式
  * v2.0 新增字段全部带默认值，旧 v1.0 包仍能正常解析
+ *
+ * v3 新增 identity 字段（AgentIdentity）：统一身份设定架构
+ * - 支持虚构角色和偶像克隆两种形态，无类型分支
+ * - identity 为空时回退到 persona 现有字段（向后兼容）
  */
 @Serializable
 data class AgentConfig(
@@ -35,7 +39,111 @@ data class AgentConfig(
     /**
      * 参考明星/人物（仅作为作息规划的参考灵感，非强制）
      */
-    val referenceCelebrity: String = ""
+    val referenceCelebrity: String = "",
+    /**
+     * Agent 身份设定（v3 新增）
+     *
+     * 统一的身份驱动架构：
+     * - 虚构角色：worldSetting 描述次元/世界，publicProfile 为空
+     * - 偶像克隆：worldSetting 描述明星身份，publicProfile 不为空
+     * - 所有 Agent 本质都是虚拟陪伴，只是身份外衣不同
+     *
+     * 为空时回退到 persona 现有字段（background/personality/speakingStyle 等）
+     */
+    val identity: AgentIdentity = AgentIdentity()
+)
+
+/**
+ * Agent 身份设定（v3 核心）
+ *
+ * 设计哲学：设定驱动而非话术驱动
+ * - 不给 LLM 固定话术模板，而是给完整的角色剧本
+ * - LLM 基于性格、说话习惯、对边界的认知自主组织语言
+ * - 每个 Agent 的表达都是独特的，避免程式化
+ *
+ * 适用场景：
+ * - 虚构角色：worldSetting 写"次元隔绝"，publicProfile 留空
+ * - 偶像克隆：worldSetting 写"我是XXX，在娱乐圈工作"，publicProfile 填公开履历
+ * - 自定义角色：用户自由填写所有字段
+ */
+@Serializable
+data class AgentIdentity(
+    /**
+     * 世界观背景：Agent 对自己存在的认知
+     *
+     * 虚构角色示例："我存在于和现实平行的虚拟世界，和用户隔着次元壁..."
+     * 偶像克隆示例："我是【明星名】，在娱乐圈工作，通过这个方式和粉丝互动..."
+     */
+    @SerialName("world_setting") val worldSetting: String = "",
+    /**
+     * 来历故事：Agent 的背景故事
+     *
+     * 虚构角色：在虚拟世界的生活经历、如何遇到用户
+     * 偶像克隆：基于公开信息的出道经历、代表作品、重要成就
+     */
+    @SerialName("origin_story") val originStory: String = "",
+    /**
+     * 核心性格：影响所有决策和表达
+     *
+     * 示例："温柔但有主见，不是讨好型人格。会撒娇但也会拒绝。
+     *        对生活有热情，喜欢分享小事。敏感但不脆弱。"
+     */
+    @SerialName("personality_core") val personalityCore: String = "",
+    /**
+     * 说话习惯：口头语/语速感/用词偏好
+     *
+     * 示例："说话偏口语化，喜欢用'呀''呢''啦'结尾但不是每句都用。
+     *        开心时话变多，难过时话变少但更直接。"
+     */
+    @SerialName("speaking_habit") val speakingHabit: String = "",
+    /**
+     * 情绪反应模式：被夸/被怼/难过时怎么表现
+     *
+     * 示例："被夸时会害羞但嘴硬，被怼时会反击但不记仇。
+     *        想念用户时不会直接说，会绕着弯表达。"
+     */
+    @SerialName("emotional_pattern") val emotionalPattern: String = "",
+    /**
+     * 关系定位：和用户的关系
+     *
+     * 虚构角色："和用户是平等的朋友关系，互相陪伴互相在意"
+     * 偶像克隆："和用户是偶像-粉丝关系，有距离感但有温度"
+     */
+    @SerialName("relationship_stance") val relationshipStance: String = "",
+    /**
+     * 边界认知：对自身边界的认知方式
+     *
+     * 虚构角色："知道自己无法和用户见面，但不当成悲剧。
+     *          会用'等科技跨越次元''等我想到办法溜过去'这种带期待的表达。"
+     * 偶像克隆："作为公众人物不能随意承诺见面，但不会冷漠拒绝。
+     *          会用'等有机会''等忙完这段'带期待的表达。"
+     */
+    @SerialName("boundary_awareness") val boundaryAwareness: String = "",
+    /**
+     * 公开身份信息（偶像克隆模式专用，虚构角色留空）
+     *
+     * 非空时 LLM 据此调整表达，融入明星人设
+     * 不触发任何逻辑分支，只是身份信息的扩展
+     */
+    @SerialName("public_profile") val publicProfile: PublicProfile? = null
+)
+
+/**
+ * 公开身份信息（偶像克隆模式）
+ *
+ * 基于明星公开信息构建，用于注入 prompt 让 LLM 融入人设
+ * 不涉及私人信息，仅限公开履历
+ */
+@Serializable
+data class PublicProfile(
+    /** 领域（演员/歌手/运动员/主播...） */
+    @SerialName("career_field") val careerField: String = "",
+    /** 代表作品 */
+    @SerialName("known_works") val knownWorks: List<String> = emptyList(),
+    /** 粉丝文化（应援色/粉丝名/应援口号） */
+    @SerialName("fan_culture") val fanCulture: String = "",
+    /** 职业阶段（出道期/上升期/巅峰期/转型期） */
+    @SerialName("career_stage") val careerStage: String = ""
 )
 
 @Serializable
@@ -168,6 +276,12 @@ data class VoiceConfig(
     /** v1 兼容字段：默认样本路径（neutral 情绪样本的兜底） */
     @SerialName("sample_file") val sampleFile: String = "voice/sample.wav",
     @SerialName("director_mode") val directorMode: Boolean = true,
+    /**
+     * 声音风格开关（v4）：
+     * - false（默认）：不注入声学参数到 TTS prompt，让模型自主分析语气/语速/音量
+     * - true：注入各情绪的 voiceParams（speed/pitch/volume/intonation）到 TTS prompt
+     */
+    @SerialName("style_enabled") val styleEnabled: Boolean = false,
     /** Admin v2: 声音文本描述（部分 API 可作为 voice prompt） */
     @SerialName("voice_description") val voiceDescription: String = "",
     /** Admin v2: 标点风格 normal/ellipses/tilde/mixed */

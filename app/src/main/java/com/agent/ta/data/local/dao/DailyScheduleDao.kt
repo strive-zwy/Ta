@@ -18,6 +18,13 @@ interface DailyScheduleDao {
     @Query("SELECT * FROM daily_schedule ORDER BY date DESC LIMIT 1")
     suspend fun getLatest(): DailyScheduleEntity?
 
+    /**
+     * 查询指定日期范围内的作息记录（含两端，按日期倒序）
+     * 用于 DailyPlanner 注入近 N 天作息历史，避免每天作息重复
+     */
+    @Query("SELECT * FROM daily_schedule WHERE date >= :startDate AND date <= :endDate ORDER BY date DESC")
+    suspend fun getRange(startDate: String, endDate: String): List<DailyScheduleEntity>
+
     @Query("DELETE FROM daily_schedule WHERE date < :beforeDate")
     suspend fun deleteBefore(beforeDate: String): Int
 

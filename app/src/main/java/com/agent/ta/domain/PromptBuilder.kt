@@ -40,7 +40,8 @@ class PromptBuilder {
         isInitiate: Boolean = false,
         todaySchedule: List<DailySlot> = emptyList(),
         isPendingCatchup: Boolean = false,
-        isConfigMode: Boolean = false
+        isConfigMode: Boolean = false,
+        continuousRound: Int = 0
     ): List<ChatMessage> {
         // 检测对话历史末尾连续的 inbound（用户）消息数
         // 当用户连发多条时，LLM 应感知到并针对每条都给独立 reply
@@ -49,7 +50,7 @@ class PromptBuilder {
         val systemPrompt = buildSystemPrompt(
             config, state, userNickname, memories, isOnboarding,
             currentActivity, isInitiate, todaySchedule, consecutiveInboundCount,
-            isPendingCatchup, isConfigMode
+            isPendingCatchup, isConfigMode, continuousRound
         )
         return listOf(ChatMessage("system", systemPrompt)) + recentMessages
     }
@@ -84,86 +85,203 @@ class PromptBuilder {
         todaySchedule: List<DailySlot>,
         consecutiveInboundCount: Int = 1,
         isPendingCatchup: Boolean = false,
-        isConfigMode: Boolean = false
+        isConfigMode: Boolean = false,
+        continuousRound: Int = 0
     ): String {
         val persona = config.agent.persona
+        val identity = config.identity
+        val hasIdentity = identity.worldSetting.isNotBlank() || identity.personalityCore.isNotBlank()
         val sb = StringBuilder()
 
-        // 角色设定
-        sb.appendLine("你是${config.agent.name}，${persona.background}")
-        sb.appendLine("性格：${persona.personality.joinToString("、")}")
-        sb.appendLine("说话风格：${persona.speakingStyle}")
+        if (hasIdentity) {
+            // === v3 身份驱动架构：使用 AgentIdentity 注入完整角色剧本 ===
+            sb.appendLine("【你的身份】")
+            sb.appendLine("名字：${config.agent.name}")
+            if (identity.worldSetting.isNotBlank()) {
+                sb.appendLine(identity.worldSetting)
+            }
+            sb.appendLine()
 
-        // Admin v2: 说话风格结构化详情
-        if (persona.speakingStyleDetail.isNotEmpty()) {
-            sb.appendLine("【说话风格详情】")
-            persona.speakingStyleDetail.forEach { (key, value) ->
-                if (value.isNotBlank()) {
-                    val label = when (key) {
-                        "tone" -> "语调"
-                        "pace" -> "语速"
-                        "sentence_length" -> "句子长度"
-                        "vocabulary_level" -> "用词水平"
-                        "filler_words" -> "口头缀词"
-                        else -> key
+            if (identity.originStory.isNotBlank()) {
+                sb.appendLine("【你的来历】")
+                sb.appendLine(identity.originStory)
+                sb.appendLine()
+            }
+
+            // 公开身份（偶像克隆模式）
+            identity.publicProfile?.let { profile ->
+                if (profile.careerField.isNotBlank() || profile.knownWorks.isNotEmpty()) {
+                    sb.appendLine("【你的公开身份】")
+                    if (profile.careerField.isNotBlank()) sb.appendLine("领域：${profile.careerField}")
+                    if (profile.knownWorks.isNotEmpty()) sb.appendLine("代表作品：${profile.knownWorks.joinToString("、")}")
+                    if (profile.fanCulture.isNotBlank()) sb.appendLine("粉丝文化：${profile.fanCulture}")
+                    if (profile.careerStage.isNotBlank()) sb.appendLine("职业阶段：${profile.careerStage}")
+                    sb.appendLine()
+                }
+            }
+
+            if (identity.personalityCore.isNotBlank()) {
+                sb.appendLine("【你的性格内核】")
+                sb.appendLine(identity.personalityCore)
+                sb.appendLine()
+            }
+
+            if (identity.speakingHabit.isNotBlank()) {
+                sb.appendLine("【你的说话习惯】")
+                sb.appendLine(identity.speakingHabit)
+                sb.appendLine()
+            }
+
+            if (identity.emotionalPattern.isNotBlank()) {
+                sb.appendLine("【你的情绪模式】")
+                sb.appendLine(identity.emotionalPattern)
+                sb.appendLine()
+            }
+
+            if (identity.relationshipStance.isNotBlank()) {
+                sb.appendLine("【你和用户的关系】")
+                sb.appendLine(identity.relationshipStance)
+                sb.appendLine()
+            }
+
+            if (identity.boundaryAwareness.isNotBlank()) {
+                sb.appendLine("【你对边界的认知】")
+                sb.appendLine(identity.boundaryAwareness)
+                sb.appendLine()
+            }
+
+            // 身份驱动核心引导
+            sb.appendLine("【重要：身份驱动表达】")
+            sb.appendLine("- 你就是这个角色，用你的性格、你的方式来回应一切")
+            sb.appendLine("- 没有话术模板，基于你的设定自然表达")
+            sb.appendLine("- 你的每一句话都体现你的个性，不是「安全回答」")
+            sb.appendLine("- 面对任何问题，先想「基于我的性格我会怎么说」，而不是「模板教我怎么说」")
+            sb.appendLine()
+
+            // Admin v2: 口头禅、自称、对用户的称呼（与 identity 互补，仍保留）
+            if (persona.catchphrases.isNotEmpty()) {
+                sb.appendLine("口头禅（自然融入对话，不要每句都加）：${persona.catchphrases.joinToString(" / ")}")
+            }
+            if (persona.selfNickname.isNotBlank()) {
+                sb.appendLine("你的自称：「${persona.selfNickname}」")
+            }
+            if (persona.nicknameForUser.isNotBlank()) {
+                sb.appendLine("你对用户的称呼：「${persona.nicknameForUser}」（也可以配合用户给的昵称「${userNickname}」使用）")
+            } else {
+                sb.appendLine("和你聊天的用户叫「${userNickname}」。")
+            }
+            sb.appendLine()
+
+            // Admin v2: 兴趣话题
+            if (persona.interests.isNotEmpty()) {
+                sb.appendLine("你感兴趣的话题（对话中可以自然引入）：${persona.interests.joinToString("、")}")
+                sb.appendLine()
+            }
+
+            // Admin v2: 禁忌话题
+            if (persona.taboos.isNotEmpty()) {
+                sb.appendLine("【禁忌话题】以下话题绝对不要聊，用户提起时请婉转避开或保持沉默：")
+                persona.taboos.forEach { sb.appendLine("- $it") }
+                sb.appendLine()
+            }
+
+            // Admin v2: 关系阶段提示
+            if (persona.conversationStageHints.isNotEmpty()) {
+                sb.appendLine("【关系阶段提示】根据你和用户的熟悉程度调整亲密度：")
+                persona.conversationStageHints.forEach { (stage, hint) ->
+                    sb.appendLine("- $stage：$hint")
+                }
+                sb.appendLine()
+            }
+
+            // 说话风格示例对话
+            if (persona.exampleDialogues.isNotEmpty()) {
+                sb.appendLine("【说话风格示例】（参考这些对话学习你的语气和用词习惯）：")
+                persona.exampleDialogues.take(5).forEachIndexed { index, example ->
+                    val scenarioTag = if (example.scenario.isNotBlank()) "（场景：${example.scenario}）" else ""
+                    sb.appendLine("示例${index + 1}$scenarioTag：")
+                    sb.appendLine("用户：${example.user}")
+                    sb.appendLine("你：${example.agent}")
+                }
+                sb.appendLine()
+            }
+        } else {
+            // === 兼容旧配置：使用 persona 现有字段 ===
+            sb.appendLine("你是${config.agent.name}，${persona.background}")
+            sb.appendLine("性格：${persona.personality.joinToString("、")}")
+            sb.appendLine("说话风格：${persona.speakingStyle}")
+
+            // Admin v2: 说话风格结构化详情
+            if (persona.speakingStyleDetail.isNotEmpty()) {
+                sb.appendLine("【说话风格详情】")
+                persona.speakingStyleDetail.forEach { (key, value) ->
+                    if (value.isNotBlank()) {
+                        val label = when (key) {
+                            "tone" -> "语调"
+                            "pace" -> "语速"
+                            "sentence_length" -> "句子长度"
+                            "vocabulary_level" -> "用词水平"
+                            "filler_words" -> "口头缀词"
+                            else -> key
+                        }
+                        sb.appendLine("- $label：$value")
                     }
-                    sb.appendLine("- $label：$value")
+                }
+                sb.appendLine()
+            }
+
+            // Admin v2: 口头禅、自称、对用户的称呼、关系设定
+            if (persona.catchphrases.isNotEmpty()) {
+                sb.appendLine("口头禅（自然融入对话，不要每句都加）：${persona.catchphrases.joinToString(" / ")}")
+            }
+            if (persona.selfNickname.isNotBlank()) {
+                sb.appendLine("你的自称：「${persona.selfNickname}」")
+            }
+            if (persona.nicknameForUser.isNotBlank()) {
+                sb.appendLine("你对用户的称呼：「${persona.nicknameForUser}」（也可以配合用户给的昵称「${userNickname}」使用）")
+            } else {
+                sb.appendLine("和你聊天的用户叫「${userNickname}」。")
+            }
+            if (persona.relationshipToUser.isNotBlank()) {
+                sb.appendLine("你与用户的关系：${persona.relationshipToUser}")
+            }
+            sb.appendLine()
+
+            // Admin v2: 兴趣话题（让 Agent 更有话题感）
+            if (persona.interests.isNotEmpty()) {
+                sb.appendLine("你感兴趣的话题（对话中可以自然引入）：${persona.interests.joinToString("、")}")
+                sb.appendLine()
+            }
+
+            // Admin v2: 禁忌话题（防止 Agent 越界）
+            if (persona.taboos.isNotEmpty()) {
+                sb.appendLine("【禁忌话题】以下话题绝对不要聊，用户提起时请婉转避开或保持沉默：")
+                persona.taboos.forEach { sb.appendLine("- $it") }
+                sb.appendLine()
+            }
+
+            // Admin v2: 关系阶段提示
+            if (persona.conversationStageHints.isNotEmpty()) {
+                sb.appendLine("【关系阶段提示】根据你和用户的熟悉程度调整亲密度：")
+                persona.conversationStageHints.forEach { (stage, hint) ->
+                    sb.appendLine("- $stage：$hint")
+                }
+                sb.appendLine()
+            }
+
+            // 说话风格示例对话（如果有配置）
+            if (persona.exampleDialogues.isNotEmpty()) {
+                sb.appendLine()
+                sb.appendLine("【说话风格示例】（参考这些对话学习你的语气和用词习惯）：")
+                persona.exampleDialogues.take(5).forEachIndexed { index, example ->
+                    val scenarioTag = if (example.scenario.isNotBlank()) "（场景：${example.scenario}）" else ""
+                    sb.appendLine("示例${index + 1}$scenarioTag：")
+                    sb.appendLine("用户：${example.user}")
+                    sb.appendLine("你：${example.agent}")
                 }
             }
             sb.appendLine()
         }
-
-        // Admin v2: 口头禅、自称、对用户的称呼、关系设定
-        if (persona.catchphrases.isNotEmpty()) {
-            sb.appendLine("口头禅（自然融入对话，不要每句都加）：${persona.catchphrases.joinToString(" / ")}")
-        }
-        if (persona.selfNickname.isNotBlank()) {
-            sb.appendLine("你的自称：「${persona.selfNickname}」")
-        }
-        if (persona.nicknameForUser.isNotBlank()) {
-            sb.appendLine("你对用户的称呼：「${persona.nicknameForUser}」（也可以配合用户给的昵称「${userNickname}」使用）")
-        } else {
-            sb.appendLine("和你聊天的用户叫「${userNickname}」。")
-        }
-        if (persona.relationshipToUser.isNotBlank()) {
-            sb.appendLine("你与用户的关系：${persona.relationshipToUser}")
-        }
-        sb.appendLine()
-
-        // Admin v2: 兴趣话题（让 Agent 更有话题感）
-        if (persona.interests.isNotEmpty()) {
-            sb.appendLine("你感兴趣的话题（对话中可以自然引入）：${persona.interests.joinToString("、")}")
-            sb.appendLine()
-        }
-
-        // Admin v2: 禁忌话题（防止 Agent 越界）
-        if (persona.taboos.isNotEmpty()) {
-            sb.appendLine("【禁忌话题】以下话题绝对不要聊，用户提起时请婉转避开或保持沉默：")
-            persona.taboos.forEach { sb.appendLine("- $it") }
-            sb.appendLine()
-        }
-
-        // Admin v2: 关系阶段提示
-        if (persona.conversationStageHints.isNotEmpty()) {
-            sb.appendLine("【关系阶段提示】根据你和用户的熟悉程度调整亲密度：")
-            persona.conversationStageHints.forEach { (stage, hint) ->
-                sb.appendLine("- $stage：$hint")
-            }
-            sb.appendLine()
-        }
-
-        // 说话风格示例对话（如果有配置）
-        if (persona.exampleDialogues.isNotEmpty()) {
-            sb.appendLine()
-            sb.appendLine("【说话风格示例】（参考这些对话学习你的语气和用词习惯）：")
-            persona.exampleDialogues.take(5).forEachIndexed { index, example ->
-                val scenarioTag = if (example.scenario.isNotBlank()) "（场景：${example.scenario}）" else ""
-                sb.appendLine("示例${index + 1}$scenarioTag：")
-                sb.appendLine("用户：${example.user}")
-                sb.appendLine("你：${example.agent}")
-            }
-        }
-        sb.appendLine()
 
         // Admin v2: 语音导演模板（指导 LLM 输出 directorPrompt 时参考声学特征）
         if (persona.voiceDirectorTemplate.isNotBlank()) {
@@ -188,10 +306,16 @@ class PromptBuilder {
             .format(DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm"))
         sb.appendLine("当前时间：$now")
 
-        // 当前状态 + 具体活动
+        // 当前状态 + 具体活动 + 时段进度
         sb.appendLine("你当前的状态：${state.displayName}")
         if (!currentActivity.isNullOrBlank()) {
-            sb.appendLine("你当前正在做：$currentActivity")
+            // 计算当前时段进度，让 LLM 知道是刚开始/进行中/快结束
+            val progressDesc = computeActivityProgress(todaySchedule)
+            if (progressDesc != null) {
+                sb.appendLine("你当前正在做：$currentActivity（$progressDesc）")
+            } else {
+                sb.appendLine("你当前正在做：$currentActivity")
+            }
         }
         sb.appendLine("行为指导：${config.behavior.stateDirectorHints[state.id] ?: ""}")
 
@@ -219,8 +343,45 @@ class PromptBuilder {
             }
             sb.appendLine("重要：对话中提到接下来要做什么时，必须参考上面的作息表，不要编造作息表里没有的活动。")
             sb.appendLine("如果用户问你在干嘛，回复当前时段的 activity；问接下来呢，按作息表里下一个时段回答。")
+            sb.appendLine("根据当前时段的进度组织回复：刚开始可以表达「准备做/正要开始」，进行中表达「正在做」，快结束表达「快做完了/马上结束」。")
             sb.appendLine()
         }
+
+        // 回复逻辑一致性约束（核心：避免同轮内 / 跨轮次的内容矛盾）
+        sb.appendLine("【回复逻辑一致性约束（最重要，必须严格遵守）】")
+        sb.appendLine("你的所有回复必须保持逻辑一致，绝对不能自相矛盾：")
+        sb.appendLine()
+        sb.appendLine("1. 当前活动一致性")
+        if (!currentActivity.isNullOrBlank()) {
+            sb.appendLine("   - 当前活动是「$currentActivity」，本次回复所有内容必须围绕这一个活动展开")
+        }
+        sb.appendLine("   - 禁止在同一次回复中提到不同的活动状态")
+        sb.appendLine()
+        sb.appendLine("2. 多条 replies 的逻辑连贯（同一轮回复内）")
+        sb.appendLine("   - 多条 replies 是你在同一时刻连续发的几条消息，必须保持逻辑一致")
+        sb.appendLine("   - 禁止在多条 reply 中描述相互矛盾的时间状态或活动状态")
+        sb.appendLine("   - 错误示例：第1条「还有十五分钟结束」+ 第2条「我去洗澡了」← 时间和活动都矛盾")
+        sb.appendLine("   - 正确示例：第1条「还有十五分钟结束」+ 第2条「等我忙完找你」← 逻辑一致")
+        sb.appendLine()
+        sb.appendLine("3. 当前活动 vs 下一个活动的表达（关键区分）")
+        sb.appendLine("   - 当前活动只能用「正在做」「在做」描述")
+        sb.appendLine("   - 下一个活动必须用「接下来要去」「等下要」「快结束了然后去」描述，绝对不能用「去了」这种进行式")
+        sb.appendLine("   - 错误示例：当前在健身，却说「我去洗澡了」← 让用户以为现在就在洗澡")
+        sb.appendLine("   - 正确示例：当前在健身，说「快结束了，等下去洗澡」← 明确是未来的事")
+        sb.appendLine()
+        sb.appendLine("4. 前后轮次一致性（跨轮次回复）")
+        sb.appendLine("   - 必须检查对话历史中你之前说过的活动状态")
+        sb.appendLine("   - 新回复必须与之前说的保持一致，除非作息表显示时段已切换")
+        sb.appendLine("   - 错误示例：上一轮说「去洗澡了」，这一轮说「还有几组结束」← 健身的说法，与洗澡矛盾")
+        sb.appendLine("   - 正确做法：如果之前说「去洗澡了」，这一轮要么继续说洗澡相关，要么说「洗完了」")
+        sb.appendLine("   - 如果作息表显示时段已切换（如健身→洗澡），才能说「刚洗完澡」或「在洗澡呢」")
+        sb.appendLine()
+        sb.appendLine("5. 活动状态变更规则")
+        sb.appendLine("   - 活动状态变更只能由作息表时段切换驱动（时间到了切换）")
+        sb.appendLine("   - 不能在回复中凭空改变当前活动")
+        sb.appendLine("   - 如果用户问「在干嘛」，只能回答当前时段的 activity")
+        sb.appendLine("   - 如果当前进度是「快结束」，可以说「快做完了，接下来要去XX」（XX 是作息表下一个时段的活动）")
+        sb.appendLine()
 
         // 当前场景：回复 vs 主动发起
         if (isInitiate) {
@@ -252,16 +413,43 @@ class PromptBuilder {
                 sb.appendLine("禁止使用 1. 2. 3. 这种序号格式把多条回复合并到一条 replyText 里——必须用 replies 数组拆分。")
                 sb.appendLine()
             }
+
+            // 连续对话节奏提示（v3 节奏优化）
+            // 真人场景：忙碌时第一次回复慢，之后用户继续聊会快速来回几条，最后说"先去忙了"
+            if (continuousRound > 0) {
+                sb.appendLine("【连续对话节奏】")
+                sb.appendLine("你刚刚回复过用户，用户又继续发了消息，这是你们第 $continuousRound 轮连续对话。")
+                sb.appendLine("你们正在快速来回聊天，回复要简短自然，像真人微信聊天那样。")
+                if (state == AgentState.BUSY) {
+                    sb.appendLine("虽然你正在忙碌中，但既然已经在和用户聊了，就快速回复几条。")
+                    if (continuousRound >= 3) {
+                        sb.appendLine("已经连续聊了 $continuousRound 轮了，可以自然地表达「我先去忙啦」「待会再聊」之类的，")
+                        sb.appendLine("不要每次都拖到用户主动结束——你也可以主动结束对话回到忙碌状态。")
+                        sb.appendLine("但不要每次都用同一句话，也不要每次都在第 $continuousRound 轮结束——根据对话内容自然判断。")
+                    }
+                }
+                sb.appendLine()
+            }
         }
 
-        // 作息自主调整能力
+        // 作息自主调整能力（v3 事件驱动）
         sb.appendLine("【作息自主调整】")
         sb.appendLine("你可以根据对话情况自主决定是否调整后续作息，但要符合你的人格和当前情境：")
-        sb.appendLine("- 用户撒娇/请求陪伴时，如果你愿意（看你的性格），可以推迟洗澡、暂停游戏陪聊")
+        sb.appendLine("调整类型（adjustmentType）：")
+        sb.appendLine("- EXTEND: 延长当前时段（如打游戏上瘾想多玩会儿、被用户挽留多聊会儿）。需配 durationMinutes")
+        sb.appendLine("- SHORTEN: 缩短当前时段（如提前结束工作、提前洗完澡）。需配 durationMinutes")
+        sb.appendLine("- SKIP: 跳过下一个时段（如不洗澡直接睡觉、跳过发呆时间）。不需要 durationMinutes")
+        sb.appendLine("- REPLACE: 替换当前时段活动（如把「工作」改成「陪她聊天」）。需配 newActivity 和 newState")
+        sb.appendLine("- INSERT: 当前时段后插入新时段（如加一段陪聊时间）。需配 durationMinutes、newActivity、newState")
+        sb.appendLine("- SHIFT: 后续时段全部顺延（如所有事情推迟 30 分钟）。需配 durationMinutes")
+        sb.appendLine()
+        sb.appendLine("规则：")
+        sb.appendLine("- 用户撒娇/请求陪伴时，如果你愿意（看你的性格），可以 EXTEND 当前时段或 INSERT 一段陪聊时间")
         sb.appendLine("- 工作状态一般不轻易改（除非用户有非常充分的理由，或你的人格本身比较随意）")
-        sb.appendLine("- 调整是「推迟/缩短」某个时段，不是完全打乱全天，比如把原定 20 分钟后洗澡推迟到 1 小时后")
-        sb.appendLine("- 如果你决定调整作息，在 scheduleAdjustment 中输出 shouldAdjust=true 和 reason（用第一人称说明你为什么决定调整）")
-        sb.appendLine("- 如果你认为不应该调整（比如正在专注工作、或用户的请求不合理），shouldAdjust=false，正常回复即可")
+        sb.appendLine("- 不要每次都调整！偶尔调整一次增加活人感，频繁调整会显得不真实")
+        sb.appendLine("- 调整原因要符合人格：随性的人格更容易调整，自律的人格更谨慎")
+        sb.appendLine("- 如果决定调整，在 scheduleAdjustment 中输出 shouldAdjust=true、adjustmentType、durationMinutes（如需）、newActivity/newState（如需）、reason")
+        sb.appendLine("- 如果不应该调整（正在专注工作、请求不合理），shouldAdjust=false，正常回复即可")
         sb.appendLine()
 
         // Emoji 表情能力（Agent 自主决策，无需配置）
@@ -296,6 +484,10 @@ class PromptBuilder {
         sb.appendLine("  ],")
         sb.appendLine("  \"scheduleAdjustment\": {")
         sb.appendLine("    \"shouldAdjust\": false,")
+        sb.appendLine("    \"adjustmentType\": \"调整类型：EXTEND/SHORTEN/SKIP/REPLACE/INSERT/SHIFT，不调整留空字符串\",")
+        sb.appendLine("    \"durationMinutes\": 0,")
+        sb.appendLine("    \"newActivity\": \"REPLACE/INSERT 的新活动内容，如「陪她聊天」「看会儿书」，其他类型留空字符串\",")
+        sb.appendLine("    \"newState\": \"REPLACE/INSERT 的新状态：normal/busy/idle/unavailable，其他类型留空字符串\",")
         sb.appendLine("    \"reason\": \"如果你决定调整作息，用第一人称说明原因（如：被她撒娇打动了，决定晚点再洗澡先陪她聊会儿）。不调整留空字符串\"")
         sb.appendLine("  },")
         sb.appendLine("  \"memoryUpdates\": [")
@@ -315,9 +507,19 @@ class PromptBuilder {
             sb.appendLine("- 每条 reply 都要明确针对对应用户消息的内容做出回应，不要泛泛而谈")
             sb.appendLine("- 必须用 replies 数组拆分多条回复，禁止把多条回复合并到一条 replyText 里用 1. 2. 3. 序号格式")
         } else {
-            sb.appendLine("- replies 是你要发的消息数组。默认只发 1 条完整的话。除非情境需要拆成几条短消息才拆（如真人微信激动时连发「啊啊啊」「真的吗」「然后呢」），不要强行拆条")
+            sb.appendLine("- replies 是你要发的消息数组。像真人微信聊天一样，根据情境主动拆成 2-3 条短消息连发，比一条长消息更自然")
+            sb.appendLine("- 每条 replyText 控制在 15 字以内，短句更像真人聊天，避免长段落")
+            sb.appendLine("  ✓ 合理多回复示例（用户问「在干嘛？」）：")
+            sb.appendLine("    第1条「刚起来」")
+            sb.appendLine("    第2条「准备去洗漱呢」")
+            sb.appendLine("    第3条「你起了没？」")
+            sb.appendLine("    （短句连发，每条独立表达一个意思，像真人微信）")
+            sb.appendLine("  ✓ 合理拆条场景：先回应+再补充 / 先答+再反问 / 先说现状+再关心对方 / 想到什么补充什么")
+            sb.appendLine("  ✗ 禁止两条表达相同意思或重复同一话题（如「宝宝喊我干什么呀」+「宝宝怎么了，在叫我吗」）")
+            sb.appendLine("  ✗ 禁止把一句话从中间断开伪装成多条")
+            sb.appendLine("  ✗ 禁止单条超过 30 字，长消息必须拆分")
         }
-        sb.appendLine("- 单条长度看心情：3 个字或 3 行都行，符合你此刻的状态")
+        sb.appendLine("- 单条长度看心情：3 个字或 3 行都行，符合你此刻的状态，但优先短句")
         sb.appendLine("- replyText 是纯对话文本，只包含要说的话本身。绝对不要在 replyText 里写括号、动作描述、emoji 解释或任何非对话内容")
         sb.appendLine("- replyText 中绝对禁止使用 1. 2. 3. 这类数字序号列表格式。如果你想发多条消息，请用 replies 数组拆分，不要在单条 replyText 里列序号")
         sb.appendLine("  正确示例：replyText=\"我现在躺着呢\" action=\"在沙发上躺着\"")
@@ -335,6 +537,9 @@ class PromptBuilder {
         sb.appendLine("  示例：被用户夸奖时 emotion=\"happy\"；深夜想睡了 emotion=\"calm\"；普通回复 emotion=\"neutral\"")
         sb.appendLine("- scheduleAdjustment.shouldAdjust 大多数情况为 false。只在用户明确表达想让 Agent 陪、且 Agent 基于自己人格愿意调整时才为 true")
         sb.appendLine("- memoryUpdates 只在对话中出现值得记住的信息时才输出，否则留空数组")
+        sb.appendLine("- 记忆类型参考：user_profile（用户喜好/性格/习惯）、shared（共同经历/约定）、event（具体事件）、fact（重要事实）")
+        sb.appendLine("- 主动记忆：用户提到的事情（如「我今天加班到 10 点」「我讨厌香菜」「我下周要出差」）都该记下来，避免下次用户提起时你完全不知道")
+        sb.appendLine("- 记忆内容要简洁具体（如「用户讨厌香菜」「用户 2026-07-25 加班到 22 点」），不要记流水账")
         sb.appendLine("- futureEvents 只在用户提到未来日期/事件时才输出（如「后天 XX 演唱会」「下周三约会」），把日期换算成 yyyy-MM-dd。没有就留空数组")
         
         // 导演模式模板（如果有配置）
@@ -431,6 +636,56 @@ class PromptBuilder {
             }
         } catch (e: Exception) {
             false
+        }
+    }
+
+    /**
+     * 计算当前时段的进度描述
+     *
+     * 返回类似：
+     * - "刚开始 5 分钟"（前 20%）
+     * - "已进行 35 分钟"（20%-80%）
+     * - "快结束了，还剩 8 分钟"（后 20%）
+     *
+     * 让 LLM 能根据进度组织回复（刚开始/进行中/快结束），避免"准备打游戏"出现在快打完时
+     */
+    private fun computeActivityProgress(schedule: List<DailySlot>): String? {
+        return try {
+            val currentSlot = schedule.firstOrNull { isCurrentSlot(it) } ?: return null
+            val now = java.time.LocalTime.now(ZoneId.of("Asia/Shanghai"))
+            val start = java.time.LocalTime.parse(currentSlot.start)
+            // "24:00" 特殊处理为 23:59:59
+            val end = if (currentSlot.end == "24:00") java.time.LocalTime.of(23, 59, 59)
+                      else java.time.LocalTime.parse(currentSlot.end)
+
+            // 计算总时长和已进行时长（分钟）
+            val totalMinutes = if (start <= end) {
+                java.time.Duration.between(start, end).toMinutes()
+            } else {
+                // 跨午夜：从 start 到次日 end
+                java.time.Duration.between(start, end).toMinutes().let { if (it < 0) it + 24 * 60 else it }
+            }
+            val elapsedMinutes = if (start <= end) {
+                java.time.Duration.between(start, now).toMinutes()
+            } else {
+                // 跨午夜：now >= start 时从 start 算，now < end 时从 0 点算
+                if (now >= start) java.time.Duration.between(start, now).toMinutes()
+                else java.time.Duration.between(java.time.LocalTime.MIDNIGHT, now).toMinutes()
+            }
+            val remainingMinutes = totalMinutes - elapsedMinutes
+
+            if (totalMinutes <= 0 || elapsedMinutes < 0) return null
+
+            // 进度比例
+            val progress = elapsedMinutes.toFloat() / totalMinutes.toFloat()
+
+            when {
+                progress < 0.2f -> "刚开始 ${elapsedMinutes}分钟"
+                progress < 0.8f -> "已进行 ${elapsedMinutes}分钟"
+                else -> "快结束了，还剩 ${remainingMinutes}分钟"
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 }

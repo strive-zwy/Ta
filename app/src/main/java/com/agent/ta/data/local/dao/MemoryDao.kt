@@ -22,6 +22,13 @@ interface MemoryDao {
     @Query("SELECT * FROM memories ORDER BY importance DESC, updatedAt DESC LIMIT :limit")
     suspend fun getTopMemories(limit: Int = 20): List<MemoryEntity>
 
+    /**
+     * 按关键词搜索记忆（LIKE 模糊匹配 content）
+     * 用于 MemoryTool 让 LLM 主动检索历史记忆
+     */
+    @Query("SELECT * FROM memories WHERE content LIKE '%' || :keyword || '%' ORDER BY importance DESC, updatedAt DESC LIMIT :limit")
+    suspend fun searchByKeyword(keyword: String, limit: Int = 10): List<MemoryEntity>
+
     @Query("UPDATE memories SET content = :content, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateContent(id: Long, content: String, updatedAt: Long)
 

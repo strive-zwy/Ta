@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -21,23 +22,21 @@ import kotlinx.coroutines.launch
  * 1. 显示常驻通知，防止被杀
  * 2. 启动 AgentEngine（状态机 + 调度器）
  * 3. 状态切换时更新通知文案
+ * 4. Agent 配置变化时（如导入新配置）刷新通知中的 Agent 名字
  *
- * 通知中的 Agent 名字从 AgentConfigProvider 动态读取，
- * 导入自定义 Agent 后通知栏显示对应名字。
+ * 通知中的 Agent 名字从 AgentConfigProvider.config StateFlow 动态读取，
+ * 导入自定义 Agent 后通知栏会自动更新为新 Agent 名字。
  */
 class AgentForegroundService : Service() {
 
     private lateinit var notificationHelper: NotificationHelper
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    /** 当前 Agent 名字（fallback 到"小雅"） */
-    private val agentName: String
-        get() = ServiceLocator.agentConfigProvider.get().agent.name.ifBlank { "小雅" }
-
     override fun onCreate() {
         super.onCreate()
         notificationHelper = NotificationHelper(this)
-        val notification = notificationHelper.buildForegroundNotification("$agentName 正在启动...")
+        val initName = currentAgentName()
+        val notification = notificationHelper.buildForegroundNotification("$initName 正在启动...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NotificationHelper.NOTIFICATION_ID_FOREGROUND,
@@ -48,7 +47,7 @@ class AgentForegroundService : Service() {
             startForeground(NotificationHelper.NOTIFICATION_ID_FOREGROUND, notification)
         }
         AgentEngine.start(this)
-        observeStateChanges()
+        observeStateAndConfigChanges()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -63,22 +62,35 @@ class AgentForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** 当前 Agent 名字（fallback 到"小雅"） */
+    private fun currentAgentName(): String =
+        ServiceLocator.agentConfigProvider.get().agent.name.ifBlank { "小雅" }
+
     /**
-     * 观察状态变化，更新通知文案
+     * 同时观察状态变化和配置变化，更新通知文案
+     *
+     * combine：状态或配置任一变化都触发刷新。
+     * 导入新 Agent 配置后，AgentConfigProvider.config 会发射新值，
+     * 即使当前状态没变，通知栏也会用新 Agent 名字重新构建文案。
      */
-    private fun observeStateChanges() {
+    private fun observeStateAndConfigChanges() {
         scope.launch {
-            AgentEngine.currentState.collect { state ->
-                val text = when (state) {
-                    AgentState.NORMAL -> "$agentName 在线..."
-                    AgentState.BUSY -> "$agentName 正在忙碌..."
-                    AgentState.IDLE -> "$agentName 正在空闲..."
-                    AgentState.UNAVAILABLE -> "$agentName 暂时无法回复..."
+            AgentEngine.currentState
+                .combine(ServiceLocator.agentConfigProvider.config) { state, config ->
+                    Pair(state, config)
                 }
-                val notification = notificationHelper.buildForegroundNotification(text)
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.notify(NotificationHelper.NOTIFICATION_ID_FOREGROUND, notification)
-            }
+                .collect { (state, config) ->
+                    val name = config.agent.name.ifBlank { "小雅" }
+                    val text = when (state) {
+                        AgentState.NORMAL -> "$name 在线..."
+                        AgentState.BUSY -> "$name 正在忙碌..."
+                        AgentState.IDLE -> "$name 正在空闲..."
+                        AgentState.UNAVAILABLE -> "$name 暂时无法回复..."
+                    }
+                    val notification = notificationHelper.buildForegroundNotification(text)
+                    val manager = getSystemService(NotificationManager::class.java)
+                    manager.notify(NotificationHelper.NOTIFICATION_ID_FOREGROUND, notification)
+                }
         }
     }
 }

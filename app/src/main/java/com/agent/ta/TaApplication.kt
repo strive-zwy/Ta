@@ -8,8 +8,20 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.agent.ta.data.local.TaDatabase
 import com.agent.ta.service.AgentForegroundService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 class TaApplication : Application() {
+
+    /**
+     * 应用级协程作用域
+     *
+     * 用于不依赖 Compose composition 生命周期的耗时操作（如 SAF launcher 回调中的导入/导出）。
+     * rememberCoroutineScope 在 composable 离开 composition 后会被取消，
+     * 而 SAF launcher 启动系统文件选择器可能触发 composable 重建，导致回调时 scope 已失效。
+     */
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val database: TaDatabase by lazy {
         Room.databaseBuilder(

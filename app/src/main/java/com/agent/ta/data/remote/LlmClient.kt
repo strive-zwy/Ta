@@ -5,11 +5,14 @@ import com.agent.ta.data.remote.dto.ChatCompletionRequest
 import com.agent.ta.data.remote.dto.ChatMessage
 import com.agent.ta.data.remote.dto.AgentReply
 import com.agent.ta.data.remote.dto.ReplyItem
+import com.agent.ta.data.remote.dto.ToolCall
+import com.agent.ta.data.remote.dto.ToolDefinition
 import com.agent.ta.data.remote.api.LlmApi
 import com.agent.ta.di.ServiceLocator
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -20,10 +23,51 @@ import kotlinx.coroutines.delay
 /**
  * LLM 客户端（OpenAI 兼容协议）
  * 要求 LLM 输出 JSON 结构（replies 数组 + action + directorPrompt + memoryUpdates + futureEvents）
+ *
+ * v3 新增 function calling 支持：
+ * - chatWithTools：带工具定义的对话，LLM 可选择调用工具或直接回复
+ * - 工具调用结果通过 ToolCallResponse 返回，由 ChatInteractor 执行后回传
  */
 class LlmClient {
     private val prefs = ServiceLocator.userPreferences
     private val json = ApiClientFactory.json
+
+    /**
+     * 工具调用响应（v3 function calling）
+     *
+     * LLM 收到带 tools 的请求后，返回两种结果之一：
+     * - Reply：LLM 直接给出最终回复（未调用工具，或在工具调用后已生成最终回复）
+     * - ToolCalls：LLM 决定调用工具，需 App 执行后回传结果
+     *
+     * ChatInteractor 中的循环：
+     * ```
+     * repeat(3) {
+     *     when (val resp = llmClient.chatWithTools(messages, tools)) {
+     *         is ToolCallResponse.Reply -> return resp.reply  // 最终回复
+     *         is ToolCallResponse.ToolCalls -> {
+     *             messages = messages + resp.assistantMessage
+     *             val results = toolRegistry.executeToolCalls(resp.toolCalls, context)
+     *             messages = messages + results.map { it.toToolMessage() }
+     *         }
+     *     }
+     * }
+     * ```
+     */
+    sealed class ToolCallResponse {
+        /** LLM 直接回复（含 AgentReply 结构化结果） */
+        data class Reply(val reply: com.agent.ta.data.remote.dto.AgentReply) : ToolCallResponse()
+
+        /**
+         * LLM 决定调用工具
+         *
+         * @param toolCalls LLM 输出的工具调用列表
+         * @param assistantMessage 含 tool_calls 的 assistant 消息（需原样回传给 LLM）
+         */
+        data class ToolCalls(
+            val toolCalls: List<com.agent.ta.data.remote.dto.ToolCall>,
+            val assistantMessage: ChatMessage
+        ) : ToolCallResponse()
+    }
 
     // 每次调用时根据当前 baseUrl 创建 API 实例，避免用户修改配置后不生效
     private fun getApi(): LlmApi {
@@ -77,6 +121,91 @@ class LlmClient {
 
         Log.w(TAG, "重试全部失败，返回最后结果")
         return lastResult ?: AgentReply()
+    }
+
+    /**
+     * 带工具定义的对话（v3 function calling）
+     *
+     * LLM 可以：
+     * 1. 直接回复：返回 ToolCallResponse.Reply（含 AgentReply）
+     * 2. 调用工具：返回 ToolCallResponse.ToolCalls（含 toolCalls 列表）
+     *
+     * 调用流程（在 ChatInteractor 中循环）：
+     * ```
+     * var messages = initialMessages
+     * repeat(3) {  // 最多 3 轮，防死循环
+     *     when (val resp = llmClient.chatWithTools(messages, tools)) {
+     *         is ToolCallResponse.Reply -> return resp.reply  // 拿到最终回复
+     *         is ToolCallResponse.ToolCalls -> {
+     *             messages = messages + resp.assistantMessage  // 加入 LLM 的 tool_calls 消息
+     *             val results = toolRegistry.executeToolCalls(resp.toolCalls, context)
+     *             messages = messages + results.map { it.toToolMessage() }  // 加入工具结果
+     *         }
+     *     }
+     * }
+     * ```
+     *
+     * @param messages 对话历史（含 system prompt）
+     * @param tools 工具定义列表（来自 ToolRegistry.getAllDefinitions()）
+     * @return ToolCallResponse.Reply（直接回复）或 ToolCallResponse.ToolCalls（需要执行工具）
+     */
+    suspend fun chatWithTools(
+        messages: List<ChatMessage>,
+        tools: List<ToolDefinition>
+    ): ToolCallResponse {
+        val apiKey = prefs.llmApiKey
+        val model = prefs.llmModel
+        Log.d(TAG, "chatWithTools: model=$model, tools=${tools.size}, messages=${messages.size}")
+
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = messages,
+            temperature = 0.85,
+            tools = tools,
+            toolChoice = "auto"
+        )
+
+        return try {
+            val response = getApi().chatCompletion(
+                auth = "Bearer $apiKey",
+                request = request
+            )
+            val choice = response.choices.firstOrNull()
+            val message = choice?.message
+
+            // 检查是否有 tool_calls
+            val toolCalls = message?.toolCalls
+            if (!toolCalls.isNullOrEmpty()) {
+                Log.d(TAG, "LLM 决定调用 ${toolCalls.size} 个工具: ${toolCalls.joinToString { it.function.name }}")
+                // 返回 assistant 消息（含 tool_calls）+ 工具调用列表
+                ToolCallResponse.ToolCalls(
+                    toolCalls = toolCalls,
+                    assistantMessage = ChatMessage(
+                        role = "assistant",
+                        content = message.content ?: "",
+                        toolCalls = toolCalls
+                    )
+                )
+            } else {
+                // 直接回复，解析为 AgentReply
+                val content = message?.content.orEmpty().trim()
+                if (content.isBlank()) {
+                    Log.w(TAG, "chatWithTools: LLM 返回空内容")
+                    ToolCallResponse.Reply(AgentReply())
+                } else {
+                    Log.d(TAG, "chatWithTools: LLM 直接回复（前 200 字符）：${content.take(200)}")
+                    ToolCallResponse.Reply(parseReply(content))
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "chatWithTools 请求异常", e)
+            // 失败时回退到无工具调用，避免工具系统故障阻塞对话
+            Log.w(TAG, "chatWithTools 失败，回退到普通 chat")
+            val reply = chat(messages)
+            ToolCallResponse.Reply(reply)
+        }
     }
 
     private suspend fun requestReplyOrNull(

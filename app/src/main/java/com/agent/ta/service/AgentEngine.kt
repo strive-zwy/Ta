@@ -42,6 +42,11 @@ object AgentEngine {
     private val stateMachine = StateMachine()
     private var scheduler: StateScheduler? = null
     private var boredInitiator: BoredInitiator? = null
+    private var lifeEventInitiator: LifeEventInitiator? = null
+
+    /** 当前已加载的作息日期（yyyy-MM-dd），用于跨天检测 */
+    @Volatile
+    private var loadedScheduleDate: String? = null
 
     /**
      * 启动引擎（App 启动时调用）
@@ -60,7 +65,9 @@ object AgentEngine {
             // 1. 获取或生成当天作息（LLM 自主规划）
             val dailyPlanner = com.agent.ta.domain.DailyPlanner()
             val slots = dailyPlanner.getOrCreateTodaySchedule(config)
-            Log.d(TAG, "当天作息：${slots.size} 个时段")
+            loadedScheduleDate = java.time.LocalDate.now(ZoneId.of("Asia/Shanghai"))
+                .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
+            Log.d(TAG, "当天作息：${slots.size} 个时段（日期：$loadedScheduleDate）")
 
             // 2. 初始化状态机
             stateMachine.init(slots, config.behavior.replyDelaySec)
@@ -71,9 +78,10 @@ object AgentEngine {
             val switches = stateMachine.getUpcomingSwitches(8)
             scheduler?.scheduleNextSwitches(switches)
 
-            // 4. 启动无聊主动发起检查
+            // 4. 启动无聊主动发起检查 + 生活节点型主动消息
             boredInitiator = BoredInitiator(appContext)
             boredInitiator?.start()
+            lifeEventInitiator = LifeEventInitiator(appContext)
 
             // 5. 处理被杀期间的待回复消息
             processPendingMessages(appContext)
@@ -85,11 +93,15 @@ object AgentEngine {
 
     /**
      * 状态切换处理（由 StateSwitchReceiver 调用）
+     *
+     * v3 增强：传入 prevSlot/newSlot 给 LifeEventInitiator，识别生活节点触发主动消息
      */
     fun onStateSwitched(context: Context, newState: AgentState) {
         Log.d(TAG, "状态切换到：${newState.displayName}")
+        val prevSlot = stateMachine.getCurrentSlot()
         stateMachine.switchTo(newState)
         _currentState.value = newState
+        val newSlot = stateMachine.getCurrentSlot()
 
         scope.launch {
             processPendingMessages(context)
@@ -102,12 +114,19 @@ object AgentEngine {
                 }
                 else -> {}
             }
+
+            // 生活节点型主动消息（起床/睡觉/吃饭/洗澡/工作开始/结束）
+            // 即使是 UNAVAILABLE 也调用，让 LifeEventInitiator 自己判断（如睡觉节点）
+            lifeEventInitiator?.onStateSwitched(newState, prevSlot, newSlot)
         }
     }
 
     /**
      * Agent 自主调整作息（用户想聊天等场景）
      * 调整后重新注册调度
+     *
+     * 已废弃：新代码应使用 [updateSchedule]（v3 事件驱动，ScheduleAdjuster 已在 ChatInteractor 中完成局部修改）
+     * 保留是为了兼容旧调用路径
      */
     fun adjustSchedule(context: Context, config: com.agent.ta.data.model.AgentConfig, reason: String) {
         scope.launch {
@@ -121,6 +140,22 @@ object AgentEngine {
                 Log.d(TAG, "作息已调整并重新注册调度")
             }
         }
+    }
+
+    /**
+     * 更新作息（v3 事件驱动）
+     *
+     * ScheduleAdjuster 已在 ChatInteractor 中完成局部修改并持久化到 DB，
+     * 本方法只负责更新状态机内存 + 重新注册调度（轻量级，不调 LLM）
+     *
+     * @param newSlots 新的作息列表
+     */
+    fun updateSchedule(newSlots: List<com.agent.ta.data.model.DailySlot>) {
+        stateMachine.updateDailySlots(newSlots)
+        _currentState.value = stateMachine.currentState.value
+        val switches = stateMachine.getUpcomingSwitches(8)
+        scheduler?.scheduleNextSwitches(switches)
+        Log.d(TAG, "作息已更新（局部调整），${newSlots.size} 个时段")
     }
 
     /**
@@ -145,6 +180,42 @@ object AgentEngine {
      * 返回 null 表示当前状态不可回复（应为 Defer，由调用方处理 pending）
      */
     fun getReplyDelaySec(): Long? = stateMachine.getReplyDelaySec()
+
+    /**
+     * 确保作息是今天的（跨天检测）
+     *
+     * 问题背景：StateMachine 的 dailySlots 只在 App 启动时加载一次，
+     * 如果 App 跨天运行（如凌晨 0 点后仍未重启），dailySlots 还是昨天的，
+     * 导致 Agent 回复基于前一天作息（用户反馈"在运动但说在吃螺蛳粉"）。
+     *
+     * 调用时机：
+     * - ChatInteractor.generateAgentReply 开头（每次回复前检查）
+     * - LifeEventInitiator 触发前检查
+     *
+     * 检查逻辑：
+     * - 比较 loadedScheduleDate 和当前日期
+     * - 不一致时重新加载今天的作息 + 重新注册调度
+     */
+    suspend fun ensureTodayScheduleFresh(context: Context) {
+        val today = java.time.LocalDate.now(ZoneId.of("Asia/Shanghai"))
+            .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
+        // 日期一致且 slots 非空，才跳过
+        if (loadedScheduleDate == today && stateMachine.getTodaySlots().isNotEmpty()) {
+            Log.d(TAG, "作息已是今天的（$today），${stateMachine.getTodaySlots().size} 个时段，当前活动：${getCurrentActivity()}")
+            return
+        }
+
+        Log.d(TAG, "需要加载今日作息（loadedDate=$loadedScheduleDate, today=$today, slots非空=${stateMachine.getTodaySlots().isNotEmpty()}）")
+        val config = com.agent.ta.di.ServiceLocator.agentConfigProvider.get()
+        val dailyPlanner = com.agent.ta.domain.DailyPlanner()
+        val slots = dailyPlanner.getOrCreateTodaySchedule(config)
+        loadedScheduleDate = today
+        stateMachine.updateDailySlots(slots)
+        _currentState.value = stateMachine.currentState.value
+        val switches = stateMachine.getUpcomingSwitches(8)
+        scheduler?.scheduleNextSwitches(switches)
+        Log.d(TAG, "作息已更新为今天的（$today），${slots.size} 个时段，当前活动：${getCurrentActivity()}")
+    }
 
     /**
      * 获取当前时段的具体活动（如"去杭州拍戏"），供 PromptBuilder 让 LLM 知道当前在做什么
@@ -210,14 +281,17 @@ object AgentEngine {
     suspend fun reloadAfterConfigChanged(context: Context) {
         val config = com.agent.ta.di.ServiceLocator.agentConfigProvider.get()
         // 用新配置重新生成当天作息（LLM 失败也会写入 fallback，确保覆盖旧记录）
+        // isAgentSwitch=true：不注入旧 Agent 的历史记忆/对话/作息历史，避免新 Agent 沿用旧风格
         val dailyPlanner = com.agent.ta.domain.DailyPlanner()
-        val slots = dailyPlanner.regenerateTodaySchedule(config)
+        val slots = dailyPlanner.regenerateTodaySchedule(config, isAgentSwitch = true)
+        loadedScheduleDate = java.time.LocalDate.now(ZoneId.of("Asia/Shanghai"))
+            .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
         stateMachine.updateDailySlots(slots)
         _currentState.value = stateMachine.currentState.value
         scheduler?.cancelAll()
         val switches = stateMachine.getUpcomingSwitches(8)
         scheduler?.scheduleNextSwitches(switches)
-        Log.d(TAG, "配置变更后已重新加载作息与调度，slots=${slots.size}")
+        Log.d(TAG, "配置变更后已重新加载作息与调度（Agent 切换），slots=${slots.size}，当前活动：${getCurrentActivity()}")
     }
 
     /**
@@ -226,6 +300,7 @@ object AgentEngine {
     fun stop(context: Context) {
         scheduler?.cancelAll()
         boredInitiator?.stop()
+        lifeEventInitiator?.cleanupExpiredRecords()
         // 取消所有协程，避免资源泄漏
         scope.coroutineContext.cancelChildren()
     }

@@ -32,6 +32,11 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 显式指定要打包的 ABI，避免 AGP 9.x debug 构建只生成宿主机 ABI 导致 ARM 设备无法安装
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     signingConfigs {

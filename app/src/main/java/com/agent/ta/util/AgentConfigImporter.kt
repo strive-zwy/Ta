@@ -167,16 +167,35 @@ class AgentConfigImporter(private val context: Context) {
             }
 
             // 改写 emotions 里每个情绪的 sampleFile
-            val newEmotions = v.emotions.mapValues { (_, emotionCfg) ->
+            val newEmotions = v.emotions.mapValues { (emotion, emotionCfg) ->
                 val newPath = emotionCfg.sampleFile.takeIf { it.isNotBlank() }?.let { path ->
                     resolveAndCheck(baseDir, path, extractedFiles)?.absolutePath ?: path
                 } ?: emotionCfg.sampleFile
                 emotionCfg.copy(sampleFile = newPath)
             }
 
+            // v1/v3 同步：如果 neutral 的 v3 sampleFile 为空但 v1 sampleFile 有值，
+            // 把 v1 路径同步到 neutral，确保 UI 和 TTS 读取一致
+            // （旧格式配置包可能只在 voice.sample_file 存了路径，emotions 里为空）
+            val syncedEmotions = if (newSampleFile.isNotBlank()) {
+                val neutralCfg = newEmotions[com.agent.ta.data.model.VoiceEmotionConfig.NEUTRAL]
+                if (neutralCfg != null && neutralCfg.sampleFile.isBlank()) {
+                    newEmotions.toMutableMap().apply {
+                        put(
+                            com.agent.ta.data.model.VoiceEmotionConfig.NEUTRAL,
+                            neutralCfg.copy(sampleFile = newSampleFile)
+                        )
+                    }
+                } else {
+                    newEmotions
+                }
+            } else {
+                newEmotions
+            }
+
             v.copy(
                 sampleFile = newSampleFile,
-                emotions = newEmotions
+                emotions = syncedEmotions
             )
         }
 

@@ -332,6 +332,73 @@ fun SectionLabel(text: String) {
     )
 }
 
+/**
+ * 档位选择组件
+ *
+ * 用于替代滑块，在参数本身就是 prompt 软控制的场景下，
+ * 档位选择比精细数值滑块更诚实——直接选语义描述，避免精度错觉。
+ *
+ * @param label 选项标签（如"语速"）
+ * @param options 档位选项列表（如 ["偏慢", "适中", "偏快"]）
+ * @param selectedIndex 当前选中索引
+ * @param onSelect 选中回调
+ * @param accent 强调色（选中态背景色）
+ */
+@Composable
+fun OptionChipRow(
+    label: String,
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    accent: Color = AiPrimary
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = AiTextSecondary
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(50))
+                .background(AiInputBg)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            options.forEachIndexed { index, option ->
+                val isActive = index == selectedIndex
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(50))
+                        .then(
+                            if (isActive) Modifier.shadow(
+                                elevation = 3.dp,
+                                shape = RoundedCornerShape(50),
+                                ambientColor = accent.copy(alpha = 0.3f),
+                                spotColor = accent.copy(alpha = 0.3f)
+                            ) else Modifier
+                        )
+                        .background(if (isActive) accent else Color.Transparent)
+                        .clickable { onSelect(index) }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = option,
+                        fontSize = 12.sp,
+                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (isActive) Color.White else AiTextSecondary
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** AI Studio 底部悬浮保存按钮（统一 Action Bar 风格） */
 @Composable
 fun AiSaveButton(
