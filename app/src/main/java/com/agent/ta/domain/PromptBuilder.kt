@@ -77,13 +77,14 @@ class PromptBuilder {
         todaySchedule: List<DailySlot> = emptyList(),
         isPendingCatchup: Boolean = false,
         isConfigMode: Boolean = false,
-        continuousRound: Int = 0
+        continuousRound: Int = 0,
+        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList()
     ): List<ChatMessage> {
         val consecutiveInboundCount = if (isPendingCatchup) 1 else countTrailingInbound(recentMessages)
         val systemPrompt = buildSystemPrompt(
             config, state, userNickname, memories, isOnboarding,
             currentActivity, activityAnchor, isInitiate, todaySchedule, consecutiveInboundCount,
-            isPendingCatchup, isConfigMode, continuousRound
+            isPendingCatchup, isConfigMode, continuousRound, observerSnapshots
         )
         return listOf(ChatMessage("system", systemPrompt)) + recentMessages
     }
@@ -118,7 +119,8 @@ class PromptBuilder {
         consecutiveInboundCount: Int = 1,
         isPendingCatchup: Boolean = false,
         isConfigMode: Boolean = false,
-        continuousRound: Int = 0
+        continuousRound: Int = 0,
+        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList()
     ): String {
         val sb = StringBuilder()
 
@@ -130,9 +132,9 @@ class PromptBuilder {
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone B: Reference (中间参考)
-        // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导
+        // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导 + 观察者数据
         // ═══════════════════════════════════════════════════════════════════════
-        buildZoneB(sb, config, state, userNickname, memories, todaySchedule)
+        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots)
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone C: Recency (结尾锚定)
@@ -231,7 +233,8 @@ class PromptBuilder {
         state: AgentState,
         userNickname: String,
         memories: List<MemoryEntity>,
-        todaySchedule: List<DailySlot>
+        todaySchedule: List<DailySlot>,
+        observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList()
     ) {
         sb.appendLine("═══ Zone B: 背景参考（上下文信息）═══")
         sb.appendLine()
@@ -333,11 +336,37 @@ class PromptBuilder {
             sb.appendLine()
         }
 
-        // 记忆
+        // 记忆（v2 三层记忆系统：core_memory 永驻 + memory_items 按需召回）
         if (memories.isNotEmpty()) {
-            sb.appendLine("【关于「$userNickname」，你记得】")
-            memories.take(20).forEach { memory ->
-                sb.appendLine("- ${memory.content}")
+            // 区分核心记忆和普通记忆项
+            val coreMemories = memories.filter { it.importance >= com.agent.ta.state.memory.MemoryStore.CORE_THRESHOLD }
+            val normalMemories = memories.filter { it.importance < com.agent.ta.state.memory.MemoryStore.CORE_THRESHOLD }
+
+            if (coreMemories.isNotEmpty()) {
+                sb.appendLine("【核心记忆（永驻，必须牢记）】")
+                coreMemories.forEach { memory ->
+                    sb.appendLine("- ${memory.content}")
+                }
+                sb.appendLine()
+            }
+
+            if (normalMemories.isNotEmpty()) {
+                sb.appendLine("【近期记忆】")
+                normalMemories.take(10).forEach { memory ->
+                    sb.appendLine("- ${memory.content}")
+                }
+                sb.appendLine()
+            }
+        }
+
+        // 观察者数据（v2 L0 基础设施层注入，让 LLM 看到完整当前状态）
+        // 设计动机：解决 MochiBot "主回复路径错失状态" 的核心问题
+        if (observerSnapshots.isNotEmpty()) {
+            sb.appendLine("【系统观察（实时状态感知）】")
+            observerSnapshots.forEach { snapshot ->
+                if (snapshot.promptHint.isNotBlank()) {
+                    sb.appendLine(snapshot.promptHint)
+                }
             }
             sb.appendLine()
         }

@@ -23,6 +23,20 @@ interface MemoryDao {
     suspend fun getTopMemories(limit: Int = 20): List<MemoryEntity>
 
     /**
+     * 按重要度阈值查询记忆（v2 三层记忆系统）
+     * - importance >= threshold: 核心记忆（永驻 prompt）
+     * - importance 在中间区间: 记忆项（按需召回）
+     */
+    @Query("SELECT * FROM memories WHERE importance >= :threshold ORDER BY updatedAt DESC")
+    suspend fun getByMinImportance(threshold: Int): List<MemoryEntity>
+
+    /**
+     * 按重要度区间查询记忆（v2 三层记忆系统）
+     */
+    @Query("SELECT * FROM memories WHERE importance >= :min AND importance < :max ORDER BY importance DESC, updatedAt DESC LIMIT :limit")
+    suspend fun getByImportanceRange(min: Int, max: Int, limit: Int): List<MemoryEntity>
+
+    /**
      * 按关键词搜索记忆（LIKE 模糊匹配 content）
      * 用于 MemoryTool 让 LLM 主动检索历史记忆
      */

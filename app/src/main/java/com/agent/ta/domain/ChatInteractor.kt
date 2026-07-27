@@ -52,6 +52,8 @@ class ChatInteractor(private val context: Context) {
     private val toolRegistry = ServiceLocator.toolRegistry
     private val chatDao = ServiceLocator.chatMessageDao
     private val memoryDao = ServiceLocator.memoryDao
+    private val memoryStore = ServiceLocator.memoryStore
+    private val observerRegistry = ServiceLocator.observerRegistry
     private val futureEventDao = ServiceLocator.futureEventDao
     private val prefs = ServiceLocator.userPreferences
     private val configProvider = ServiceLocator.agentConfigProvider
@@ -414,14 +416,20 @@ class ChatInteractor(private val context: Context) {
                 )
             }
 
-            // 取记忆并动态调整重要性
-            val memories = memoryDao.getTopMemories(20)
+            // 取记忆：v2 三层记忆系统（core_memory 永驻 + memory_items 按需召回）
+            val coreMemories = memoryStore.getCoreMemory()
+            val recentMemoryItems = memoryStore.getRecentItems(10)
+            val memories = (coreMemories + recentMemoryItems).distinctBy { it.id }
             adjustMemoryImportance(memories)
 
             // 获取当前活动锚点（应用侧权威状态，优先于 currentActivity）
             val activityAnchor = com.agent.ta.service.AgentEngine.getCurrentActivityAnchor()
 
-            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor 注入）
+            // 收集观察者完整快照（v2 L0 基础设施层，注入 Zone B 让 LLM 看到完整当前状态）
+            // 解决 MochiBot "主回复路径错失状态" 的核心问题
+            val observerSnapshots = observerRegistry.collectAll()
+
+            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor + 观察者数据注入）
             val llmMessages = promptBuilder.build(
                 config = configProvider.get(),
                 state = com.agent.ta.service.AgentEngine.currentState.value,
@@ -435,7 +443,8 @@ class ChatInteractor(private val context: Context) {
                 todaySchedule = com.agent.ta.service.AgentEngine.getTodaySchedule(),
                 isPendingCatchup = isPendingCatchup,
                 isConfigMode = isConfigMode,
-                continuousRound = continuousRound
+                continuousRound = continuousRound,
+                observerSnapshots = observerSnapshots
             )
 
             // 调 LLM（支持工具调用）+ 一致性校验重试循环
@@ -473,19 +482,9 @@ class ChatInteractor(private val context: Context) {
                 Log.w(TAG, "一致性校验重试达上限($MAX_CONSISTENCY_RETRIES)，使用最后一次回复")
             }
 
-            // 存记忆
+            // 存记忆（v2 通过 MemoryStore 统一管理，自动分级入库）
             reply.memoryUpdates.forEach { update ->
-                memoryDao.insert(
-                    MemoryEntity(
-                        type = update.type,
-                        category = update.category,
-                        content = update.content,
-                        importance = update.importance,
-                        source = if (isInitiate) "event" else "chat",
-                        createdAt = System.currentTimeMillis(),
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
+                memoryStore.addMemory(update, if (isInitiate) "event" else "chat")
             }
 
             // 存未来事件（LLM 从对话中提取的）

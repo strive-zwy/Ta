@@ -27,6 +27,7 @@ import com.agent.ta.infrastructure.observer.ObserverRegistry
 import com.agent.ta.infrastructure.observer.RecentConversationObserver
 import com.agent.ta.infrastructure.observer.TimeContextObserver
 import com.agent.ta.infrastructure.time.TimeContext
+import com.agent.ta.state.memory.MemoryStore
 
 /**
  * 手动依赖容器，替代 Hilt/Dagger
@@ -138,6 +139,21 @@ object ServiceLocator {
         observerRegistry.register(TimeContextObserver())
         observerRegistry.register(RecentConversationObserver())
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // L1 状态层（v2 架构新增）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 三层记忆系统（core_memory / memory_items / raw_history）
+     *
+     * - core_memory: importance >= 4，永驻 prompt
+     * - memory_items: importance 2-3，按需召回
+     * - raw_history: 由 ChatInteractor 直接查 ChatMessageDao
+     *
+     * 封装 MemoryDao，提供分级查询和召回接口
+     */
+    val memoryStore: MemoryStore by lazy { MemoryStore(memoryDao) }
 
     /**
      * 工具注册中心（v3 通用工具系统）
