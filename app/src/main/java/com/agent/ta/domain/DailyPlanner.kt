@@ -40,6 +40,7 @@ class DailyPlanner {
     private val memoryDao = ServiceLocator.memoryDao
     private val chatMessageDao = ServiceLocator.chatMessageDao
     private val futureEventDao = ServiceLocator.futureEventDao
+    private val dailyStateDao = ServiceLocator.dailyStateDao
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
@@ -115,6 +116,19 @@ class DailyPlanner {
 
             // 生成昨天回顾（如果昨天有作息记录但还没生成回顾）
             if (!isAgentSwitch) {
+                // 补齐昨天缺失的 DailyState（如果昨天有作息但没生成 DailyState）
+                val yesterday = today.minusDays(1).format(DATE_FORMAT)
+                val existingState = dailyStateDao.getByDate(yesterday)
+                if (existingState == null) {
+                    val yesterdaySchedule = dailyScheduleDao.getByDate(yesterday)
+                    if (yesterdaySchedule != null) {
+                        try {
+                            DailySummaryGenerator().generateSummaryForDate(today.minusDays(1), zoneId)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "补齐昨日 DailyState 失败", e)
+                        }
+                    }
+                }
                 generateYesterdayRecall(today, zoneId)
                 // 生成昨天对话摘要（让 Agent 记得昨天和用户聊了什么内容）
                 try {
@@ -139,15 +153,32 @@ class DailyPlanner {
             val slots = parseSlotsFromReply(rawContent)
 
             if (slots.isNotEmpty()) {
+                val slotsJsonStr = json.encodeToString(slots)
+                // 首次规划（无 adjustReason）时写入 originalSlotsJson 快照，当天不可变
+                // adjustReason 非空时不覆盖 originalSlotsJson（保留首次的计划快照）
+                // isAgentSwitch=true 时强制覆盖（切换 Agent 后用新 Agent 的计划替换旧快照）
+                val existing = dailyScheduleDao.getByDate(dateStr)
+                val existingOriginal = existing?.originalSlotsJson.orEmpty()
+                val originalSlotsJson = when {
+                    // 切换 Agent：强制覆盖为新 Agent 的计划快照
+                    isAgentSwitch -> slotsJsonStr
+                    // 首次生成且无快照：写入新快照
+                    adjustReason.isEmpty() && existingOriginal.isBlank() -> slotsJsonStr
+                    // 已有快照（无论是否调整）：保留原快照
+                    existingOriginal.isNotBlank() -> existingOriginal
+                    // 调整时但无快照（异常情况）：空字符串
+                    else -> ""
+                }
                 val entity = DailyScheduleEntity(
                     date = dateStr,
-                    slotsJson = json.encodeToString(slots),
+                    slotsJson = slotsJsonStr,
+                    originalSlotsJson = originalSlotsJson,
                     isAdjusted = adjustReason.isNotEmpty(),
                     source = if (adjustReason.isNotEmpty()) "adjust" else "plan",
                     createdAt = System.currentTimeMillis(),
                     updatedAt = System.currentTimeMillis()
                 )
-                dailyScheduleDao.upsert(entity)
+                dailyScheduleDao.upsertPreservingCreatedAt(entity)
 
                 // 存"今天计划"记忆（让 Agent 记得自己今天打算做什么）
                 val planSummary = slots.joinToString("；") { "${it.start}-${it.end} ${activityLabel(it)}" }
@@ -185,15 +216,25 @@ class DailyPlanner {
      */
     private suspend fun saveFallbackSchedule(dateStr: String, adjustReason: String): List<DailySlot> {
         val slots = fallbackSchedule()
+        val slotsJsonStr = json.encodeToString(slots)
+        // 兜底作息同样需要写入 originalSlotsJson 快照（首次生成时）
+        val existing = dailyScheduleDao.getByDate(dateStr)
+        val existingOriginal = existing?.originalSlotsJson.orEmpty()
+        val originalSlotsJson = when {
+            adjustReason.isEmpty() && existingOriginal.isBlank() -> slotsJsonStr
+            existingOriginal.isNotBlank() -> existingOriginal
+            else -> ""
+        }
         val entity = DailyScheduleEntity(
             date = dateStr,
-            slotsJson = json.encodeToString(slots),
+            slotsJson = slotsJsonStr,
+            originalSlotsJson = originalSlotsJson,
             isAdjusted = adjustReason.isNotEmpty(),
             source = "fallback",
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
         )
-        dailyScheduleDao.upsert(entity)
+        dailyScheduleDao.upsertPreservingCreatedAt(entity)
         Log.d(TAG, "已写入兜底作息到 DB（source=fallback）")
         return slots
     }
@@ -293,6 +334,13 @@ class DailyPlanner {
             sb.appendLine("你可以参考该人物近期的公开活动节奏，在自己的作息中加入类似活动（不强制完全一致，只是参考灵感）")
             sb.appendLine("例如：如果该人物今天有演出/直播/活动，你也可以安排类似的事做")
             sb.appendLine()
+            sb.appendLine("【重要·时态约束】")
+            sb.appendLine("- 该人物已上映的电影 / 已播出的剧 / 已发行的歌 / 已结束的活动 都是【过去式作品】，不是今天在做的事")
+            sb.appendLine("- 严禁把过去式作品当成今天的活动（如电影已上映却安排「看该电影的剧本」「宣传该电影」；剧已播完却安排「拍摄该戏」）")
+            sb.appendLine("- 只有该人物【明确进行中】的项目（如官方已公布正在拍的新戏 / 正在筹备的新专辑 / 正在举办的巡演）才能作为今天的活动")
+            sb.appendLine("- 不确定是否在拍/在做时，作息按日常活动安排即可（如练习声乐 / 健身 / 看其他作品 / 休息），不要凭空捏造拍摄/宣传行程")
+            sb.appendLine("- 你的 persona.background 已经包含该人物的背景介绍，作息安排的是【今天能做的事】，不是回顾过往作品")
+            sb.appendLine()
         }
 
         // 未来事件（从聊天中提取的）
@@ -326,22 +374,50 @@ class DailyPlanner {
         sb.appendLine("  \"replyText\": \"简要说明你今天的安排（一两句话）\",")
         sb.appendLine("  \"slots\": [")
         sb.appendLine("    {\"start\": \"HH:MM\", \"end\": \"HH:MM\", \"state\": \"unavailable\", \"activity\": \"具体活动描述\"}")
-        sb.appendLine("  ]")
+        sb.appendLine("  ],")
+        sb.appendLine("  \"sleepContextPerturbation\": {")
+        sb.appendLine("    \"stress\": 0.0-1.0,")
+        sb.appendLine("    \"fatigue\": 0.0-1.0,")
+        sb.appendLine("    \"mood\": -1.0~1.0")
+        sb.appendLine("  }")
         sb.appendLine("}")
+        sb.appendLine()
+        sb.appendLine("sleepContextPerturbation 说明（可选，不填则用默认值）：")
+        sb.appendLine("- stress 压力值：0.0=轻松 / 0.5=普通 / 1.0=极度压力（影响深睡比例，压力大时深睡减少）")
+        sb.appendLine("- fatigue 疲劳值：0.0=精神 / 0.5=普通 / 1.0=极度疲劳（影响入睡浅睡，疲劳时入睡快）")
+        sb.appendLine("- mood 心情：-1.0=低落 / 0.0=平静 / 1.0=愉悦（心情低落时深睡减少）")
+        sb.appendLine("- 结合今天经历判断：工作压力大/被批评/加班 → stress↑；运动多/熬夜 → fatigue↑；心情好/有开心事 → mood↑")
         sb.appendLine()
         sb.appendLine("规则：")
         sb.appendLine("- 从今天起床时间开始（如 07:30），到最后一个 unavailable（睡觉）时段结束")
         sb.appendLine("- 最后一个时段必须是 unavailable（睡觉），且跨午夜到明早起床时间（如 22:00 - 07:30，表示今晚22点睡到明早7点半）")
         sb.appendLine("- 第一个时段是起床后的状态（normal/idle/busy 等），不要以 unavailable 开头")
-        sb.appendLine("- 时间段必须连续，每个时段的 end 等于下一个时段的 start")
         sb.appendLine("- 每个时段必须有 start / end / state / activity")
         sb.appendLine("- activity 是你具体在做什么（如 写设计稿 / 看新番 / 泡澡放松）")
         sb.appendLine("- 体现你的性格和喜好，不要机械")
         sb.appendLine("- 时间安排要合理，符合你的身份")
         sb.appendLine("- 周末和工作日应该有所不同")
         sb.appendLine("- 结合记忆中的近期活动，避免重复或补充未完成的事")
-        sb.appendLine("- 时间不要全部卡整点：起床、吃饭、休息等时段用真实的小时+分钟（如 07:23 / 12:45 / 18:17），像真人作息而不是课表")
-        sb.appendLine("- 但睡觉/工作这种长时段可以是整点或半点（如 02:00 / 09:30）")
+        sb.appendLine()
+        sb.appendLine("【时间真实感要求（重要，体现真人作息）】")
+        sb.appendLine("- 起床、吃饭、休息等短时段必须用非整点分钟（如 07:32 / 12:48 / 18:15），禁止用 08:00 / 12:00 / 18:00 这种整点")
+        sb.appendLine("- 睡觉/工作这种长时段可以是整点或半点（如 22:30 / 09:00）")
+        sb.appendLine("- 各分钟值要随机化，不要所有时段都用同样的分钟（避免全部都是 :30 或 :15）")
+        sb.appendLine()
+        sb.appendLine("【过渡时段要求（重要，体现真人作息）】")
+        sb.appendLine("- 真人不会一到点就立刻切换活动，活动切换时需要插入 5-15 分钟的过渡时段")
+        sb.appendLine("- 过渡时段示例：从「工作」切换到「吃饭」之间插入「收拾东西，准备吃饭」5-10 分钟")
+        sb.appendLine("- 从「工作」切换到「回家」：插入「通勤路上」15-30 分钟")
+        sb.appendLine("- 从「出门」切换到「工作」：插入「到工位，整理东西」5-10 分钟")
+        sb.appendLine("- 从「吃饭」切换到「工作」：插入「收拾餐具，刷手机消食」10-15 分钟")
+        sb.appendLine("- 从「游戏」切换到「睡觉」：插入「关游戏，洗漱准备睡觉」10-15 分钟")
+        sb.appendLine("- 过渡时段的 state 用 idle（摸鱼/过渡/准备 X 等低强度活动）")
+        sb.appendLine("- 过渡时段的 activity 要具体描述过渡动作（如「收拾东西，准备出门」「通勤路上听播客」「关电脑伸个懒腰」）")
+        sb.appendLine("- 不是每个切换都要插入过渡，只在大活动切换（工作↔娱乐、出门↔回家、娱乐↔睡觉）时插入，连续的小活动（如看书→刷手机）可以无缝衔接")
+        sb.appendLine()
+        sb.appendLine("【时段衔接】")
+        sb.appendLine("- 时段之间可以无缝衔接（前一个 end = 后一个 start），也可以有 2-5 分钟的间隙作为自然过渡")
+        sb.appendLine("- 不要留超过 5 分钟的空隙（那是规划漏洞）")
         // 多样性硬规则
         sb.appendLine("- 【重要多样性要求】今天至少有 1-2 个时段做最近 3 天没做过的活动，不要简单复制历史作息")
         sb.appendLine("- 避免每天都用同样的活动名（如不要每天都「玩游戏」「工作」「洗澡」），换换说法和内容（如「打新出的塞尔达」「赶设计稿」「泡澡放松」）")
@@ -430,15 +506,36 @@ class DailyPlanner {
 
     /**
      * 从 LLM 回复中解析 slots
+     *
+     * 同时解析 sleepContextPerturbation（可选，LLM 未输出时用默认值）
      */
     private fun parseSlotsFromReply(content: String): List<DailySlot> {
-        val raw = try {
-            val element = json.parseToJsonElement(content)
-            val obj = element as? kotlinx.serialization.json.JsonObject ?: return emptyList()
-            val slotsArr = obj["slots"] ?: return emptyList()
-            json.decodeFromString<List<DailySlot>>(slotsArr.toString())
+        val element = try {
+            json.parseToJsonElement(content)
         } catch (e: Exception) {
-            // 尝试从 replyText 中提取
+            null
+        }
+        val obj = element as? kotlinx.serialization.json.JsonObject
+
+        // 解析 sleepContextPerturbation（可选）
+        val perturbation = parsePerturbation(obj)
+
+        val raw = try {
+            if (obj != null) {
+                val slotsArr = obj["slots"] ?: return emptyList()
+                json.decodeFromString<List<DailySlot>>(slotsArr.toString())
+            } else {
+                // 尝试从 replyText 中提取
+                val startIndex = content.indexOf('[')
+                val endIndex = content.lastIndexOf(']')
+                if (startIndex >= 0 && endIndex > startIndex) {
+                    val jsonArr = content.substring(startIndex, endIndex + 1)
+                    json.decodeFromString<List<DailySlot>>(jsonArr)
+                } else {
+                    emptyList()
+                }
+            }
+        } catch (e: Exception) {
             try {
                 val startIndex = content.indexOf('[')
                 val endIndex = content.lastIndexOf(']')
@@ -453,7 +550,28 @@ class DailyPlanner {
                 emptyList()
             }
         }
-        return normalizeSlots(raw)
+        return normalizeSlots(raw, perturbation)
+    }
+
+    /**
+     * 解析 sleepContextPerturbation（可选字段，LLM 未输出时用默认值）
+     */
+    private fun parsePerturbation(obj: kotlinx.serialization.json.JsonObject?): SleepPhaseSplitter.SleepContextPerturbation {
+        if (obj == null) return SleepPhaseSplitter.SleepContextPerturbation()
+        return try {
+            val perturbObj = obj["sleepContextPerturbation"] as? kotlinx.serialization.json.JsonObject
+                ?: return SleepPhaseSplitter.SleepContextPerturbation()
+            val stress = (perturbObj["stress"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull() ?: 0.3f
+            val fatigue = (perturbObj["fatigue"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull() ?: 0.3f
+            val mood = (perturbObj["mood"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toFloatOrNull() ?: 0.0f
+            SleepPhaseSplitter.SleepContextPerturbation(
+                stress = stress.coerceIn(0f, 1f),
+                fatigue = fatigue.coerceIn(0f, 1f),
+                mood = mood.coerceIn(-1f, 1f)
+            )
+        } catch (e: Exception) {
+            SleepPhaseSplitter.SleepContextPerturbation()
+        }
     }
 
     /**
@@ -461,8 +579,12 @@ class DailyPlanner {
      * 1. 移除开头的 unavailable 时段（如 LLM 仍以 00:00 unavailable 开头）
      * 2. 确保最后一个时段是 unavailable（睡觉）且跨午夜到次日起床时间
      *    兼容旧 sleep 状态值
+     * 3. Phase 1 分级睡眠：把跨午夜睡觉时段拆分为 3 段（入睡浅睡/深睡/将醒浅睡）
      */
-    private fun normalizeSlots(slots: List<DailySlot>): List<DailySlot> {
+    private fun normalizeSlots(
+        slots: List<DailySlot>,
+        perturbation: SleepPhaseSplitter.SleepContextPerturbation = SleepPhaseSplitter.SleepContextPerturbation()
+    ): List<DailySlot> {
         if (slots.isEmpty()) return slots
         var result = slots.toMutableList()
 
@@ -486,6 +608,27 @@ class DailyPlanner {
                 state = "unavailable",
                 activity = "睡觉"
             )
+        }
+
+        // 3. Phase 1 分级睡眠：把睡觉时段拆分为 3 段
+        val sleepSlot = result.last()
+        // 只拆分未拆分的单段睡觉（sleepDepth==null 表示未拆分）
+        if (sleepSlot.sleepDepth == null && sleepSlot.state == "unavailable") {
+            try {
+                val sleepStart = LocalTime.parse(sleepSlot.start)
+                val wakeTime = LocalTime.parse(sleepSlot.end)
+                val splitter = SleepPhaseSplitter()
+                val splitSlots = splitter.split(sleepStart, wakeTime, perturbation)
+                if (splitSlots != null && splitSlots.size == 3) {
+                    // 替换最后一段为 3 段拆分
+                    result.removeAt(result.lastIndex)
+                    result.addAll(splitSlots)
+                }
+                // splitSlots==null 时保留原单段（fallback）
+            } catch (e: Exception) {
+                Log.e(TAG, "睡眠时段拆分失败，保留单段", e)
+                // 保留原单段
+            }
         }
 
         return result
@@ -522,6 +665,7 @@ class DailyPlanner {
     /**
      * 生成昨天的回顾记忆（让 Agent 记得昨天做了什么）
      * 在生成今天作息时，如果昨天有作息记录，就补一条"昨天回顾"记忆
+     * 重构为语义化总结：调 LLM 生成第一人称回顾，失败时降级为时段拼接
      */
     private suspend fun generateYesterdayRecall(today: LocalDate, zoneId: ZoneId) {
         try {
@@ -529,20 +673,18 @@ class DailyPlanner {
             val yesterdaySchedule = dailyScheduleDao.getByDate(yesterday) ?: return
 
             // 检查是否已经生成过回顾记忆（避免重复）
-            val existingRecall = memoryDao.getTopMemories(50).any {
-                it.type == "event" && it.category == "daily_recall" && it.content.contains(yesterday)
-            }
-            if (existingRecall) return
+            val existingRecall = memoryDao.findOneByCategoryAndKeyword("daily_recall", yesterday)
+            if (existingRecall != null) return
 
             val slots = parseSlots(yesterdaySchedule.slotsJson)
             if (slots.isEmpty()) return
 
-            val recallSummary = slots.joinToString("；") { "${it.start}-${it.end} ${activityLabel(it)}" }
-            val isAdjusted = yesterdaySchedule.isAdjusted
-            val recallText = if (isAdjusted) {
-                "${yesterday}（有调整）：$recallSummary"
-            } else {
-                "$yesterday：$recallSummary"
+            // 尝试生成语义化总结（LLM），失败则降级为时段拼接
+            val recallText = try {
+                generateSemanticRecall(today.minusDays(1), slots, yesterdaySchedule.isAdjusted)
+            } catch (e: Exception) {
+                Log.w(TAG, "LLM 生成语义化回顾失败，降级为时段拼接", e)
+                buildFallbackRecallText(yesterday, slots, yesterdaySchedule.isAdjusted)
             }
 
             memoryDao.insert(
@@ -559,6 +701,86 @@ class DailyPlanner {
             Log.d(TAG, "已生成昨天($yesterday)的回顾记忆")
         } catch (e: Exception) {
             Log.e(TAG, "生成昨天回顾失败", e)
+        }
+    }
+
+    /**
+     * 生成语义化昨日回顾（调 LLM）
+     * 注入昨日作息时段 + 昨日对话摘要，输出 100-200 字第一人称总结
+     * 格式："7月29日 周三：今天赶完了设计稿，下午被领导夸了心情不错..."
+     */
+    private suspend fun generateSemanticRecall(
+        yesterdayDate: LocalDate,
+        slots: List<DailySlot>,
+        isAdjusted: Boolean
+    ): String {
+        val yesterdayStr = yesterdayDate.format(DATE_FORMAT)
+        val dateDisplay = yesterdayDate.format(DateTimeFormatter.ofPattern("M月d日"))
+        val weekDay = when (yesterdayDate.dayOfWeek) {
+            DayOfWeek.MONDAY -> "周一"
+            DayOfWeek.TUESDAY -> "周二"
+            DayOfWeek.WEDNESDAY -> "周三"
+            DayOfWeek.THURSDAY -> "周四"
+            DayOfWeek.FRIDAY -> "周五"
+            DayOfWeek.SATURDAY -> "周六"
+            DayOfWeek.SUNDAY -> "周日"
+            else -> ""
+        }
+
+        // 构造作息时段描述
+        val scheduleDesc = slots.joinToString("；") { "${it.start}-${it.end} ${activityLabel(it)}" }
+
+        // 查询昨日对话摘要（如果有）
+        val summaryMemory = memoryDao.findOneByCategoryAndKeyword("daily_summary", yesterdayStr)
+        val summaryText = summaryMemory?.content?.substringAfter("对话摘要：") ?: ""
+
+        val sb = StringBuilder()
+        sb.appendLine("你是 Agent 的记忆助手，负责生成昨天的语义化回顾。")
+        sb.appendLine("请基于以下昨天的作息和对话信息，生成一段 100-200 字的第一人称回顾。")
+        sb.appendLine()
+        sb.appendLine("要求：")
+        sb.appendLine("- 用第一人称（Agent 视角）描述，如「今天赶完了设计稿，下午被领导夸了心情不错」")
+        sb.appendLine("- 自然口语化，不要流水账式的时段罗列")
+        sb.appendLine("- 突出关键活动和情感体验")
+        sb.appendLine("- 格式开头：$dateDisplay $weekDay：")
+        sb.appendLine("- 只输出回顾内容，不要加其他说明")
+        sb.appendLine()
+        sb.appendLine("昨日作息：$scheduleDesc")
+        if (isAdjusted) {
+            sb.appendLine("（当天作息有调整）")
+        }
+        if (summaryText.isNotBlank()) {
+            sb.appendLine()
+            sb.appendLine("昨日对话摘要：$summaryText")
+        }
+
+        val messages = listOf(
+            ChatMessage("system", sb.toString()),
+            ChatMessage("user", "请生成昨天的语义化回顾")
+        )
+
+        val content = llmClient.chatRaw(messages)
+        // 确保以日期开头
+        return if (content.startsWith(dateDisplay)) {
+            content
+        } else {
+            "$dateDisplay $weekDay：$content"
+        }
+    }
+
+    /**
+     * 构造 fallback 回顾文本（时段拼接，LLM 失败时降级使用）
+     */
+    private fun buildFallbackRecallText(
+        yesterday: String,
+        slots: List<DailySlot>,
+        isAdjusted: Boolean
+    ): String {
+        val recallSummary = slots.joinToString("；") { "${it.start}-${it.end} ${activityLabel(it)}" }
+        return if (isAdjusted) {
+            "${yesterday}（有调整）：$recallSummary"
+        } else {
+            "$yesterday：$recallSummary"
         }
     }
 
