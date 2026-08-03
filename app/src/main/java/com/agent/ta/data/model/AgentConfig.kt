@@ -152,7 +152,13 @@ data class AgentInfo(
     val gender: String = "",
     val age: Int = 0,
     val avatars: List<AvatarConfig> = emptyList(),
-    val persona: Persona = Persona()
+    val persona: Persona = Persona(),
+    /**
+     * 当前选中的头像 ID（用户在头像管理页点「设为当前」的那个）。
+     * - 为 null 或指向的头像 file 为空/不存在时，回退到 avatars 中第一个 file 非空的头像
+     * - 老配置没有此字段，反序列化时取默认值 null，行为与旧版一致（用第一个）
+     */
+    @SerialName("current_avatar_id") val currentAvatarId: String? = null
 )
 
 @Serializable
@@ -164,8 +170,32 @@ data class AvatarConfig(
     /** Admin v2: 触发关键词数组，Agent 回复命中时自动切换到此头像 */
     @SerialName("trigger_keywords") val triggerKeywords: List<String> = emptyList(),
     /** Admin v2: 情绪映射（如 ["happy","excited"]） */
-    @SerialName("emotion_mapping") val emotionMapping: List<String> = emptyList()
+    @SerialName("emotion_mapping") val emotionMapping: List<String> = emptyList(),
+    /**
+     * 头像描述（用户简短说明这张头像的样子/适用场景，如"微笑正面照""户外侧脸""思考表情"）。
+     * Agent（LLM）会基于 description 自主决定何时切换到这张头像。
+     * 留空时 Agent 仍可凭 id 选择，但没有语义依据。
+     */
+    val description: String = ""
 )
+
+/**
+ * 解析「当前生效头像」的 file 路径。
+ *
+ * 优先级：
+ * 1. currentAvatarId 指向的头像（且 file 非空）
+ * 2. avatars 中第一个 file 非空的头像（向后兼容老配置 + 兜底）
+ * 3. 都没有 → null（调用方自行展示占位图）
+ *
+ * 统一入口：聊天页 / 个人页 / Agent 配置页 都用这个，避免各处 firstOrNull 散落导致行为不一致。
+ */
+fun AgentInfo.resolveCurrentAvatarFile(): String? {
+    if (!currentAvatarId.isNullOrBlank()) {
+        val matched = avatars.firstOrNull { it.id == currentAvatarId && it.file.isNotBlank() }
+        if (matched != null) return matched.file
+    }
+    return avatars.firstOrNull { it.file.isNotBlank() }?.file
+}
 
 @Serializable
 data class Persona(
@@ -390,7 +420,16 @@ data class DailySlot(
     val end: String = "",
     val state: String = "",
     /** 该时段的活动描述（LLM 生成，如"写设计稿"、"看新番"、"泡澡放松"） */
-    val activity: String = ""
+    val activity: String = "",
+    /**
+     * 睡眠深度标记（Phase 1 分级睡眠）
+     * - "light"：浅睡（入睡浅睡/将醒浅睡，可被消息吵醒回复）
+     * - "deep"：深睡（不可回复，随机概率触发惊醒）
+     * - null：非睡眠时段
+     *
+     * 仅 state="unavailable" 的睡眠时段会填充此字段
+     */
+    val sleepDepth: String? = null
 )
 
 /**
@@ -442,7 +481,12 @@ data class BehaviorConfig(
     /** Admin v2: 各状态"正在输入"显示时长（[min, max] 秒） */
     @SerialName("typing_indicator_duration") val typingIndicatorDuration: Map<String, List<Int>> = emptyMap(),
     /** Admin v2: 各状态回复长度提示（{min, max} 字符数） */
-    @SerialName("message_length_hints") val messageLengthHints: Map<String, LengthHint> = emptyMap()
+    @SerialName("message_length_hints") val messageLengthHints: Map<String, LengthHint> = emptyMap(),
+    /**
+     * Phase 1 分级睡眠：深睡时每条消息触发惊醒的概率（0-1）
+     * 默认 0.15，即 15% 概率被消息吵醒
+     */
+    @SerialName("wake_chance_per_deep_sleep_message") val wakeChancePerDeepSleepMessage: Float = 0.15f
 )
 
 /**

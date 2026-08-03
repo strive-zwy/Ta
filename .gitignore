@@ -18,4 +18,6 @@ keystore.properties
 # 临时调试脚本
 check_schedule.py
 del_schedule.py
-
+# 调试/临时截图
+today_sleep.png
+today_*.png

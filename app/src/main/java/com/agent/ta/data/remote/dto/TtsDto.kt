@@ -19,6 +19,10 @@ data class AgentReply(
     val memoryUpdates: List<MemoryUpdate> = emptyList(),
     /** LLM 从对话中识别到的未来事件（如用户提到"后天某明星演唱会"） */
     val futureEvents: List<FutureEventItem> = emptyList(),
+    /** LLM 从对话中识别到的承诺/约定/提醒（如"下午3点一起看电影"） */
+    val commitments: List<CommitmentItem> = emptyList(),
+    /** LLM 从对话中识别到的承诺状态更新（如用户说"看完了"） */
+    val commitmentUpdates: List<CommitmentUpdateItem> = emptyList(),
     /**
      * 多条回复（新格式，让 Agent 可以一次发多条消息，更像真人微信聊天）
      * - 如果 LLM 输出了 replies，则用 replies（每条独立合成语音 + 独立入库）
@@ -28,7 +32,29 @@ data class AgentReply(
     /** Agent 自主作息调整（用户撒娇请求陪伴时，Agent 自己判断是否调整） */
     val scheduleAdjustment: ScheduleAdjustment = ScheduleAdjustment(),
     /** 配置模式下的配置变更建议（LLM 输出，ChatInteractor 应用到 AgentConfig） */
-    val configUpdate: ConfigUpdate? = null
+    val configUpdate: ConfigUpdate? = null,
+    /**
+     * 关系里程碑声明（Phase 2 关系系统）
+     * LLM 主动声明的里程碑 type，如 "first_vulnerability" / "first_argument" / "first_secret_shared"
+     * 若本次回复涉及关系节点（首次袒露脆弱/首次吵架等）则输出对应 type；否则留空
+     */
+    val milestoneDeclared: String? = null,
+    /**
+     * 情绪强度声明（Phase 3 情感势能驱动主动发起）
+     * LLM 自报本次回复内心未充分表达的情绪波动强度
+     * -2.0 = 强烈负面（委屈/愤怒）/ -1.0 = 轻微低落 / 0 = 平静 / +1.0 = 轻微开心 / +2.0 = 强烈兴奋
+     * 0 表示情绪平淡无波动；非 0 表示 Agent 内心有情绪但回复未完全表达
+     * 用于驱动 EmotionalEngine 的势能积累
+     */
+    val emotionIntensity: Float = 0f,
+    /**
+     * Agent 自主切换头像：本次回复希望显示的头像 id（来自 AvatarConfig.id）。
+     * - null/空字符串 = 不切换（保持当前头像）
+     * - 非空字符串 = 切换到指定 id 的头像；ChatInteractor 会更新 AgentInfo.currentAvatarId
+     * - 指向的 id 不存在时由 ChatInteractor 兜底（保持原头像）
+     * Agent 根据 AvatarConfig.description 自主判断何时换头像（如情绪转变/活动场景切换）
+     */
+    val wantAvatarId: String? = null
 )
 
 /**
@@ -117,6 +143,35 @@ data class MemoryUpdate(
 data class FutureEventItem(
     val date: String,
     val description: String
+)
+
+/**
+ * 承诺/约定/提醒（LLM 从对话中提取）
+ *
+ * type：
+ * - appointment：双方约定（如"下午3点一起看电影"）
+ * - promise：Agent 承诺（如"明天我帮你查 XXX"）
+ * - reminder：提醒用户（如"明天叫你起床"）
+ */
+@Serializable
+data class CommitmentItem(
+    val type: String,           // appointment / promise / reminder
+    val content: String,
+    val triggerAt: String? = null,   // ISO 8601 字符串
+    val participants: String = "agent"
+)
+
+/**
+ * 承诺状态更新（LLM 从对话中识别用户完成/取消承诺）
+ *
+ * status：
+ * - completed：用户说"看完了""做完了"
+ * - cancelled：用户说"算了吧""不用了"
+ */
+@Serializable
+data class CommitmentUpdateItem(
+    val content: String,        // 承诺内容关键词
+    val status: String          // completed / cancelled
 )
 
 /**

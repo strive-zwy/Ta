@@ -64,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.ta.data.model.AgentState
+import com.agent.ta.data.model.resolveCurrentAvatarFile
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.service.AgentEngine
 import com.agent.ta.ui.theme.VibePrimary
@@ -491,11 +492,15 @@ fun ProfileScreen(
                 TextButton(
                     onClick = {
                         scope.launch {
-                            ServiceLocator.chatMessageDao.deleteAll()
-                            ServiceLocator.memoryDao.deleteAll()
+                            try {
+                                ServiceLocator.chatMessageDao.deleteAll()
+                                ServiceLocator.memoryDao.deleteAll()
+                                Toast.makeText(context, "已清空聊天记录和记忆", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "清空失败：${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                            showResetChatDialog = false
                         }
-                        Toast.makeText(context, "已清空聊天记录和记忆", Toast.LENGTH_SHORT).show()
-                        showResetChatDialog = false
                     }
                 ) { Text("确定清空", color = MaterialTheme.colorScheme.error) }
             },
@@ -515,10 +520,14 @@ fun ProfileScreen(
                 TextButton(
                     onClick = {
                         scope.launch {
-                            ServiceLocator.memoryDao.deleteAll()
+                            try {
+                                ServiceLocator.memoryDao.deleteAll()
+                                Toast.makeText(context, "已清空记忆", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "清空失败：${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                            showResetMemoryDialog = false
                         }
-                        Toast.makeText(context, "已清空记忆", Toast.LENGTH_SHORT).show()
-                        showResetMemoryDialog = false
                     }
                 ) { Text("确定清空", color = MaterialTheme.colorScheme.error) }
             },
@@ -697,13 +706,13 @@ private fun MenuRow(
 /**
  * Agent 头像（圆形）
  *
- * 统一用当前头像（avatars 第一个），与聊天页保持一致。
+ * 统一用当前头像（用户在头像管理页选中的那个），与聊天页保持一致。
  */
 @Composable
 private fun AgentAvatar(modifier: Modifier = Modifier) {
     val config by ServiceLocator.agentConfigProvider.config.collectAsState()
-    val avatarPath = remember(config.agent.avatars) {
-        config.agent.avatars.firstOrNull { it.file.isNotBlank() }?.file
+    val avatarPath = remember(config.agent.avatars, config.agent.currentAvatarId) {
+        config.agent.resolveCurrentAvatarFile()
     }
     val bitmap = remember(avatarPath) {
         avatarPath?.let { path ->
@@ -747,15 +756,16 @@ private fun AgentAvatar(modifier: Modifier = Modifier) {
 private fun copyUserAvatarToInternal(context: Context, uri: Uri): String? {
     return try {
         val dir = File(context.filesDir, "user_avatar").apply { mkdirs() }
-        // 清理旧头像，避免占用累积
-        dir.listFiles()?.forEach { it.delete() }
         val fileName = "avatar_${System.currentTimeMillis()}.jpg"
         val destFile = File(dir, fileName)
+        // 先写入新文件，成功后再清理旧文件，避免复制失败时丢失原头像
         context.contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(destFile).use { output ->
                 input.copyTo(output)
             }
         } ?: return null
+        // 写入成功后清理旧文件（排除刚创建的新文件）
+        dir.listFiles()?.filter { it.name != fileName }?.forEach { it.delete() }
         destFile.absolutePath
     } catch (e: Exception) {
         null

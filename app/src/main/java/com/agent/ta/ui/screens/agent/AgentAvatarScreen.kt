@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -59,6 +60,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.agent.ta.data.model.AvatarConfig
 import com.agent.ta.di.ServiceLocator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -95,9 +97,10 @@ fun AgentAvatarScreen(onBack: () -> Unit) {
     val editor = ServiceLocator.agentConfigEditor
     val scope = rememberCoroutineScope()
 
-    val avatars = remember {
-        ServiceLocator.agentConfigProvider.get().agent.avatars.toMutableStateList()
-    }
+    val initialAgent = ServiceLocator.agentConfigProvider.get().agent
+    val avatars = remember { initialAgent.avatars.toMutableStateList() }
+    // 当前选中头像 ID：null 表示未指定，保存时若指向的头像已不存在则回退到第一个
+    var currentAvatarId by remember { mutableStateOf(initialAgent.currentAvatarId) }
 
     var showDialog by remember { mutableStateOf(false) }
     var editingAvatar by remember { mutableStateOf<AvatarConfig?>(null) }
@@ -135,11 +138,25 @@ fun AgentAvatarScreen(onBack: () -> Unit) {
                     AvatarCardItem(
                         avatar = avatar,
                         index = index + 1,
+                        isCurrent = avatar.id == currentAvatarId,
+                        onSetCurrent = { currentAvatarId = avatar.id },
                         onEdit = {
                             editingAvatar = avatar
                             showDialog = true
                         },
-                        onDelete = { avatars.removeAt(index) }
+                        onDelete = {
+                            val fileToDelete = avatars[index].file
+                            // 删除的若是当前头像，清空选中，保存时自动回退到剩余第一个
+                            if (avatar.id == currentAvatarId) {
+                                currentAvatarId = null
+                            }
+                            avatars.removeAt(index)
+                            if (fileToDelete.isNotBlank()) {
+                                scope.launch(Dispatchers.IO) {
+                                    try { File(fileToDelete).delete() } catch (_: Exception) {}
+                                }
+                            }
+                        }
                     )
                 }
 
@@ -197,9 +214,16 @@ fun AgentAvatarScreen(onBack: () -> Unit) {
                             emotionMapping = emptyList()
                         )
                     }
+                    // 校验 currentAvatarId 仍指向有效头像；否则回退到第一个有图的头像
+                    val resolvedCurrentId = currentAvatarId
+                        ?.takeIf { id -> freeAvatars.any { it.id == id && it.file.isNotBlank() } }
+                        ?: freeAvatars.firstOrNull { it.file.isNotBlank() }?.id
                     editor.update { config ->
                         config.copy(
-                            agent = config.agent.copy(avatars = freeAvatars)
+                            agent = config.agent.copy(
+                                avatars = freeAvatars,
+                                currentAvatarId = resolvedCurrentId
+                            )
                         )
                     }
                     justSaved = true
@@ -239,12 +263,17 @@ fun AgentAvatarScreen(onBack: () -> Unit) {
 }
 
 /**
- * 单个头像卡片：仅预览图 + 编辑/删除
+ * 单个头像卡片：预览图 + 编辑/删除 + 设为当前
+ *
+ * isCurrent=true 时卡片高亮（主色边框 + 标题标记「当前」），
+ * 操作行显示「当前使用中」（不可点）；否则显示「设为当前」可点。
  */
 @Composable
 private fun AvatarCardItem(
     avatar: AvatarConfig,
     index: Int,
+    isCurrent: Boolean,
+    onSetCurrent: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -259,6 +288,13 @@ private fun AvatarCardItem(
             )
             .clip(RoundedCornerShape(24.dp))
             .background(AiCard)
+            .then(
+                if (isCurrent) Modifier.border(
+                    width = 2.dp,
+                    color = AiPrimary,
+                    shape = RoundedCornerShape(24.dp)
+                ) else Modifier
+            )
             .padding(12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -323,17 +359,35 @@ private fun AvatarCardItem(
         }
 
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "头像 $index",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = AiTextPrimary
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "头像 $index",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AiTextPrimary
+                )
+                if (isCurrent) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "当前",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.White,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(AiPrimary)
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    )
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Text(
-                text = if (avatar.file.isNotBlank()) "Agent 可自行选用" else "未上传图片",
+                text = if (avatar.description.isNotBlank()) avatar.description
+                       else if (avatar.file.isNotBlank()) "已上传（无描述，建议补充让 Agent 识别）"
+                       else "未上传图片",
                 fontSize = 12.sp,
-                color = AiTextSecondary
+                color = if (avatar.description.isNotBlank()) AiTextSecondary
+                        else AiTextTertiary.copy(alpha = 0.7f)
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -344,6 +398,22 @@ private fun AvatarCardItem(
                     color = AiPrimary,
                     modifier = Modifier.clickable { onEdit() }
                 )
+                if (isCurrent) {
+                    Text(
+                        text = "当前使用中",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AiTextSecondary.copy(alpha = 0.6f)
+                    )
+                } else {
+                    Text(
+                        text = "设为当前",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AiPrimary,
+                        modifier = Modifier.clickable { onSetCurrent() }
+                    )
+                }
                 Text(
                     text = "删除",
                     fontSize = 12.sp,
@@ -401,6 +471,7 @@ private fun AddEditAvatarDialog(
     val context = LocalContext.current
     val isEdit = initialAvatar != null
     var imagePath by remember { mutableStateOf(initialAvatar?.file ?: "") }
+    var description by remember { mutableStateOf(initialAvatar?.description ?: "") }
 
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -546,6 +617,51 @@ private fun AddEditAvatarDialog(
                         }
                     }
 
+                    Spacer(Modifier.height(16.dp))
+
+                    // 头像描述：帮助 Agent 识别这张头像的样子/适用场景，自主决定何时切换
+                    Text(
+                        text = "头像描述（选填）",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AiTextPrimary
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "简短说明这张头像的样子或适用场景，Agent 会据此自主切换",
+                        fontSize = 11.sp,
+                        color = AiTextTertiary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AiInputBg)
+                            .border(
+                                width = 1.dp,
+                                color = AiBorder,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    ) {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = description,
+                            onValueChange = { description = it },
+                            placeholder = {
+                                Text(
+                                    text = "如：微笑正面照 / 户外侧脸 / 思考表情",
+                                    fontSize = 13.sp,
+                                    color = AiTextTertiary
+                                )
+                            },
+                            singleLine = false,
+                            maxLines = 3,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp)
+                        )
+                    }
+
                     Spacer(Modifier.height(20.dp))
 
                     val canSave = imagePath.isNotBlank()
@@ -564,6 +680,7 @@ private fun AddEditAvatarDialog(
                                 val avatarId = initialAvatar?.id?.takeIf { it.isNotBlank() }
                                     ?: System.currentTimeMillis().toString(16)
                                 // 不绑定状态/关键词/情绪，交由 Agent 自由选用
+                                // description 帮助 Agent 识别这张头像的样子/适用场景
                                 onConfirm(
                                     AvatarConfig(
                                         id = avatarId,
@@ -571,7 +688,8 @@ private fun AddEditAvatarDialog(
                                         bindMood = null,
                                         bindState = null,
                                         triggerKeywords = emptyList(),
-                                        emotionMapping = emptyList()
+                                        emotionMapping = emptyList(),
+                                        description = description.trim()
                                     )
                                 )
                             },

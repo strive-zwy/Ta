@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.AutoAwesome
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.agent.ta.data.model.resolveCurrentAvatarFile
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.ui.theme.VibePrimary
 import com.agent.ta.ui.theme.VibePrimaryDeep
@@ -78,6 +80,7 @@ import com.agent.ta.domain.AgentConfigExporter
 import com.agent.ta.domain.AgentImportManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // 功能图标辅助色（低饱和，仅本页使用；Ai* 主色板见 AgentConfigComponents.kt）
 private val AiAccentTeal = Color(0xFF2F8F89)
@@ -105,7 +108,8 @@ fun AgentConfigScreen(
     onVoice: () -> Unit,
     onBehavior: () -> Unit,
     onImport: () -> Unit = {},
-    onExport: () -> Unit = {}
+    onExport: () -> Unit = {},
+    onClone: () -> Unit = {}
 ) {
     // 监听配置 Flow：导入后 provider 刷新 → config 更新 → UI 自动重组显示新数据
     val config by ServiceLocator.agentConfigProvider.config.collectAsState()
@@ -125,7 +129,9 @@ fun AgentConfigScreen(
             ServiceLocator.appScope.launch(Dispatchers.Main) {
                 exporting = true
                 try {
-                    val name = AgentConfigExporter().export(context, uri)
+                    val name = withContext(Dispatchers.IO) {
+                        AgentConfigExporter().export(context, uri)
+                    }
                     Toast.makeText(context, "已导出：$name", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     Log.e("AgentConfigScreen", "导出失败", e)
@@ -144,7 +150,9 @@ fun AgentConfigScreen(
             ServiceLocator.appScope.launch(Dispatchers.Main) {
                 importing = true
                 try {
-                    val name = AgentImportManager(context).import(uri)
+                    val name = withContext(Dispatchers.IO) {
+                        AgentImportManager(context).import(uri)
+                    }
                     Toast.makeText(context, "已导入：$name", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     Log.e("AgentConfigScreen", "导入失败", e)
@@ -184,9 +192,9 @@ fun AgentConfigScreen(
                 .padding(20.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // AI 头像：优先显示头像管理第一张，无则渐变占位；右下角 AI 角标
-                val avatarPath = remember(agent.avatars) {
-                    agent.avatars.firstOrNull { it.file.isNotBlank() }?.file
+                // AI 头像：显示用户在头像管理页选中的「当前头像」，无则渐变占位；右下角 AI 角标
+                val avatarPath = remember(agent.avatars, agent.currentAvatarId) {
+                    agent.resolveCurrentAvatarFile()
                 }
                 val avatarBitmap = remember(avatarPath) {
                     avatarPath?.let { path ->
@@ -292,6 +300,68 @@ fun AgentConfigScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+            }
+        }
+
+        // ===== AI 辅助克隆引导卡片（Phase 4 新增）=====
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .shadow(
+                    elevation = 4.dp,
+                    shape = RoundedCornerShape(20.dp),
+                    ambientColor = AiAccentPurple.copy(alpha = 0.18f),
+                    spotColor = AiAccentPurple.copy(alpha = 0.18f)
+                )
+                .clip(RoundedCornerShape(20.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(AiAccentPurple.copy(alpha = 0.10f), AiAccentPink.copy(alpha = 0.06f))
+                    )
+                )
+                .clickable { onClone() }
+                .padding(horizontal = 18.dp, vertical = 16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 图标圆角块
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AiAccentPurple.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = AiAccentPurple,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "AI 辅助克隆",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AiTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = "输入明星名字，AI 自动生成身份设定",
+                        fontSize = 12.sp,
+                        color = AiTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = AiAccentPurple,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
 

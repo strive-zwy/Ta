@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.agent.ta.data.local.entity.ChatMessageEntity
 import com.agent.ta.data.model.AgentState
+import com.agent.ta.data.model.resolveCurrentAvatarFile
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.service.AgentEngine
 import com.agent.ta.ui.theme.ReceivedBubbleShape
@@ -881,9 +882,9 @@ private fun EmojiPickerPanel(
  * Agent 头像
  *
  * 微信/QQ 式：所有消息（历史 + 新）统一显示 Agent 的"当前头像"。
- * 当前头像 = config.agent.avatars 中第一个 file 非空的头像。
- * Agent 想换头像时，在 Admin 调整 avatars 顺序（把新头像放第一位），
- * 整个聊天列表会立即统一更新。
+ * 当前头像 = 用户在头像管理页点「设为当前」选中的那个；
+ * 未选中或指向的头像文件缺失时，回退到第一个 file 非空的头像。
+ * 用户切换头像后，整个聊天列表会立即统一更新。
  */
 @Composable
 private fun AgentAvatar(
@@ -891,9 +892,9 @@ private fun AgentAvatar(
     circular: Boolean = false
 ) {
     val config by ServiceLocator.agentConfigProvider.config.collectAsState()
-    // 统一用当前头像（avatars 第一个），不再按消息状态/文本动态匹配
-    val avatarPath = remember(config.agent.avatars) {
-        config.agent.avatars.firstOrNull { it.file.isNotBlank() }?.file
+    // 统一用当前头像（用户在头像管理页选中的那个），不再按消息状态/文本动态匹配
+    val avatarPath = remember(config.agent.avatars, config.agent.currentAvatarId) {
+        config.agent.resolveCurrentAvatarFile()
     }
     val bitmap = remember(avatarPath) {
         avatarPath?.let { path ->
