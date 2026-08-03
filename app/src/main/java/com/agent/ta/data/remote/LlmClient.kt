@@ -75,6 +75,14 @@ class LlmClient {
     }
 
     /**
+     * 清理 API Key：去掉所有空白字符（含换行符/制表符）
+     *
+     * 用户从配置文件粘贴 apiKey 时可能带入换行符（0x0a），
+     * 会导致 Authorization header 非法（"Unexpected char 0x0a"）
+     */
+    private fun cleanApiKey(): String = prefs.llmApiKey.filter { !it.isWhitespace() }
+
+    /**
      * 发起对话，返回结构化回复
      * 失败时自动重试，最多重试 3 次，延迟递增（指数退避）
      *
@@ -153,7 +161,7 @@ class LlmClient {
         messages: List<ChatMessage>,
         tools: List<ToolDefinition>
     ): ToolCallResponse {
-        val apiKey = prefs.llmApiKey
+        val apiKey = cleanApiKey()
         val model = prefs.llmModel
         Log.d(TAG, "chatWithTools: model=$model, tools=${tools.size}, messages=${messages.size}")
 
@@ -223,7 +231,7 @@ class LlmClient {
     }
 
     private suspend fun requestReply(messages: List<ChatMessage>, temperature: Double): AgentReply {
-        val apiKey = prefs.llmApiKey
+        val apiKey = cleanApiKey()
         val baseUrl = prefs.llmBaseUrl
         val model = prefs.llmModel
         Log.d(TAG, "请求配置：baseUrl=$baseUrl, model=$model, apiKey长度=${apiKey.length}")
@@ -276,7 +284,7 @@ class LlmClient {
         )
 
         val response = getApi().chatCompletion(
-            auth = "Bearer ${prefs.llmApiKey}",
+            auth = "Bearer ${cleanApiKey()}",
             request = request
         )
 
@@ -326,7 +334,12 @@ class LlmClient {
                     replies = replies,
                     scheduleAdjustment = parseScheduleAdjustment(obj),
                     memoryUpdates = parseMemoryUpdates(obj),
-                    futureEvents = parseFutureEvents(obj)
+                    futureEvents = parseFutureEvents(obj),
+                    commitments = parseCommitments(obj),
+                    commitmentUpdates = parseCommitmentUpdates(obj),
+                    milestoneDeclared = parseMilestoneDeclared(obj),
+                    emotionIntensity = parseEmotionIntensity(obj),
+                    wantAvatarId = parseWantAvatarId(obj)
                 )
             } else {
                 // 旧格式 fallback：单条 replyText + action
@@ -336,7 +349,12 @@ class LlmClient {
                     directorPrompt = obj["directorPrompt"]?.jsonPrimitive?.contentOrNull ?: "",
                     scheduleAdjustment = parseScheduleAdjustment(obj),
                     memoryUpdates = parseMemoryUpdates(obj),
-                    futureEvents = parseFutureEvents(obj)
+                    futureEvents = parseFutureEvents(obj),
+                    commitments = parseCommitments(obj),
+                    commitmentUpdates = parseCommitmentUpdates(obj),
+                    milestoneDeclared = parseMilestoneDeclared(obj),
+                    emotionIntensity = parseEmotionIntensity(obj),
+                    wantAvatarId = parseWantAvatarId(obj)
                 )
             }
         } catch (e: Exception) {
@@ -423,6 +441,69 @@ class LlmClient {
             json.decodeFromString(arr.toString())
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    private fun parseCommitments(obj: JsonObject): List<com.agent.ta.data.remote.dto.CommitmentItem> {
+        return try {
+            val arr = obj["commitments"] ?: return emptyList()
+            json.decodeFromString(arr.toString())
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun parseCommitmentUpdates(obj: JsonObject): List<com.agent.ta.data.remote.dto.CommitmentUpdateItem> {
+        return try {
+            val arr = obj["commitmentUpdates"] ?: return emptyList()
+            json.decodeFromString(arr.toString())
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * 解析 LLM 主动声明的里程碑 type（Phase 2 关系系统）
+     * 返回 null 表示本次回复未涉及关系节点
+     */
+    private fun parseMilestoneDeclared(obj: JsonObject): String? {
+        return try {
+            val value = obj["milestoneDeclared"] ?: return null
+            val str = value.jsonPrimitive.contentOrNull
+            // 空字符串、空白字符串、显式 "null" 都视为未声明
+            if (str.isNullOrBlank() || str == "null") null else str
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 解析 wantAvatarId 字段（Agent 自主切换头像）
+     * LLM 输出希望显示的头像 id（AvatarConfig.id）。
+     * 返回 null 表示本次回复不切换头像；非空字符串表示切到该 id。
+     */
+    private fun parseWantAvatarId(obj: JsonObject): String? {
+        return try {
+            val value = obj["wantAvatarId"] ?: return null
+            val str = value.jsonPrimitive.contentOrNull
+            if (str.isNullOrBlank() || str == "null") null else str
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 解析 emotionIntensity 字段（Phase 3 情感势能驱动主动发起）
+     * LLM 自报的情绪强度：-2.0(强烈负面) ~ +2.0(强烈兴奋)
+     * 缺失或解析失败默认 0f（平静）
+     */
+    private fun parseEmotionIntensity(obj: JsonObject): Float {
+        return try {
+            val value = obj["emotionIntensity"] ?: return 0f
+            // 尝试作为数字解析（JSON 中可能是 number 或 string）
+            value.jsonPrimitive.contentOrNull?.toFloatOrNull() ?: 0f
+        } catch (e: Exception) {
+            0f
         }
     }
 

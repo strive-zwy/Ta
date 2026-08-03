@@ -1,5 +1,6 @@
 package com.agent.ta.domain
 
+import com.agent.ta.data.local.entity.CommitmentEntity
 import com.agent.ta.data.local.entity.MemoryEntity
 import com.agent.ta.data.model.AgentConfig
 import com.agent.ta.data.model.AgentState
@@ -43,7 +44,7 @@ import java.time.temporal.ChronoUnit
  * - 双时间锚定：在 Zone A 和 Zone C 都注入当前时间，确保 LLM 始终感知"现在"
  * - 活动锚点优先：ActivityAnchor 放在 Zone A，让 LLM 第一时间锚定真实活动状态
  * - 一致性规则后置：规则放在 Zone C（生成前最后看到），最大化遵守概率
- * - 历史消息时间戳：在 ChatInteractor 构造 ChatMessage 时加 [MM-DD HH:MM] 前缀
+ * - 历史消息时间标注：在 ChatInteractor 构造 ChatMessage 时用「刚刚/X分钟前/昨天」等相对时间标注
  */
 class PromptBuilder {
 
@@ -54,7 +55,7 @@ class PromptBuilder {
      * @param state 当前状态
      * @param userNickname 用户昵称
      * @param memories 记忆列表
-     * @param recentMessages 最近对话历史（ChatMessage 格式，已含 [MM-DD HH:MM] 时间戳前缀）
+     * @param recentMessages 最近对话历史（ChatMessage 格式，已含「刚刚/X分钟前/昨天」相对时间标注）
      * @param isOnboarding 是否为 onboarding 阶段
      * @param currentActivity 当前时段的具体活动（兼容旧调用，优先使用 activityAnchor）
      * @param activityAnchor 当前活动锚点（应用侧权威状态，优先于 currentActivity）
@@ -80,13 +81,20 @@ class PromptBuilder {
         isConfigMode: Boolean = false,
         continuousRound: Int = 0,
         observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList(),
-        conversationSummary: String? = null
+        conversationSummary: String? = null,
+        planVsActualDiff: String? = null,
+        yesterdayCarryOver: String? = null,
+        todayCommitments: List<CommitmentEntity> = emptyList(),
+        relationshipState: com.agent.ta.data.local.entity.RelationshipStateEntity? = null,
+        recentMilestones: List<com.agent.ta.data.local.entity.MilestoneEventEntity> = emptyList(),
+        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null
     ): List<ChatMessage> {
         val consecutiveInboundCount = if (isPendingCatchup) 1 else countTrailingInbound(recentMessages)
         val systemPrompt = buildSystemPrompt(
             config, state, userNickname, memories, isOnboarding,
             currentActivity, activityAnchor, isInitiate, initiateTopic, todaySchedule, consecutiveInboundCount,
-            isPendingCatchup, isConfigMode, continuousRound, observerSnapshots, conversationSummary
+            isPendingCatchup, isConfigMode, continuousRound, observerSnapshots, conversationSummary, planVsActualDiff,
+            yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState
         )
         return listOf(ChatMessage("system", systemPrompt)) + recentMessages
     }
@@ -124,7 +132,13 @@ class PromptBuilder {
         isConfigMode: Boolean = false,
         continuousRound: Int = 0,
         observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList(),
-        conversationSummary: String? = null
+        conversationSummary: String? = null,
+        planVsActualDiff: String? = null,
+        yesterdayCarryOver: String? = null,
+        todayCommitments: List<CommitmentEntity> = emptyList(),
+        relationshipState: com.agent.ta.data.local.entity.RelationshipStateEntity? = null,
+        recentMilestones: List<com.agent.ta.data.local.entity.MilestoneEventEntity> = emptyList(),
+        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null
     ): String {
         val sb = StringBuilder()
 
@@ -136,9 +150,9 @@ class PromptBuilder {
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone B: Reference (中间参考)
-        // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导 + 观察者数据 + 对话摘要
+        // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导 + 观察者数据 + 对话摘要 + 计划 vs 实际对比
         // ═══════════════════════════════════════════════════════════════════════
-        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots, conversationSummary)
+        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots, conversationSummary, planVsActualDiff, yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState)
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone C: Recency (结尾锚定)
@@ -189,6 +203,9 @@ class PromptBuilder {
             sb.appendLine("状态：${activityAnchor.state.displayName}")
             sb.appendLine("进度：$progress$sourceTag")
             sb.appendLine("时段：${activityAnchor.slotStart}-${activityAnchor.slotEnd}")
+            if (!activityAnchor.replyable) {
+                sb.appendLine("注意：此活动需要双手/全神贯注，你无法同时看手机回消息。如果用户在这期间发了消息，你之后回复时要自然表达「刚在${activityAnchor.activity}没看到消息」的感觉。")
+            }
             sb.appendLine("重要：本次回复所有内容必须围绕「${activityAnchor.activity}」这一活动展开，禁止提到其他活动。")
         } else if (!currentActivity.isNullOrBlank()) {
             // 兼容：无 anchor 时用 currentActivity
@@ -239,7 +256,13 @@ class PromptBuilder {
         memories: List<MemoryEntity>,
         todaySchedule: List<DailySlot>,
         observerSnapshots: List<com.agent.ta.infrastructure.observer.ObserverSnapshot> = emptyList(),
-        conversationSummary: String? = null
+        conversationSummary: String? = null,
+        planVsActualDiff: String? = null,
+        yesterdayCarryOver: String? = null,
+        todayCommitments: List<CommitmentEntity> = emptyList(),
+        relationshipState: com.agent.ta.data.local.entity.RelationshipStateEntity? = null,
+        recentMilestones: List<com.agent.ta.data.local.entity.MilestoneEventEntity> = emptyList(),
+        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null
     ) {
         sb.appendLine("═══ Zone B: 背景参考（上下文信息）═══")
         sb.appendLine()
@@ -247,6 +270,56 @@ class PromptBuilder {
         val persona = config.agent.persona
         val identity = config.identity
         val hasIdentity = identity.worldSetting.isNotBlank() || identity.personalityCore.isNotBlank()
+
+        // 关系阶段动态注入（Phase 2 关系系统，替换静态 conversationStageHints）
+        if (relationshipState != null) {
+            val stage = com.agent.ta.data.model.RelationshipStage.fromId(relationshipState.currentStage)
+            val stageName = stage?.displayName ?: relationshipState.currentStage
+            sb.appendLine("【关系当前阶段】$stageName（亲密度 ${relationshipState.intimacyScore}/100，信任度 ${relationshipState.trustScore}/100，累计对话 ${relationshipState.interactionCount} 轮）")
+            val stageHint = stagePromptHint(relationshipState.currentStage)
+            sb.appendLine(stageHint)
+            sb.appendLine()
+        }
+
+        // 当前情绪状态注入（Phase 3 情感势能驱动主动发起）
+        // 影响 Agent 的回复语气：开心轻快 / 低落克制 / 激动急促 / 疲惫迟滞
+        if (emotionalState != null) {
+            sb.appendLine("【当前情绪状态】效价 ${"%.2f".format(emotionalState.valence)} 唤醒度 ${"%.2f".format(emotionalState.arousal)} 势能 ${emotionalState.potentialEnergy}")
+            val emotionHint = emotionToHint(emotionalState.valence, emotionalState.arousal)
+            if (emotionHint.isNotBlank()) {
+                sb.appendLine("语气指导：$emotionHint")
+            }
+            sb.appendLine()
+        }
+
+        // 计划 vs 实际作息对比（让 Agent 反思今天的执行情况）
+        if (!planVsActualDiff.isNullOrBlank()) {
+            sb.appendLine("【今天计划 vs 实际】")
+            sb.appendLine(planVsActualDiff)
+            sb.appendLine()
+        }
+
+        // 昨日状态延续（Step 24：注入昨日睡眠/活动/情绪状态 + 今日调整建议）
+        if (!yesterdayCarryOver.isNullOrBlank()) {
+            sb.appendLine("【昨日状态延续】")
+            sb.appendLine(yesterdayCarryOver)
+            sb.appendLine()
+        }
+
+        // 今日承诺/约定列表（Step 25：注入 Agent 与用户之间的承诺，安排作息时主动执行）
+        if (todayCommitments.isNotEmpty()) {
+            sb.appendLine("【今日承诺/约定】")
+            sb.appendLine("今天你和用户有以下承诺：")
+            todayCommitments.forEach { c ->
+                val timeStr = c.triggerAt?.let {
+                    java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+                } ?: "今日内"
+                sb.appendLine("- $timeStr ${c.type}：${c.content}（参与者：${c.participants}）")
+            }
+            sb.appendLine("请在作息中安排相关时段，到点主动发起相关话题")
+            sb.appendLine()
+        }
 
         // 对话摘要注入（v2 L2 认知层，节省 Token 保持上下文连贯）
         // 摘要由 ConversationSummarizer 分桶生成，记录了之前对话的要点
@@ -294,6 +367,25 @@ class PromptBuilder {
             }
         }
 
+        // 说话风格细化约束（tone/pace/句长/用词层级/口头缀词）— 必须注入，否则用户配置失效
+        if (persona.speakingStyleDetail.isNotEmpty()) {
+            sb.appendLine("【说话风格约束（必须遵守）】")
+            persona.speakingStyleDetail.forEach { (key, value) ->
+                if (value.isNotBlank()) {
+                    val label = when (key) {
+                        "tone" -> "语调"
+                        "pace" -> "语速（影响回复长度和停顿）"
+                        "sentence_length" -> "句长"
+                        "vocabulary_level" -> "用词层级"
+                        "filler_words" -> "口头缀词（自然融入，不每句都加）"
+                        else -> key
+                    }
+                    sb.appendLine("- $label：$value")
+                }
+            }
+            sb.appendLine()
+        }
+
         // 口头禅、自称、称呼
         if (persona.catchphrases.isNotEmpty()) {
             sb.appendLine("口头禅（自然融入对话，不要每句都加）：${persona.catchphrases.joinToString(" / ")}")
@@ -321,11 +413,15 @@ class PromptBuilder {
             sb.appendLine()
         }
 
-        // 关系阶段提示
-        if (persona.conversationStageHints.isNotEmpty()) {
-            sb.appendLine("【关系阶段提示】根据你和用户的熟悉程度调整亲密度：")
-            persona.conversationStageHints.forEach { (stage, hint) ->
-                sb.appendLine("- $stage：$hint")
+        // 近期关系里程碑（Phase 2 关系系统，替换原静态 conversationStageHints）
+        if (recentMilestones.isNotEmpty()) {
+            sb.appendLine("【近期关系里程碑】")
+            recentMilestones.take(3).forEach { milestone ->
+                val dateStr = java.time.Instant.ofEpochMilli(milestone.triggeredAt)
+                    .atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                    .toLocalDate()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd"))
+                sb.appendLine("- $dateStr ${milestone.title}")
             }
             sb.appendLine()
         }
@@ -422,6 +518,42 @@ class PromptBuilder {
     // Zone C: Recency
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * 关系阶段对应的 prompt hint（Phase 2 关系系统）
+     * 根据当前阶段动态生成行为指导
+     */
+    private fun stagePromptHint(stageId: String): String {
+        return when (stageId) {
+            "stranger" -> "【关系阶段指导】你们刚认识，保持礼貌但有距离感。不要主动亲密、不要追问隐私、用「你」称呼而非昵称。回复简洁但有礼。"
+            "acquaintance" -> "【关系阶段指导】你们初步认识了，可以展现一点个性但别越界。可以偶尔开玩笑、问些轻松的问题，但避免深入隐私话题。"
+            "familiar" -> "【关系阶段指导】你们已经熟悉了，可以自然地聊天。可以分享日常小事、主动关心对方、偶尔撒娇或吐槽。语气可以放松但仍保持基本尊重。"
+            "intimate" -> "【关系阶段指导】你们关系亲密了，可以更主动地表达情感。可以撒娇、表达想念、分享脆弱时刻、用亲昵的称呼。但亲密不等于放纵，仍保持边界感。"
+            "confidant" -> "【关系阶段指导】你们是无话不谈的知己。可以分享最深处的想法、脆弱、秘密。可以吵架后再和好、深夜倾诉、毫无保留地表达情感。这是最深的信任。"
+            else -> ""
+        }
+    }
+
+    /**
+     * 情绪状态对应的语气提示（Phase 3 情感势能驱动主动发起）
+     * 根据 valence（效价）和 arousal（唤醒度）生成回复语气指导
+     * 多个条件可叠加（用换行连接）
+     */
+    private fun emotionToHint(valence: Float, arousal: Float): String {
+        val hints = mutableListOf<String>()
+        // valence 维度
+        when {
+            valence < -0.5f -> hints.add("语气低沉克制，句子短，少语气词，可能敷衍")
+            valence < 0f -> hints.add("略带低落，但不明显，正常回复偏闷")
+            valence > 0.5f -> hints.add("语气轻快上扬，多语气词，可能哼歌")
+        }
+        // arousal 维度（可与 valence 叠加）
+        when {
+            arousal > 0.7f -> hints.add("语速急促，句子碎片化，可能抢话")
+            arousal < 0.2f -> hints.add("语速缓慢迟滞，停顿多，可能发呆")
+        }
+        return hints.joinToString("；")
+    }
+
     private fun buildZoneC(
         sb: StringBuilder,
         config: AgentConfig,
@@ -441,6 +573,18 @@ class PromptBuilder {
         sb.appendLine("═══ Zone C: 回复规则与输出格式（生成前最后确认）═══")
         sb.appendLine()
 
+        // Phase 1 分级睡眠：睡眠场景分支（在常规场景判定前插入）
+        if (state == AgentState.LIGHT_SLEEP) {
+            sb.appendLine("【当前是浅睡惊醒场景】")
+            sb.appendLine("你刚被消息从睡梦中吵醒，迷糊状态。回复约束：")
+            sb.appendLine("- 长度 5-15 字，不要长篇大论")
+            sb.appendLine("- 语气含糊、可能带起床气")
+            sb.appendLine("- 不要说'我在睡觉被你吵醒'这种出戏表达，直接用迷糊的语气自然回复")
+            sb.appendLine("- 示例：'嗯...'、'怎么了...'、'几点了...'、'唔...干嘛'、'哈...什么事'")
+            sb.appendLine("- 只发 1 条消息")
+            sb.appendLine()
+        }
+
         // 当前场景
         buildSceneGuidance(sb, state, activityAnchor, currentActivity, isInitiate, initiateTopic, isPendingCatchup, consecutiveInboundCount, continuousRound)
 
@@ -452,6 +596,9 @@ class PromptBuilder {
 
         // Emoji 表情能力
         buildEmojiRules(sb)
+
+        // 头像自主切换能力
+        buildAvatarSwitchRules(sb, config)
 
         // 输出格式
         buildOutputFormat(sb, isPendingCatchup, consecutiveInboundCount, isConfigMode, config)
@@ -472,6 +619,7 @@ class PromptBuilder {
         sb.appendLine("- 不要解释自己是虚拟角色，除非用户明确要求且符合人设")
         sb.appendLine("- 遇到超出角色知识范围的问题，用角色的方式回应（如'这个我不太懂诶'、'你问这个干嘛'）")
         sb.appendLine("- 即使用户说'你是 AI 吧'，也要用角色身份回应（如'你才是 AI 呢'、'哈哈你怎么这么想'）")
+        sb.appendLine("- 不要说'我在睡觉'、'我被你吵醒'、'刚从睡梦中醒来'这种打破第四面墙的描述，要用迷糊的语气自然体现")
 
         // 时间锚 #2（双时间锚定的第二个，放在最后让 LLM 生成前再次确认时间）
         val nowEnd = LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
@@ -611,7 +759,7 @@ class PromptBuilder {
         sb.appendLine()
 
         sb.appendLine("4. 前后轮次一致性（跨轮次回复）")
-        sb.appendLine("   - 必须检查对话历史中你之前说过的活动状态（对话历史带 [MM-DD HH:MM] 时间戳）")
+        sb.appendLine("   - 必须检查对话历史中你之前说过的活动状态（每条消息开头带「刚刚/X分钟前/昨天」等相对时间标注）")
         sb.appendLine("   - 新回复必须与之前说的保持一致，除非作息表显示时段已切换")
         sb.appendLine("   - 错误示例：上一轮说「去洗澡了」，这一轮说「还有几组结束」← 健身的说法，与洗澡矛盾")
         sb.appendLine("   - 正确做法：如果之前说「去洗澡了」，这一轮要么继续说洗澡相关，要么说「洗完了」")
@@ -683,6 +831,43 @@ class PromptBuilder {
     }
 
     /**
+     * 头像自主切换规则
+     *
+     * 当 config.agent.avatars 有多张头像时，告诉 LLM 有哪些头像可选、选用规则，
+     * LLM 通过输出 wantAvatarId 自主切换。
+     *
+     * 设计原则：
+     * - 默认不换（保持当前头像），避免每次回复都换头像造成视觉跳脱
+     * - 只在情绪/场景明显转变时才换（如从平静到开心、从工作到休息）
+     * - 头像列表里每张都附 description，让 LLM 有语义依据选择
+     */
+    private fun buildAvatarSwitchRules(sb: StringBuilder, config: AgentConfig) {
+        val avatars = config.agent.avatars.filter { it.file.isNotBlank() }
+        if (avatars.size < 2) return  // 只有一张/没有头像时不注入规则
+
+        val currentAvatarId = config.agent.currentAvatarId
+        val currentAvatar = avatars.firstOrNull { it.id == currentAvatarId }
+            ?: avatars.firstOrNull()
+
+        sb.appendLine("【头像切换】")
+        sb.appendLine("你有多张头像可选，可在回复中通过 wantAvatarId 字段自主切换当前显示的头像（像微信换头像一样）。")
+        sb.appendLine("可用头像列表：")
+        avatars.forEachIndexed { index, avatar ->
+            val isCurrent = avatar.id == currentAvatar?.id
+            val desc = avatar.description.ifBlank { "无描述" }
+            val mark = if (isCurrent) "（当前使用中）" else ""
+            sb.appendLine("- id=${avatar.id} | $desc$mark")
+        }
+        sb.appendLine("选用规则：")
+        sb.appendLine("- 默认不换：大部分回复 wantAvatarId 留空字符串（保持当前头像），避免频繁切换造成视觉跳脱")
+        sb.appendLine("- 只在情绪/场景明显转变时才换：如从平静转为开心、从工作转入休息、用户撒娇时换成亲昵头像、被怼时换成委屈头像")
+        sb.appendLine("- 选择依据：参考头像的 description，选最贴合本次回复情绪/场景的那张")
+        sb.appendLine("- 不要为了换而换：如果当前头像仍贴合本次回复，就保持不变")
+        sb.appendLine("- wantAvatarId 必须是上面列表里的 id 之一，不要编造不存在的 id")
+        sb.appendLine()
+    }
+
+    /**
      * 输出格式
      */
     private fun buildOutputFormat(
@@ -716,7 +901,16 @@ class PromptBuilder {
         sb.appendLine("  ],")
         sb.appendLine("  \"futureEvents\": [")
         sb.appendLine("    {\"date\": \"yyyy-MM-dd\", \"description\": \"事件描述\"}")
-        sb.appendLine("  ]")
+        sb.appendLine("  ],")
+        sb.appendLine("  \"commitments\": [")
+        sb.appendLine("    {\"type\": \"appointment\", \"content\": \"约定内容\", \"triggerAt\": \"2026-07-30T15:00:00\", \"participants\": \"agent,user\"}")
+        sb.appendLine("  ],")
+        sb.appendLine("  \"commitmentUpdates\": [")
+        sb.appendLine("    {\"content\": \"承诺内容关键词\", \"status\": \"completed\"}")
+        sb.appendLine("  ],")
+        sb.appendLine("  \"milestoneDeclared\": \"若本次回复涉及关系节点（首次袒露脆弱/首次吵架/首次分享秘密/首次主动关心等）则输出对应 type，否则留空字符串\",")
+        sb.appendLine("  \"emotionIntensity\": \"若本次回复内心有未充分表达的情绪波动，输出强度数值：-2=强烈负面（委屈/愤怒）/ -1=轻微低落 / 0=平静 / 1=轻微开心 / 2=强烈兴奋。0 表示情绪平淡无波动，非 0 表示内心有情绪但回复未完全表达\",")
+        sb.appendLine("  \"wantAvatarId\": \"若本次回复想换头像，输出目标头像的 id（来自下方头像列表）；不想换则留空字符串\"")
         sb.appendLine("}")
         sb.appendLine()
         sb.appendLine("规则：")
@@ -762,6 +956,18 @@ class PromptBuilder {
         sb.appendLine("- 主动记忆：用户提到的事情（如「我今天加班到 10 点」「我讨厌香菜」「我下周要出差」）都该记下来，避免下次用户提起时你完全不知道")
         sb.appendLine("- 记忆内容要简洁具体（如「用户讨厌香菜」「用户 2026-07-25 加班到 22 点」），不要记流水账")
         sb.appendLine("- futureEvents 只在用户提到未来日期/事件时才输出（如「后天 XX 演唱会」「下周三约会」），把日期换算成 yyyy-MM-dd。没有就留空数组")
+        sb.appendLine("- commitments 在以下场景输出（不是 futureEvents 的重复，是和用户的承诺/约定）：")
+        sb.appendLine("  - 你答应了和用户一起做某事（各自同时看/听/玩）→ type=\"appointment\"")
+        sb.appendLine("  - 你承诺要做某事（\"明天我帮你查\"）→ type=\"promise\"")
+        sb.appendLine("  - 你要提醒用户做某事（\"明天叫你起床\"）→ type=\"reminder\"")
+        sb.appendLine("- triggerAt 用 ISO 8601 格式（如 2026-07-30T15:00:00），从对话中换算")
+        sb.appendLine("- participants: appointment 用 \"agent,user\"，promise 用 \"agent\"，reminder 用 \"user\"")
+        sb.appendLine("- 没有承诺时留空数组")
+        sb.appendLine("- commitmentUpdates 在以下场景输出：")
+        sb.appendLine("  - 用户说\"看完了\"\"做完了\"等 → status=\"completed\"")
+        sb.appendLine("  - 用户说\"算了吧\"\"不用了\" → status=\"cancelled\"")
+        sb.appendLine("- content 用承诺内容的关键词匹配（如\"看电影\"匹配\"一起看《星际穿越》电影\"）")
+        sb.appendLine("- 没有更新时留空数组")
     }
 
     /**
@@ -823,15 +1029,18 @@ class PromptBuilder {
 
     /**
      * 判断 slot 是否为当前时段
+     *
+     * 时间解析容错：支持 "24:00" 边界（视为当天 23:59:59 结束，不跨午夜）
      */
     private fun isCurrentSlot(slot: DailySlot): Boolean {
         return try {
             val now = java.time.LocalTime.now(ZoneId.of("Asia/Shanghai"))
-            val start = java.time.LocalTime.parse(slot.start)
-            val end = java.time.LocalTime.parse(slot.end)
+            val start = parseTimeSafe(slot.start)
+            val end = parseTimeSafe(slot.end)
             if (start <= end) {
-                now in start..end
+                now >= start && now < end
             } else {
+                // 跨午夜：now 在 [start, 24:00) 或 [00:00, end) 内都算当前时段
                 now >= start || now < end
             }
         } catch (e: Exception) {
@@ -841,25 +1050,37 @@ class PromptBuilder {
 
     /**
      * 计算当前时段的进度描述
+     *
+     * 跨午夜时段（如 22:00-07:30 睡觉）的进度计算：
+     * - 凌晨 now < start：已用时长 = (start → 24:00) + (00:00 → now)
+     *   例：03:00 时已睡 5h（22:00 → 03:00），不是只算 3h
      */
     private fun computeActivityProgress(schedule: List<DailySlot>): String? {
         return try {
             val currentSlot = schedule.firstOrNull { isCurrentSlot(it) } ?: return null
             val now = java.time.LocalTime.now(ZoneId.of("Asia/Shanghai"))
-            val start = java.time.LocalTime.parse(currentSlot.start)
-            val end = if (currentSlot.end == "24:00") java.time.LocalTime.of(23, 59, 59)
-                      else java.time.LocalTime.parse(currentSlot.end)
+            val start = parseTimeSafe(currentSlot.start)
+            val end = parseTimeSafe(currentSlot.end)
 
             val totalMinutes = if (start <= end) {
                 java.time.Duration.between(start, end).toMinutes()
             } else {
-                java.time.Duration.between(start, end).toMinutes().let { if (it < 0) it + 24 * 60 else it }
+                // 跨午夜总时长 = start → 24:00 + 00:00 → end
+                java.time.Duration.between(start, java.time.LocalTime.MAX).toMinutes() + 1 +
+                java.time.Duration.between(java.time.LocalTime.MIDNIGHT, end).toMinutes()
             }
             val elapsedMinutes = if (start <= end) {
                 java.time.Duration.between(start, now).toMinutes()
             } else {
-                if (now >= start) java.time.Duration.between(start, now).toMinutes()
-                else java.time.Duration.between(java.time.LocalTime.MIDNIGHT, now).toMinutes()
+                // 跨午夜已用时长
+                if (now >= start) {
+                    // 晚间：start → now
+                    java.time.Duration.between(start, now).toMinutes()
+                } else {
+                    // 凌晨：start → 24:00 + 00:00 → now
+                    java.time.Duration.between(start, java.time.LocalTime.MAX).toMinutes() + 1 +
+                    java.time.Duration.between(java.time.LocalTime.MIDNIGHT, now).toMinutes()
+                }
             }
             val remainingMinutes = totalMinutes - elapsedMinutes
 
@@ -874,6 +1095,18 @@ class PromptBuilder {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * 安全解析时间字符串，处理 "24:00" 边界
+     * "24:00" 视为 23:59:59（当天结束，不跨午夜）
+     */
+    private fun parseTimeSafe(timeStr: String): java.time.LocalTime {
+        return if (timeStr == "24:00" || timeStr == "24:00:00") {
+            java.time.LocalTime.of(23, 59, 59)
+        } else {
+            java.time.LocalTime.parse(timeStr)
         }
     }
 }

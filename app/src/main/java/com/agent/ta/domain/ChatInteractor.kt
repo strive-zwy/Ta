@@ -3,6 +3,7 @@ package com.agent.ta.domain
 import android.content.Context
 import android.util.Log
 import com.agent.ta.data.local.entity.ChatMessageEntity
+import com.agent.ta.data.local.entity.CommitmentEntity
 import com.agent.ta.data.local.entity.FutureEventEntity
 import com.agent.ta.data.local.entity.MemoryEntity
 import com.agent.ta.data.model.AgentState
@@ -12,6 +13,7 @@ import com.agent.ta.data.remote.dto.ReplyItem
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.domain.consistency.ReplyConsistencyValidator
 import com.agent.ta.domain.tool.ToolContext
+import com.agent.ta.service.CommitmentScheduler
 import com.agent.ta.service.NotificationHelper
 import com.agent.ta.util.SystemTtsSynthesizer
 import kotlinx.coroutines.CancellationException
@@ -56,12 +58,25 @@ class ChatInteractor(private val context: Context) {
     private val observerRegistry = ServiceLocator.observerRegistry
     private val conversationSummarizer = ServiceLocator.conversationSummarizer
     private val futureEventDao = ServiceLocator.futureEventDao
+    private val dailyStateDao = ServiceLocator.dailyStateDao
+    private val commitmentDao = ServiceLocator.commitmentDao
     private val prefs = ServiceLocator.userPreferences
     private val configProvider = ServiceLocator.agentConfigProvider
+    private val agentConfigEditor = ServiceLocator.agentConfigEditor
     private val notificationHelper = NotificationHelper(context)
     private val scheduleAdjuster = ScheduleAdjuster()
     private val systemTtsSynthesizer = SystemTtsSynthesizer(context)
     private val consistencyValidator = ReplyConsistencyValidator()
+    private val relationshipService = RelationshipService()
+    private val emotionalService = EmotionalService()
+
+    /**
+     * Phase 1 分级睡眠：深睡惊醒冷却机制
+     * - lastWakeTime：上次惊醒时间戳
+     * - 冷却 10 分钟（WAKE_COOLDOWN_MS = 600000），防止反复惊醒
+     */
+    @Volatile
+    private var lastWakeTime: Long = 0L
 
     /**
      * 用户发送消息
@@ -110,10 +125,17 @@ class ChatInteractor(private val context: Context) {
             val state = com.agent.ta.service.AgentEngine.currentState.value
             // busy 长延迟场景：非连续对话的 busy 状态
             val isBusyLongDelay = state == AgentState.BUSY && !isContinuousChat
+            // 获取当前活动锚点，判断是否腾得出手回复
+            val activityAnchor = com.agent.ta.service.AgentEngine.getCurrentActivityAnchor()
+            val isActivityNonReplyable = activityAnchor != null && !activityAnchor.replyable
+            // 消息状态语义：
+            // - "pending" 用于 Agent 无法立即回复的场景（UNAVAILABLE 或 活动不可回复如打球/洗澡）
+            //   等状态切换或活动结束后由 processPendingReplies 处理
+            // - "received" 表示 Agent 已读（即使延迟回复，消息也算已读）
             val initialStatus = when {
                 state == AgentState.UNAVAILABLE -> "pending"
-                isBusyLongDelay -> "pending"  // busy 非连续对话：延迟期间未读
-                else -> "received"  // 连续对话或 normal/idle：直接已读
+                isActivityNonReplyable -> "pending"  // 打球/健身/洗澡等腾不出手的活动
+                else -> "received"
             }
             val userMsg = ChatMessageEntity(
                 direction = "inbound",
@@ -126,9 +148,52 @@ class ChatInteractor(private val context: Context) {
             )
             val msgId = chatDao.insert(userMsg)
 
+            // Phase 3 情感势能：用户发消息时重置静默计时
+            try {
+                emotionalService.onUserMessageReceived()
+            } catch (e: Exception) {
+                Log.w(TAG, "重置静默计时失败（不影响主流程）", e)
+            }
+
             // 4. 判定当前状态
             if (state == AgentState.UNAVAILABLE) {
-                // 不可回复，保持 pending（由 StateMachine 状态切换后触发 processPendingReplies）
+                // Phase 1 分级睡眠：检查深睡惊醒
+                val currentSlot = com.agent.ta.service.AgentEngine.getCurrentSlot()
+                val sleepDepth = currentSlot?.sleepDepth
+
+                if (sleepDepth == "deep") {
+                    // 深睡：随机概率触发惊醒 + 10 分钟冷却
+                    val now = System.currentTimeMillis()
+                    val inCooldown = now - lastWakeTime < 10 * 60 * 1000L
+                    if (inCooldown) {
+                        // 冷却期内：直接标记 pending，不触发惊醒
+                        chatDao.updateStatus(msgId, "pending", null)
+                        return@launch
+                    }
+                    val wakeChance = configProvider.get().behavior.wakeChancePerDeepSleepMessage
+                    if (kotlin.random.Random.nextFloat() < wakeChance) {
+                        // 惊醒触发：切换到 LIGHT_SLEEP
+                        lastWakeTime = now
+                        com.agent.ta.service.AgentEngine.switchToLightSleep()
+                        chatDao.updateStatus(msgId, "received", null)
+                        // 继续走回复路径（不 return）
+                    } else {
+                        // 未触发惊醒：标记 pending
+                        chatDao.updateStatus(msgId, "pending", null)
+                        return@launch
+                    }
+                } else {
+                    // 深睡（非 sleepDepth=deep）或洗澡等：不可回复，保持 pending
+                    chatDao.updateStatus(msgId, "pending", null)
+                    return@launch
+                }
+            }
+
+            // 4b. 活动不可回复（打球/健身/洗澡等）
+            // 消息已标记 pending，不启动回复 job
+            // 等活动结束（时段切换/LLM anchor 过期）后由 processPendingMessages 处理
+            if (isActivityNonReplyable) {
+                Log.d(TAG, "当前活动「${activityAnchor!!.activity}」无法回复消息，标记 pending 等活动结束处理")
                 chatDao.updateStatus(msgId, "pending", null)
                 return@launch
             }
@@ -144,16 +209,17 @@ class ChatInteractor(private val context: Context) {
             try {
                 // 6. 等待延迟后生成回复
                 // 连续对话用短延迟（3-8秒），非连续对话用状态配置的延迟
+                // Phase 2: 非连续对话延迟乘以关系系数（亲密高→延迟短，保留下限 1 秒）
+                val relationshipState = relationshipService.getCurrentState()
                 val delaySec = if (isContinuousChat) {
                     CONTINUOUS_DELAY_RANGE.random().toLong()
                 } else {
-                    resolveTypingDelaySec(state)
+                    resolveTypingDelaySec(state, relationshipState.intimacyScore)
                 }
                 delay(delaySec * 1000)
 
-                // busy 非连续对话：延迟结束后才标记已读 + 显示"正在输入中"
+                // busy 非连续对话：延迟结束后才显示"正在输入中"
                 if (isBusyLongDelay) {
-                    chatDao.updateStatus(msgId, "received", System.currentTimeMillis())
                     _isReplying.value = true
                 }
 
@@ -262,14 +328,20 @@ class ChatInteractor(private val context: Context) {
      * 2. AgentEngine.getReplyDelaySec()（基于 replyDelaySec 配置或状态默认）
      * 3. 兜底 1 秒
      */
-    private fun resolveTypingDelaySec(state: AgentState): Long {
+    private fun resolveTypingDelaySec(state: AgentState, intimacyScore: Int = 0): Long {
         val typingDuration = configProvider.get().behavior.typingIndicatorDuration[state.id]
-        if (typingDuration != null && typingDuration.size >= 2) {
+        val baseDelay = if (typingDuration != null && typingDuration.size >= 2) {
             val min = typingDuration[0].coerceAtLeast(0)
             val max = typingDuration[1].coerceAtLeast(min)
-            return (min..max).random().toLong().coerceAtLeast(0L)
+            (min..max).random().toLong().coerceAtLeast(0L)
+        } else {
+            com.agent.ta.service.AgentEngine.getReplyDelaySec() ?: 1L
         }
-        return com.agent.ta.service.AgentEngine.getReplyDelaySec() ?: 1L
+        // Phase 2 关系系统：亲密高→延迟短
+        // 系数公式：1.2 - intimacy/100 * 0.5（intimacy=0 时 ×1.2、intimacy=100 时 ×0.7）
+        // 保留下限 1 秒
+        val coefficient = 1.2 - (intimacyScore.coerceIn(0, 100) / 100.0 * 0.5)
+        return (baseDelay * coefficient).toLong().coerceAtLeast(1L)
     }
 
     /**
@@ -293,9 +365,8 @@ class ChatInteractor(private val context: Context) {
 
             // 把所有 pending 消息合并成一条"补充说明"用户消息入库
             // 让 LLM 知道用户之前说了什么，但不触发逐条对应回复
+            val nowForPending = System.currentTimeMillis()
             val pendingSummary = pending.joinToString("\n") { msg ->
-                val timeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-                    .format(java.util.Date(msg.createdAt))
                 val content = buildString {
                     if (!msg.emoji.isNullOrBlank()) append(msg.emoji)
                     if (!msg.text.isNullOrBlank()) {
@@ -303,7 +374,8 @@ class ChatInteractor(private val context: Context) {
                         append(msg.text)
                     }
                 }
-                "[$timeStr] $content"
+                val timeGap = relativeTimeGap(nowForPending - msg.createdAt)
+                "（$timeGap）$content"
             }
 
             val mergedUserMsg = ChatMessageEntity(
@@ -312,7 +384,7 @@ class ChatInteractor(private val context: Context) {
                 audioPath = null,
                 directorPrompt = null,
                 state = state.id,
-                status = "received",
+                status = "hidden",  // 系统辅助消息，UI 不显示；原始 pending 消息已标记 received 仍可见
                 createdAt = System.currentTimeMillis()
             )
             chatDao.insert(mergedUserMsg)
@@ -397,11 +469,10 @@ class ChatInteractor(private val context: Context) {
 
             // 取最近 20 条消息作为上下文
             val recentMessages = chatDao.getAll().takeLast(20)
-            // 构造带 [MM-DD HH:MM] 时间戳前缀的 ChatMessage
-            // 让 LLM 感知对话节奏，避免跨轮次活动状态矛盾（如上一轮说"去洗澡了"，这一轮说"还在健身"）
-            val timestampFormat = java.time.format.DateTimeFormatter
-                .ofPattern("MM-dd HH:mm")
-                .withZone(java.time.ZoneId.of("Asia/Shanghai"))
+            // 构造 ChatMessage：用「相对时间间隔」的自然语言标注，不使用 [MM-dd HH:mm] 时间戳
+            // 原因：LLM 看到方括号时间戳格式后会模仿，把多条消息塞进一个 replyText 并用时间戳分隔
+            // 改用「3分钟前」「昨天」等自然语言，LLM 不会在回复中模仿这种格式
+            val now = System.currentTimeMillis()
             val chatMessages = recentMessages.map { msg ->
                 // 纯 emoji 消息 text=null，需要把 emoji 也带上，否则 LLM 看不到
                 val rawContent = buildString {
@@ -411,14 +482,10 @@ class ChatInteractor(private val context: Context) {
                         append(msg.text)
                     }
                 }
-                val timePrefix = try {
-                    "[" + timestampFormat.format(java.time.Instant.ofEpochMilli(msg.createdAt)) + "] "
-                } catch (e: Exception) {
-                    ""
-                }
+                val timeGap = relativeTimeGap(now - msg.createdAt)
                 ChatMessage(
                     role = if (msg.direction == "inbound") "user" else "assistant",
-                    content = timePrefix + rawContent
+                    content = "（$timeGap）$rawContent"
                 )
             }
 
@@ -439,7 +506,21 @@ class ChatInteractor(private val context: Context) {
             val currentBucketId = conversationSummarizer.getCurrentBucketId()
             val priorSummary = conversationSummarizer.getPriorSummaries(currentBucketId)
 
-            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor + 观察者数据 + 对话摘要）
+            // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor + 观察者数据 + 对话摘要 + 计划 vs 实际对比 + 昨日状态延续 + 今日承诺）
+            val planVsActualDiff = com.agent.ta.service.AgentEngine.getPlanVsActualDiff()
+            // 查询昨日 DailyState 构造状态延续文本（Step 24）
+            val yesterdayCarryOver = buildYesterdayCarryOver()
+            // 查询今日 pending/triggered 承诺（Step 25）
+            val carryZone = java.time.ZoneId.of("Asia/Shanghai")
+            val carryToday = java.time.LocalDate.now(carryZone)
+            val carryStart = carryToday.atStartOfDay(carryZone).toInstant().toEpochMilli()
+            val carryEnd = carryToday.plusDays(1).atStartOfDay(carryZone).toInstant().toEpochMilli()
+            val todayCommitments = (commitmentDao.getByStatus("pending") + commitmentDao.getByStatus("triggered"))
+                .filter { c ->
+                    // 只保留今日相关的承诺：triggerAt 在今天，或 triggerAt 为 null 且今天创建
+                    c.triggerAt?.let { it in carryStart until carryEnd }
+                        ?: (c.createdAt in carryStart until carryEnd)
+                }
             val llmMessages = promptBuilder.build(
                 config = configProvider.get(),
                 state = com.agent.ta.service.AgentEngine.currentState.value,
@@ -456,7 +537,13 @@ class ChatInteractor(private val context: Context) {
                 isConfigMode = isConfigMode,
                 continuousRound = continuousRound,
                 observerSnapshots = observerSnapshots,
-                conversationSummary = priorSummary
+                conversationSummary = priorSummary,
+                planVsActualDiff = planVsActualDiff,
+                yesterdayCarryOver = yesterdayCarryOver,
+                todayCommitments = todayCommitments,
+                relationshipState = relationshipService.getCurrentState(),
+                recentMilestones = relationshipService.getRecentMilestones(3),
+                emotionalState = emotionalService.getCurrentState()
             )
 
             // 调 LLM（支持工具调用）+ 一致性校验重试循环
@@ -513,6 +600,48 @@ class ChatInteractor(private val context: Context) {
                 Log.d(TAG, "已存入 ${reply.futureEvents.size} 条未来事件")
             }
 
+            // 存承诺/约定（LLM 从对话中提取的）
+            if (reply.commitments.isNotEmpty()) {
+                reply.commitments.forEach { item ->
+                    val triggerAtTs = item.triggerAt?.let { parseIso8601ToTimestamp(it) }
+                    val commitment = CommitmentEntity(
+                        type = item.type,
+                        content = item.content,
+                        participants = item.participants,
+                        triggerAt = triggerAtTs,
+                        deadline = null,
+                        status = "pending",
+                        source = "chat",
+                        relatedMessageId = null
+                    )
+                    val id = ServiceLocator.commitmentDao.insert(commitment)
+                    // 注册 AlarmManager 触发
+                    if (triggerAtTs != null && triggerAtTs > System.currentTimeMillis()) {
+                        CommitmentScheduler(context).scheduleCommitmentTrigger(commitment.copy(id = id))
+                    }
+                }
+                Log.d(TAG, "已存储 ${reply.commitments.size} 条承诺")
+            }
+
+            // 处理承诺完成/取消（LLM 从对话中识别的）
+            if (reply.commitmentUpdates.isNotEmpty()) {
+                reply.commitmentUpdates.forEach { update ->
+                    // 按 content 关键词匹配 pending/triggered 状态的承诺
+                    val candidates = ServiceLocator.commitmentDao.getByStatus("pending") +
+                        ServiceLocator.commitmentDao.getByStatus("triggered")
+                    val matched = candidates.find {
+                        it.content.contains(update.content) || update.content.contains(it.content)
+                    }
+                    matched?.let {
+                        ServiceLocator.commitmentDao.updateStatus(it.id, update.status)
+                        if (update.status == "completed" || update.status == "cancelled") {
+                            CommitmentScheduler(context).cancelCommitmentTrigger(it.id)
+                        }
+                        Log.d(TAG, "承诺状态更新：${it.content} → ${update.status}")
+                    }
+                }
+            }
+
             // 处理 Agent 自主作息调整（v3 事件驱动）
             // LLM 输出 scheduleAdjustment（含 adjustmentType 和参数），ScheduleAdjuster 局部修改 slots
             // 不再调 LLM 重新生成全天作息，省一次调用 + 保留已完成时段
@@ -561,7 +690,11 @@ class ChatInteractor(private val context: Context) {
             coroutineContext.ensureActive()  // 被取消时抛 CancellationException
             val cleanedItems = items.map { item ->
                 val cleanedText = item.replyText.replace(BRACKET_REGEX, "").replace(Regex("\\s+"), " ").trim()
-                val extractedAction = BRACKET_REGEX.find(item.replyText)?.groupValues?.get(1)?.trim()
+                val extractedAction = BRACKET_REGEX.findAll(item.replyText)
+                    .map { it.groupValues[1].trim() }
+                    .filter { it.isNotBlank() }
+                    .joinToString("、")
+                    .ifBlank { null }
                 val finalAction = item.action.ifBlank { extractedAction ?: "" }
                 item.copy(replyText = cleanedText, action = finalAction)
             }
@@ -576,8 +709,9 @@ class ChatInteractor(private val context: Context) {
             val useMultiMessageMode = effectiveReplies.size >= 2
 
             if (useMultiMessageMode) {
-                Log.d(TAG, "多消息独立入库：${effectiveReplies.size} 条（不合并）")
-                persistMultipleReplies(effectiveReplies)
+                Log.d(TAG, "多消息独立入库：${cleanedItems.size} 条（不合并，含纯 emoji）")
+                // 传入全部 cleanedItems（含纯 emoji 项），保留 LLM 输出的 emoji 消息
+                persistMultipleReplies(cleanedItems)
                 return
             }
 
@@ -597,6 +731,8 @@ class ChatInteractor(private val context: Context) {
 
             // 纯 emoji（无文字）：不合成语音，直接入库
             if (mergedEmoji.isNotBlank() && mergedReplyText.isBlank()) {
+                // 校验 cancel 信号（虽无 TTS，但 LLM 调用阶段也可能被取消）
+                coroutineContext.ensureActive()
                 val emojiMsg = ChatMessageEntity(
                     direction = "outbound",
                     text = null,
@@ -620,6 +756,10 @@ class ChatInteractor(private val context: Context) {
                     audioPath = result?.first
                     audioDurationSec = result?.second
                 }
+
+                // TTS 期间用户可能发了新消息触发 cancel，此处检查避免被取消的旧回复仍入库
+                // （synthesizeVoice 是远程阻塞调用，cancel 信号要等其返回才能生效）
+                coroutineContext.ensureActive()
 
                 // 同时有文字和 emoji 时忽略 emoji（语音消息只保留文字，避免 emoji 挤在语音气泡里）
                 val agentMsg = ChatMessageEntity(
@@ -653,6 +793,66 @@ class ChatInteractor(private val context: Context) {
 
             // 记录回复完成时间，用于连续对话检测
             lastReplyTime = System.currentTimeMillis()
+
+            // Phase 2 关系系统：推进数值 + 处理 LLM 声明的里程碑
+            try {
+                val replyTextForRelationship = items.joinToString(" ") { it.replyText }.take(500)
+                val emotionForRelationship = items.firstOrNull()?.emotion?.ifBlank { "neutral" } ?: "neutral"
+                val totalLength = items.sumOf { it.replyText.length }
+                relationshipService.onTurnCompleted(
+                    emotion = emotionForRelationship,
+                    isUserInitiated = true,
+                    messageLength = totalLength
+                )
+                // 处理 LLM 主动声明的里程碑
+                val declaredMilestone = reply.milestoneDeclared
+                if (!declaredMilestone.isNullOrBlank() && declaredMilestone != "null") {
+                    val title = RelationshipService.MILESTONE_TITLE_MAP[declaredMilestone] ?: declaredMilestone
+                    relationshipService.recordMilestone(
+                        type = declaredMilestone,
+                        title = title,
+                        source = "llm_declared",
+                        context = mapOf("replyText" to replyTextForRelationship)
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "关系状态推进失败（不影响主流程）", e)
+            }
+
+            // Phase 3 情感势能：根据 LLM 自报情绪强度推进 valence/arousal/势能
+            try {
+                val emotionForEmotional = items.firstOrNull()?.emotion?.ifBlank { "neutral" } ?: "neutral"
+                emotionalService.onTurnCompleted(
+                    emotionIntensity = reply.emotionIntensity,
+                    emotion = emotionForEmotional
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "情绪状态推进失败（不影响主流程）", e)
+            }
+
+            // Agent 自主切换头像：LLM 输出 wantAvatarId 时，更新 currentAvatarId
+            // 指向的头像 id 不存在时静默忽略（保持原头像），避免 LLM 误输出导致头像消失
+            val wantAvatarId = reply.wantAvatarId
+            if (!wantAvatarId.isNullOrBlank() && wantAvatarId != "null") {
+                try {
+                    val currentConfig = configProvider.get()
+                    val matched = currentConfig.agent.avatars.firstOrNull { it.id == wantAvatarId }
+                    if (matched != null) {
+                        if (matched.id != currentConfig.agent.currentAvatarId) {
+                            agentConfigEditor.update { cfg ->
+                                cfg.copy(
+                                    agent = cfg.agent.copy(currentAvatarId = matched.id)
+                                )
+                            }
+                            Log.d(TAG, "Agent 自主切换头像：${matched.id}（${matched.description.ifBlank { "无描述" }}）")
+                        }
+                    } else {
+                        Log.w(TAG, "LLM 输出的 wantAvatarId 不存在：$wantAvatarId，忽略切换")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "应用头像切换失败（不影响主流程）", e)
+                }
+            }
 
         } catch (e: CancellationException) {
             // 用户发新消息，剩余条目被取消，属正常流程
@@ -853,6 +1053,10 @@ class ChatInteractor(private val context: Context) {
             replies.forEach { _ -> audioResults.add(null) }
         }
 
+        // TTS 期间用户可能发了新消息触发 cancel，此处检查避免被取消的旧回复仍入库
+        // （多消息场景 TTS 耗时更长，cancel 信号在 TTS 完成后才能被检查到）
+        coroutineContext.ensureActive()
+
         // 每条独立入库
         replies.forEachIndexed { index, reply ->
             // 纯 emoji 消息：不合成语音
@@ -1020,6 +1224,131 @@ class ChatInteractor(private val context: Context) {
         }
     }
 
+    /**
+     * 将 ISO 8601 字符串转换为时间戳（毫秒）
+     * 输入格式如 "2026-07-30T15:00:00"
+     */
+    private fun parseIso8601ToTimestamp(iso8601: String): Long? {
+        return try {
+            val ldt = java.time.LocalDateTime.parse(iso8601)
+            ldt.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()
+        } catch (e: Exception) {
+            Log.w(TAG, "解析 ISO 8601 时间失败：$iso8601", e)
+            null
+        }
+    }
+
+    /**
+     * 构建昨日状态延续文本（Step 24）
+     * 读取昨日 DailyStateEntity，构造睡眠/活动/情绪/调整建议的语义化文本
+     *
+     * 输出示例：
+     * 昨晚你 01:15 才睡，今早 07:30 起（睡眠 6 小时 15 分钟，略不足）
+     * 昨天活动：赶设计稿、加班到深夜
+     * 昨天状态：压力大（stress=0.7）、疲劳（fatigue=0.8）、心情一般（mood=-0.2）
+     * 今天调整建议：
+     * - 起床时间可以晚 30 分钟
+     * - 多安排休息时段（疲劳未恢复）
+     */
+    private suspend fun buildYesterdayCarryOver(): String? {
+        return try {
+            val zone = java.time.ZoneId.of("Asia/Shanghai")
+            val yesterday = java.time.LocalDate.now(zone).minusDays(1)
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+            val state = dailyStateDao.getByDate(yesterday) ?: return null
+
+            val sb = StringBuilder()
+
+            // 睡眠信息
+            if (!state.sleepTime.isNullOrBlank() && !state.wakeTime.isNullOrBlank()) {
+                val durationStr = state.sleepDurationMin?.let { min ->
+                    val hours = min / 60
+                    val mins = min % 60
+                    val adequacy = when {
+                        min < 360 -> "严重不足"
+                        min < 420 -> "略不足"
+                        min < 540 -> "适中"
+                        else -> "充足"
+                    }
+                    "$hours 小时 $mins 分钟（$adequacy）"
+                } ?: ""
+                sb.appendLine("昨晚你 ${state.sleepTime} 才睡，今早 ${state.wakeTime} 起（睡眠 $durationStr）")
+            }
+
+            // 昨天活动
+            val activities = parseActivitiesJson(state.mainActivities)
+            if (activities.isNotEmpty()) {
+                sb.appendLine("昨天活动：${activities.joinToString("、")}")
+            }
+
+            // 昨天状态（情绪/压力/疲劳）
+            val stateParts = mutableListOf<String>()
+            state.stress?.let {
+                val level = if (it > 0.6) "压力大" else if (it > 0.3) "有些压力" else "轻松"
+                stateParts.add("$level（stress=$it）")
+            }
+            state.fatigue?.let {
+                val level = if (it > 0.6) "疲劳" else if (it > 0.3) "有些累" else "精神"
+                stateParts.add("$level（fatigue=$it）")
+            }
+            state.mood?.let {
+                val level = if (it > 0.3) "心情好" else if (it > -0.3) "心情一般" else "心情低落"
+                stateParts.add("$level（mood=$it）")
+            }
+            if (stateParts.isNotEmpty()) {
+                sb.appendLine("昨天状态：${stateParts.joinToString("、")}")
+            }
+
+            // 互动信息
+            if (state.hadInteractionWithUser) {
+                sb.appendLine("昨天和用户聊了 ${state.interactionCount} 条消息")
+            } else {
+                sb.appendLine("昨天没有和用户互动")
+            }
+
+            // 今日调整建议（基于睡眠/疲劳/压力生成）
+            val suggestions = mutableListOf<String>()
+            state.sleepDurationMin?.let { min ->
+                if (min < 420) {
+                    suggestions.add("起床时间可以晚 30 分钟")
+                    suggestions.add("多安排休息时段（疲劳未恢复）")
+                }
+            }
+            state.fatigue?.let {
+                if (it > 0.6) suggestions.add("多安排休息时段（疲劳未恢复）")
+            }
+            state.stress?.let {
+                if (it > 0.6) suggestions.add("安排些放松活动缓解压力")
+            }
+            if (suggestions.isNotEmpty()) {
+                sb.appendLine("今天调整建议：")
+                suggestions.distinct().forEach { sb.appendLine("- $it") }
+            }
+
+            val result = sb.toString().trim()
+            if (result.isBlank()) null else result
+        } catch (e: Exception) {
+            Log.w(TAG, "构建昨日状态延续失败", e)
+            null
+        }
+    }
+
+    /**
+     * 解析 mainActivities JSON 数组字符串为列表
+     * 简单解析 ["a","b","c"] 格式，不依赖序列化库
+     */
+    private fun parseActivitiesJson(jsonStr: String): List<String> {
+        if (jsonStr.isBlank() || jsonStr == "[]") return emptyList()
+        return try {
+            jsonStr.removeSurrounding("[", "]")
+                .split(",")
+                .map { it.trim().removeSurrounding("\"") }
+                .filter { it.isNotBlank() }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     companion object {
         private const val TAG = "ChatInteractor"
 
@@ -1066,5 +1395,27 @@ class ChatInteractor(private val context: Context) {
         /** 当前连续对话轮次（每轮 = 用户发 + Agent 回），跨实例共享 */
         @Volatile
         private var continuousRound: Int = 0
+    }
+}
+
+/**
+ * 计算消息相对当前时间的自然语言描述
+ *
+ * 用于在喂给 LLM 的对话历史/pending 合并文本/日报摘要中标注消息发送时间，
+ * 替代原有的 [MM-dd HH:mm] 方括号时间戳格式。
+ *
+ * 原因：方括号时间戳格式（如 [08-03 14:30]）会被 LLM 模仿，
+ * 导致回复中把多条消息塞进一个 replyText 并用时间戳分隔。
+ * 改用「刚刚」「3分钟前」「昨天」等自然语言，LLM 不会在回复中模仿这种格式。
+ */
+internal fun relativeTimeGap(millis: Long): String {
+    val safeMillis = millis.coerceAtLeast(0L)
+    return when {
+        safeMillis < 60_000L -> "刚刚"
+        safeMillis < 3_600_000L -> "${safeMillis / 60_000L}分钟前"
+        safeMillis < 86_400_000L -> "${safeMillis / 3_600_000L}小时前"
+        safeMillis < 2 * 86_400_000L -> "昨天"
+        safeMillis < 7 * 86_400_000L -> "${safeMillis / 86_400_000L}天前"
+        else -> "很久以前"
     }
 }
