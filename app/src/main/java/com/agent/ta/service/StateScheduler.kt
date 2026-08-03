@@ -43,8 +43,8 @@ class StateScheduler(private val context: Context) {
     private val alarmManager: AlarmManager =
         context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-    /** 已注册的 requestCode 集合，cancelAll 时按这些值精确取消 */
-    private val registeredRequestCodes = mutableSetOf<Int>()
+    /** 已注册的 requestCode 集合，cancelAll 时按这些值精确取消（线程安全，防 ConcurrentModificationException） */
+    private val registeredRequestCodes: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
      * 注册接下来的状态切换任务（基于当天作息）

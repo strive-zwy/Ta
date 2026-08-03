@@ -41,7 +41,20 @@ data class ActivityAnchor(
     /** 作息表时段开始（HH:mm），仅 SCHEDULE 来源有值 */
     val slotStart: String = "",
     /** 作息表时段结束（HH:mm），仅 SCHEDULE 来源有值 */
-    val slotEnd: String = ""
+    val slotEnd: String = "",
+    /**
+     * 当前活动是否腾得出手回复消息
+     *
+     * false 的场景：打球/健身/洗澡/做饭/开车等需要双手或全神贯注的活动
+     * true 的场景：刷手机/看电视/躺着/坐地铁/摸鱼/写代码等可以随时停下来回消息
+     *
+     * 来源：
+     * - SCHEDULE anchor：由 ActivityAnchorManager.inferReplyable() 关键词推断
+     * - LLM anchor：由 set_activity 工具可选设置，未设置时用关键词推断
+     *
+     * false 时：用户消息进入 pending 队列，不立即回复，等活动结束（时段切换/anchor 过期）后处理
+     */
+    val replyable: Boolean = true
 ) {
     /**
      * 是否已过期（当前时间超过 expectedEnd）

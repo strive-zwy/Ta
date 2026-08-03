@@ -13,6 +13,12 @@ interface MemoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: MemoryEntity): Long
 
+    /**
+     * 统计指定 content 的 seed 记录数（用于导入去重，避免重复注入相同 memory_seed）
+     */
+    @Query("SELECT COUNT(*) FROM memories WHERE source = 'seed' AND content = :content")
+    suspend fun countSeedByContent(content: String): Int
+
     @Query("SELECT * FROM memories ORDER BY importance DESC, updatedAt DESC")
     fun observeAll(): Flow<List<MemoryEntity>>
 
@@ -57,4 +63,39 @@ interface MemoryDao {
 
     @Query("UPDATE memories SET importance = :importance, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateImportance(id: Long, importance: Int, updatedAt: Long)
+
+    /**
+     * 按 category 查询记忆（记忆与承诺系统）
+     * 用于按分类（如 "commitment" / "preference" 等）批量加载记忆条目
+     */
+    @Query("SELECT * FROM memories WHERE category = :category ORDER BY importance DESC, updatedAt DESC LIMIT :limit")
+    suspend fun getByCategory(category: String, limit: Int = 50): List<MemoryEntity>
+
+    /**
+     * 按 category + 时间范围查询（createdAt 字段）
+     * 用于检索某分类在指定时间段内的记忆，例如"最近一周的承诺记录"
+     */
+    @Query("SELECT * FROM memories WHERE category = :category AND createdAt >= :startTs AND createdAt <= :endTs ORDER BY createdAt DESC")
+    suspend fun getByCategoryAndDateRange(category: String, startTs: Long, endTs: Long): List<MemoryEntity>
+
+    /**
+     * 按 category + 关键词查询单条记忆（content LIKE 模糊匹配）
+     * 主要用于去重检查：判断某分类下是否已存在包含指定关键词的记忆
+     */
+    @Query("SELECT * FROM memories WHERE category = :category AND content LIKE '%' || :keyword || '%' LIMIT 1")
+    suspend fun findOneByCategoryAndKeyword(category: String, keyword: String): MemoryEntity?
+
+    /**
+     * 按 category + 关键词计数（content LIKE 模糊匹配）
+     * 用于判断某分类下包含指定关键词的记忆数量，辅助去重决策
+     */
+    @Query("SELECT COUNT(*) FROM memories WHERE category = :category AND content LIKE '%' || :keyword || '%'")
+    suspend fun countByCategoryAndKeyword(category: String, keyword: String): Int
+
+    /**
+     * 按 category + 时间清理记忆（删除 createdAt 早于 beforeTs 的记录）
+     * 用于历史承诺/记忆的过期清理，返回被删除的行数
+     */
+    @Query("DELETE FROM memories WHERE category = :category AND createdAt < :beforeTs")
+    suspend fun deleteByCategoryBefore(category: String, beforeTs: Long): Int
 }

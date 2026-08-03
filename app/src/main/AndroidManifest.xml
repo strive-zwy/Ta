@@ -61,6 +61,16 @@
             </intent-filter>
         </receiver>
 
+        <!-- 承诺触发广播接收器（AlarmManager 唤醒） -->
+        <receiver
+            android:name=".service.CommitmentTriggerReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.agent.ta.ACTION_COMMITMENT_TRIGGER" />
+            </intent-filter>
+        </receiver>
+
         <!-- 开机自启接收器 -->
         <receiver
             android:name=".service.BootReceiver"

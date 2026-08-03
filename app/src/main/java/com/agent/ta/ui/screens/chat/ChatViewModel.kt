@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.stateIn
 
 class ChatViewModel : ViewModel() {
 
-    private val appContext = com.agent.ta.TaApplication.instance
+    private val appContext = com.agent.ta.TaApplication.instance!!
     private val chatDao = ServiceLocator.chatMessageDao
     private val interactor = ChatInteractor(appContext)
     private val voicePlayer = VoicePlayer(appContext)

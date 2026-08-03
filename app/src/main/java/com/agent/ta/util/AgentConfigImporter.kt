@@ -113,15 +113,21 @@ class AgentConfigImporter(private val context: Context) {
 
     /**
      * 校验必需字段
+     *
+     * Phase 4 放宽规则（支持克隆生成的 identity 驱动配置）：
+     * - agent.name 必须非空
+     * - identity.worldSetting 或 persona.background 至少一个非空
+     *   （identity 驱动模式不强制 persona.background，反之亦然）
+     * - directorRoleTemplate 不再强制（styleEnabled=false 时让 TTS 自主分析）
+     *
      * 注：systemPromptTemplate 当前由 PromptBuilder 内部硬编码生成，故不强制要求
      */
     private fun validate(config: AgentConfig) {
         require(config.agent.name.isNotBlank()) { "agent.name 不能为空" }
-        require(config.agent.persona.background.isNotBlank()) {
-            "agent.persona.background 不能为空"
-        }
-        require(config.agent.persona.directorRoleTemplate.isNotBlank()) {
-            "agent.persona.director_role_template 不能为空"
+        val hasIdentity = config.identity.worldSetting.isNotBlank()
+        val hasPersonaBackground = config.agent.persona.background.isNotBlank()
+        require(hasIdentity || hasPersonaBackground) {
+            "identity.world_setting 和 persona.background 至少一个不能为空"
         }
     }
 

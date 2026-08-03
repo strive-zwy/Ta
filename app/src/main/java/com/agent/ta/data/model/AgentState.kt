@@ -3,11 +3,12 @@ package com.agent.ta.data.model
 /**
  * Agent 状态枚举
  *
- * 按能否回复 + 回复积极性分为 4 种状态：
+ * 按能否回复 + 回复积极性分为 5 种状态：
  * - NORMAL：日常状态，可回复，正常延迟
  * - BUSY：忙碌状态，可回复但慢，长延迟
  * - IDLE：空闲状态，可回复且快，短延迟，更易主动发起
- * - UNAVAILABLE：无法回复（睡觉/洗澡等），走待回复队列
+ * - UNAVAILABLE：无法回复（深睡/洗澡等），走待回复队列
+ * - LIGHT_SLEEP：浅睡状态（Phase 1 分级睡眠），可被消息吵醒回复，迷糊慢延迟
  *
  * 情绪（neutral/happy/calm）由 LLM 根据上下文在每条回复中自主判断，
  * 与状态解耦——状态控制行为逻辑，情绪控制语音表现。
@@ -16,7 +17,8 @@ enum class AgentState(val id: String, val displayName: String) {
     NORMAL("normal", "正常"),
     BUSY("busy", "忙碌"),
     IDLE("idle", "空闲"),
-    UNAVAILABLE("unavailable", "无法回复");
+    UNAVAILABLE("unavailable", "无法回复"),
+    LIGHT_SLEEP("light_sleep", "浅睡");
 
     companion object {
         /**

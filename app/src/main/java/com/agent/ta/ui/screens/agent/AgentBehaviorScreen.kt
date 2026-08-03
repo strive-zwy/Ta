@@ -230,7 +230,7 @@ fun AgentBehaviorScreen(onBack: () -> Unit) {
                         replyDelaySec = newReplyDelay,
                         boredInitiate = behavior.boredInitiate,
                         stateDirectorHints = stateHints.toMap(),
-                        emoji = EmojiBehavior(),
+                        emoji = behavior.emoji,
                         perStateInitiate = newInitiate,
                         typingIndicatorDuration = behavior.typingIndicatorDuration,
                         messageLengthHints = behavior.messageLengthHints

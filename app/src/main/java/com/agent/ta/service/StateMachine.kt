@@ -37,10 +37,20 @@ class StateMachine {
     val currentState: StateFlow<AgentState> = _currentState
 
     // 当天作息 slots（由 DailyPlanner 生成，可被 ScheduleAdjuster 更新）
+    @Volatile
     private var dailySlots: List<DailySlot> = emptyList()
 
     // 回复延迟配置（从 AgentConfig.behavior.replyDelaySec 读取）
+    @Volatile
     private var replyDelayMap: Map<String, com.agent.ta.data.model.ReplyDelay> = emptyMap()
+
+    /** 切换前的时段（供 LifeEventInitiator 判断起床/睡觉等节点类型） */
+    @Volatile
+    private var prevSlot: DailySlot? = null
+
+    /** 最近一次 init/switchTo 时的时段（用于下次切换时记录 prevSlot） */
+    @Volatile
+    private var lastSlot: DailySlot? = null
 
     /**
      * 初始化状态机
@@ -53,6 +63,7 @@ class StateMachine {
         replyDelayMap = delays
         val newState = computeCurrentState()
         _currentState.value = newState
+        lastSlot = computeCurrentSlot()
         Log.d(TAG, "状态机初始化：当前状态 = ${newState.displayName}，当天 ${slots.size} 个时段")
 
         scope.launch {
@@ -80,9 +91,19 @@ class StateMachine {
 
     /**
      * 根据当前时间计算应该处于的状态
+     *
+     * Phase 1 分级睡眠：
+     * - slot.sleepDepth=="light" → LIGHT_SLEEP（浅睡，可被消息吵醒回复）
+     * - slot.sleepDepth=="deep" → UNAVAILABLE（深睡，不可回复）
+     * - slot.sleepDepth==null → 沿用 slot.state 字段
      */
     private fun computeCurrentState(): AgentState {
-        return computeCurrentSlot()?.let { AgentState.fromId(it.state) } ?: AgentState.IDLE
+        val slot = computeCurrentSlot() ?: return AgentState.IDLE
+        return when (slot.sleepDepth) {
+            "light" -> AgentState.LIGHT_SLEEP
+            "deep" -> AgentState.UNAVAILABLE
+            else -> AgentState.fromId(slot.state) ?: AgentState.IDLE
+        }
     }
 
     /**
@@ -94,6 +115,11 @@ class StateMachine {
     }
 
     /**
+     * 获取切换前的时段（供 LifeEventInitiator 判断起床/睡觉等节点类型）
+     */
+    fun getPrevSlot(): DailySlot? = prevSlot
+
+    /**
      * 获取今日全天作息（供 PromptBuilder 注入到 system prompt，让 Agent 知道接下来要做什么，不要瞎编）
      */
     fun getTodaySlots(): List<DailySlot> = dailySlots
@@ -102,7 +128,7 @@ class StateMachine {
         if (dailySlots.isEmpty()) return null
         val now = java.time.ZonedDateTime.now(SCHEDULE_ZONE).toLocalTime()
         return dailySlots.firstOrNull { slot ->
-            val start = LocalTime.parse(slot.start)
+            val start = parseStartTime(slot.start)
             val end = parseEndTime(slot.end)
             if (start <= end) {
                 now >= start && now < end
@@ -125,12 +151,29 @@ class StateMachine {
     }
 
     /**
+     * 解析开始时间（处理 "24:00" 边界）
+     * "24:00" 作为开始时间非法，降级为 23:59:59 避免崩溃
+     */
+    private fun parseStartTime(timeStr: String): LocalTime {
+        return if (timeStr == "24:00" || timeStr == "24:00:00") {
+            LocalTime.of(23, 59, 59)
+        } else {
+            LocalTime.parse(timeStr)
+        }
+    }
+
+    /**
      * 切换状态（由调度器调用）
      */
     fun switchTo(state: AgentState) {
         if (_currentState.value == state) return
         Log.d(TAG, "状态切换：${_currentState.value.displayName} → ${state.displayName}")
         val now = System.currentTimeMillis()
+
+        // 记录切换前的时段（getCurrentSlot 在时段边界触发时已返回新 slot，
+        // 故使用 lastSlot 作为切换前的时段，供 LifeEventInitiator 判断节点类型）
+        prevSlot = lastSlot
+        lastSlot = computeCurrentSlot()
 
         scope.launch {
             val latest = stateLogDao.getLatest()
@@ -147,7 +190,8 @@ class StateMachine {
 
     /**
      * 当前状态是否可以回复用户消息
-     * UNAVAILABLE（睡觉/洗澡等）不可回复，走待回复队列
+     * UNAVAILABLE（深睡/洗澡等）不可回复，走待回复队列
+     * LIGHT_SLEEP（浅睡）可回复，但迷糊慢延迟
      */
     fun canReplyNow(): Boolean = _currentState.value != AgentState.UNAVAILABLE
 
@@ -166,6 +210,7 @@ class StateMachine {
                 AgentState.BUSY -> (30..120).random().toLong()
                 AgentState.IDLE -> (1..3).random().toLong()
                 AgentState.UNAVAILABLE -> null
+                AgentState.LIGHT_SLEEP -> (30..60).random().toLong()  // 迷糊慢回复
             }
         }
     }
@@ -182,7 +227,7 @@ class StateMachine {
 
         // 找到当前所在 slot 的下一个 slot
         val currentIdx = dailySlots.indexOfFirst { slot ->
-            val start = LocalTime.parse(slot.start)
+            val start = parseStartTime(slot.start)
             val end = parseEndTime(slot.end)
             if (start <= end) {
                 nowTime >= start && nowTime < end
@@ -219,7 +264,7 @@ class StateMachine {
 
         // 找到当前所在 slot
         var currentIdx = dailySlots.indexOfFirst { slot ->
-            val start = LocalTime.parse(slot.start)
+            val start = parseStartTime(slot.start)
             val end = parseEndTime(slot.end)
             if (start <= end) {
                 nowTime >= start && nowTime < end
@@ -233,7 +278,7 @@ class StateMachine {
         for (i in 0 until count.coerceAtMost(dailySlots.size)) {
             val nextIdx = (currentIdx + 1 + i) % dailySlots.size
             val nextSlot = dailySlots[nextIdx]
-            var switchTime = checkTime.with(LocalTime.parse(nextSlot.start))
+            var switchTime = checkTime.with(parseStartTime(nextSlot.start))
             if (!switchTime.isAfter(checkTime)) {
                 switchTime = switchTime.plusDays(1)
             }

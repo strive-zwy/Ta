@@ -29,15 +29,11 @@ class RecentConversationObserver : Observer {
     /** 用户长时间未响应阈值（毫秒） */
     private val silenceThresholdMs = 30L * 60 * 1000  // 30 分钟
 
-    private var lastUserSilent: Boolean = false
-    private var lastUserMessageTime: Long = 0L
-
     override suspend fun collect(): ObserverSnapshot {
         val timestamp = timeContext.nowMillis()
 
-        // 查询最近一条用户消息
-        val recentMessages = ServiceLocator.chatMessageDao.getAll()
-        val lastUserMessage = recentMessages.lastOrNull { it.direction == "inbound" }
+        // 查询最近一条用户消息（使用专用查询，避免全表扫描）
+        val lastUserMessage = ServiceLocator.chatMessageDao.getLastInboundMessage()
 
         val userMessageTime = lastUserMessage?.createdAt ?: 0L
         val userMessagePreview = lastUserMessage?.text?.take(50) ?: ""
@@ -87,12 +83,14 @@ class RecentConversationObserver : Observer {
 
         val currentSilent = current.data["is_user_silent"] as? Boolean ?: false
         val currentUserTime = current.data["last_user_message_time"] as? Long ?: 0L
+        val prevSilent = previous.data["is_user_silent"] as? Boolean ?: false
+        val prevUserTime = previous.data["last_user_message_time"] as? Long ?: 0L
 
         // 沉默状态变化（false → true 或 true → false）
-        val silentStateChanged = currentSilent != lastUserSilent
+        val silentStateChanged = currentSilent != prevSilent
 
         // 用户发了新消息
-        val newMessageArrived = currentUserTime != lastUserMessageTime
+        val newMessageArrived = currentUserTime != prevUserTime
 
         return silentStateChanged || newMessageArrived
     }

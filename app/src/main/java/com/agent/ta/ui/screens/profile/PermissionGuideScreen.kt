@@ -13,13 +13,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -155,7 +159,10 @@ fun PermissionGuideScreen(onCompleted: () -> Unit) {
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onCompleted,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp),
+            shape = RoundedCornerShape(14.dp)
         ) {
             Text("完成，开始聊天")
         }
@@ -187,7 +194,8 @@ private fun PermissionCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.padding(end = 12.dp)) {
+            // 左侧文案占满剩余空间，避免挤压按钮
+            Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(
                     status,
@@ -195,7 +203,23 @@ private fun PermissionCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Button(onClick = onClick, enabled = !done) {
+            Spacer(modifier = Modifier.width(12.dp))
+            // 按钮固定宽度，避免随文字长度变形
+            Button(
+                onClick = onClick,
+                enabled = !done,
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 96.dp)
+                    .height(42.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (done) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }
+                )
+            ) {
                 Text(buttonText)
             }
         }

@@ -21,4 +21,5 @@ object Routes {
     const val AGENT_AVATAR = "agent_avatar"           // 头像管理
     const val AGENT_VOICE = "agent_voice"             // 语音配置
     const val AGENT_BEHAVIOR = "agent_behavior"       // 行为配置
+    const val AGENT_CLONE = "agent_clone"             // AI 辅助克隆（Phase 4）
 }

@@ -79,6 +79,7 @@ import kotlinx.coroutines.withContext
 import android.widget.Toast
 import kotlinx.serialization.json.Json
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -103,10 +104,19 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
     var regenerating by remember { mutableStateOf(false) }
     val agentConfig by ServiceLocator.agentConfigProvider.config.collectAsState()
     val agentName = agentConfig.agent.name.ifBlank { "小雅" }
-    val agentState = com.agent.ta.service.AgentEngine.currentState.value
     var entered by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val context = LocalContext.current
+
+    // 周期性 tick：每 60 秒触发重组，刷新 currentSlot / isPast 判断
+    // 让 UI 在跨时段边界时自动更新（如 12:00 进入新时段）
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(60_000L)
+            tick = (tick + 1) % Int.MAX_VALUE
+        }
+    }
 
     // 重新读取当天作息（重新生成后调用）
     suspend fun reloadToday() = withContext(Dispatchers.IO) {
@@ -175,25 +185,43 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
                 null -> LoadingState()
                 false -> EmptyState(agentName)
                 true -> {
-                    // 当前时段判断：综合时间 + 日期判断，避免跨天误判
-                    val nowForCurrent = LocalTime.now()
+                    // 当前时段判断：用日期+时间判断，正确处理跨午夜时段
+                    // 今日作息表中的时段都是今天的，跨午夜时段（如睡觉 22:00-07:30）
+                    // 实际跨越今天晚上到明天早上
+                    // 引用 tick 让重组随周期 tick 触发，自动刷新跨时段边界
+                    val todayDate = LocalDate.now()
+                    val nowDateTime = LocalDateTime.now()
+                    @Suppress("UNUSED_VARIABLE") val tickRef = tick  // 依赖 tick 触发重组
+                    val nowTime = nowDateTime.toLocalTime()
                     val currentSlot = slots.find { slot ->
                         val slotStart = runCatching { LocalTime.parse(slot.start) }.getOrNull()
                         val slotEnd = runCatching {
                             if (slot.end == "24:00") LocalTime.of(23, 59, 59)
                             else LocalTime.parse(slot.end)
                         }.getOrNull()
-                        slotStart != null && slotEnd != null &&
+                        slotStart != null && slotEnd != null && run {
                             if (slotStart <= slotEnd) {
-                                nowForCurrent >= slotStart && nowForCurrent <= slotEnd
+                                // 普通时段：today [start, end]
+                                // Phase 1 分级睡眠：凌晨睡眠子段（如将醒浅睡 05:00-07:30）
+                                // start.hour < 12 → 属于次日清晨，不能当作"今日早晨时段"
+                                val useNextDay = slot.sleepDepth != null && slotStart.hour < 12
+                                val date = if (useNextDay) todayDate.plusDays(1) else todayDate
+                                val s = LocalDateTime.of(date, slotStart)
+                                val e = LocalDateTime.of(date, slotEnd)
+                                !nowDateTime.isBefore(s) && !nowDateTime.isAfter(e)
                             } else {
-                                nowForCurrent >= slotStart || nowForCurrent < slotEnd
+                                // 跨午夜时段（如睡觉 22:00-07:30）：今晚 start 到明早 end
+                                // 凌晨时(now < today start)不算 current（那是昨晚的睡眠延续）
+                                val s = LocalDateTime.of(todayDate, slotStart)
+                                val e = LocalDateTime.of(todayDate.plusDays(1), slotEnd)
+                                !nowDateTime.isBefore(s) && !nowDateTime.isAfter(e)
                             }
+                        }
                     }
                     val upcomingSlot = if (currentSlot == null) {
                         slots.firstOrNull { slot ->
                             val slotStart = runCatching { LocalTime.parse(slot.start) }.getOrNull()
-                            slotStart != null && slotStart > nowForCurrent
+                            slotStart != null && slotStart > nowTime
                         } ?: slots.firstOrNull()
                     } else null
 
@@ -228,27 +256,30 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
 
                         // 时段列表（当前时段卡片更凸显，已自动定位到视口顶部）
                         itemsIndexed(slots) { index, slot ->
-                            val now = LocalTime.now()
                             val slotStart = runCatching { LocalTime.parse(slot.start) }.getOrNull()
                             val slotEnd = runCatching {
                                 if (slot.end == "24:00") LocalTime.of(23, 59, 59)
                                 else LocalTime.parse(slot.end)
                             }.getOrNull()
-                            // 判断是否已结束
-                            // - 普通时段（start <= end）：now > end 即已结束
-                            // - 跨午夜时段（start > end，如 22:00-07:30）：
-                            //   现在在 0:00 到 end 之间（如 03:00）→ 还在进行中（不是已结束）
-                            //   现在在 end 到 start 之间（如 10:00）→ 已结束
-                            //   现在在 start 到 24:00 之间（如 23:00）→ 还未结束（在进行中或刚开始）
+                            // 判断是否已结束（用日期+时间）
+                            // - 普通时段：now > today end 即已结束
+                            // - 跨午夜时段（如 22:00-07:30 睡觉）：今晚 start 到明早 end
+                            //   isPast = now > 明早 end
+                            //   在今日作息视图内 now 永远 <= today 23:59 < 明早 end → 永远 false
+                            // - Phase 1 分级睡眠：凌晨子段（如将醒浅睡 05:00-07:30）
+                            //   start.hour < 12 → 属于次日清晨，isPast = now > 明早 end
                             val isPast = slot != currentSlot && slot != upcomingSlot &&
                                 slotStart != null && slotEnd != null && run {
                                 if (slotStart <= slotEnd) {
-                                    // 普通时段
-                                    now.isAfter(slotEnd)
+                                    // 普通时段 或 凌晨睡眠子段
+                                    val useNextDay = slot.sleepDepth != null && slotStart.hour < 12
+                                    val endDate = if (useNextDay) todayDate.plusDays(1) else todayDate
+                                    val endDt = LocalDateTime.of(endDate, slotEnd)
+                                    nowDateTime.isAfter(endDt)
                                 } else {
-                                    // 跨午夜时段：只在「超过结束时间且未到开始时间」时才算已结束
-                                    // 即 now 在 [end, start) 区间内
-                                    now >= slotEnd && now < slotStart
+                                    // 跨午夜时段：明早 end 之后才算已结束
+                                    val endTomorrow = LocalDateTime.of(todayDate.plusDays(1), slotEnd)
+                                    nowDateTime.isAfter(endTomorrow)
                                 }
                             }
                             StaggerItem(index = index + 1, entered = entered) {
@@ -430,9 +461,22 @@ private fun TimelineSlotItem(
     isPast: Boolean = false,
     isUpcoming: Boolean = false
 ) {
-    val stateLabel = slot.state.toStateLabel()
+    // Phase 1 分级睡眠：含 sleepDepth 的睡眠时段显示具体睡眠阶段标签
+    // - sleepDepth="deep"  → "深睡"（深夜蓝，更沉）
+    // - sleepDepth="light" → 沿用 slot.activity（"入睡浅睡"/"将醒浅睡"，淡紫蓝）
+    // - sleepDepth=null    → 沿用原状态标签
+    val sleepDepthLabel = when (slot.sleepDepth) {
+        "deep" -> "深睡"
+        "light" -> slot.activity.ifBlank { "浅睡" }
+        else -> null
+    }
+    val stateLabel = sleepDepthLabel ?: slot.state.toStateLabel()
     val stateIcon = slot.state.toStateIcon()
-    val stateColor = slot.state.toStateColor()
+    val stateColor = when (slot.sleepDepth) {
+        "deep" -> ColorDeepSleep
+        "light" -> ColorLightSleep
+        else -> slot.state.toStateColor()
+    }
 
     // 已过去时段整体淡化
     val pastAlpha = if (isPast) 0.5f else 1f
@@ -639,8 +683,15 @@ private fun TimelineSlotItem(
                             )
                         }
                     } else {
-                        val labelColors = if (isPast) StateLabelColors(PastLabelBg, PastTextColor)
-                                          else stateLabelColors(slot.state)
+                        // Phase 1 分级睡眠：含 sleepDepth 的标签配色与卡片状态色联动
+                        val labelColors = when {
+                            isPast -> StateLabelColors(PastLabelBg, PastTextColor)
+                            slot.sleepDepth == "deep" ->
+                                StateLabelColors(Color(0xFFE8EAF6), ColorDeepSleep)
+                            slot.sleepDepth == "light" ->
+                                StateLabelColors(Color(0xFFEEF0F8), ColorLightSleep)
+                            else -> stateLabelColors(slot.state)
+                        }
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = labelColors.bg
@@ -887,6 +938,9 @@ private val ColorGame = Color(0xFFFF8A3D)            // 娱乐 - 橙
 private val ColorGameBg = Color(0xFFFFF1E8)
 private val ColorUnavailable = Color(0xFF6B7AB5)     // 休息 - 静谧夜蓝
 private val ColorUnavailableBg = Color(0xFFF2F4F8)
+// Phase 1 分级睡眠色板（在 ColorUnavailable 基础上区分深浅）
+private val ColorDeepSleep = Color(0xFF3F4A8C)         // 深睡 - 深夜蓝（比 ColorUnavailable 更沉）
+private val ColorLightSleep = Color(0xFF8B95C7)       // 浅睡 - 淡紫蓝（比 ColorUnavailable 浅）
 private val ColorHappy = Color(0xFFE8A555)           // 开心 - 橙黄
 private val ColorHappyBg = Color(0xFFFFF6E8)
 

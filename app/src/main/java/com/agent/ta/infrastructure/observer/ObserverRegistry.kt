@@ -76,13 +76,13 @@ class ObserverRegistry {
                     toRemove.add(observer.id)
                 }
             }
-        }
 
-        // 清理异常观察者
-        toRemove.forEach { id ->
-            observers.removeAll { it.id == id }
-            lastSnapshots.remove(id)
-            Log.w(TAG, "已移除异常观察者：$id")
+            // 清理异常观察者（在同一把锁内执行，避免与 collectChanged 的遍历并发）
+            toRemove.forEach { id ->
+                observers.removeAll { it.id == id }
+                lastSnapshots.remove(id)
+                Log.w(TAG, "已移除异常观察者：$id")
+            }
         }
 
         return snapshotList

@@ -38,7 +38,7 @@ class ActivityAnchorManager(private val context: Context) {
     val currentAnchor: StateFlow<ActivityAnchor?> = _currentAnchor.asStateFlow()
 
     /** LLM 设置的 anchor（未过期时优先于 SCHEDULE anchor） */
-    private var llmAnchor: ActivityAnchor? = null
+    @Volatile private var llmAnchor: ActivityAnchor? = null
 
     init {
         // 启动时从持久化恢复 LLM anchor
@@ -78,25 +78,29 @@ class ActivityAnchorManager(private val context: Context) {
      * @param activity 活动内容（如"洗澡"、"陪她聊天"）
      * @param state 对应的宏观状态
      * @param durationMinutes 预计持续时长（分钟），到期后自动回退到作息表
+     * @param replyable 是否可回复消息（null 时用关键词推断）
      * @return 设置后的 anchor
      */
     fun setActivityFromLlm(
         activity: String,
         state: AgentState,
-        durationMinutes: Int
+        durationMinutes: Int,
+        replyable: Boolean? = null
     ): ActivityAnchor {
         val now = System.currentTimeMillis()
+        val effectiveReplyable = replyable ?: inferReplyable(activity)
         val anchor = ActivityAnchor(
             activity = activity,
             state = state,
             startedAt = now,
             expectedEnd = now + durationMinutes * 60_000L,
-            source = AnchorSource.LLM
+            source = AnchorSource.LLM,
+            replyable = effectiveReplyable
         )
         llmAnchor = anchor
         persistLlmAnchor(anchor)
         _currentAnchor.value = anchor
-        Log.d(TAG, "LLM 设置活动：${activity}（${durationMinutes}分钟），状态=${state.id}")
+        Log.d(TAG, "LLM 设置活动：${activity}（${durationMinutes}分钟），状态=${state.id}，可回复=${effectiveReplyable}")
         return anchor
     }
 
@@ -128,29 +132,49 @@ class ActivityAnchorManager(private val context: Context) {
         val todayDate = ZonedDateTime.now(zone).toLocalDate()
 
         val currentSlot = schedule.firstOrNull { slot ->
-            val start = LocalTime.parse(slot.start)
+            val start = parseEndTime(slot.start)
             val end = parseEndTime(slot.end)
             if (start <= end) {
                 nowTime >= start && nowTime < end
             } else {
-                // 跨午夜
+                // 跨午夜：now 在 [start, 24:00) 或 [00:00, end) 内都算当前时段
                 nowTime >= start || nowTime < end
             }
         } ?: return null
 
         val state = AgentState.fromId(currentSlot.state) ?: AgentState.IDLE
 
-        // 计算 expectedEnd：当前时段的结束时间
-        val endDate = if (currentSlot.end == "24:00" || currentSlot.end == "24:00:00") {
-            // 24:00 表示午夜，结束时间是次日 00:00
-            todayDate.plusDays(1).atStartOfDay(zone)
-        } else {
-            val endTime = LocalTime.parse(currentSlot.end)
-            todayDate.atTime(endTime).atZone(zone)
-        }
+        val startLt = parseEndTime(currentSlot.start)
+        val endLt = parseEndTime(currentSlot.end)
+        val isCrossMidnight = startLt > endLt && endLt != LocalTime.MIDNIGHT
 
-        // 计算 startedAt：当前时段的开始时间
-        val startDate = todayDate.atTime(LocalTime.parse(currentSlot.start)).atZone(zone)
+        // 计算 startedAt 和 expectedEnd，正确处理跨午夜时段
+        // - 普通时段：今天 start 到今天 end
+        // - 跨午夜时段 + nowTime >= start（晚间）：今天 start 到明天 end
+        // - 跨午夜时段 + nowTime < start（凌晨，昨晚睡眠延续）：昨天 start 到今天 end
+        // - "24:00" 结束：今天 23:59:59（视为当天结束，不跨午夜）
+        val startDate: ZonedDateTime
+        val endDate: ZonedDateTime
+
+        if (currentSlot.end == "24:00" || currentSlot.end == "24:00:00") {
+            // 24:00 表示当天结束，按 23:59:59 处理
+            startDate = todayDate.atTime(startLt).atZone(zone)
+            endDate = todayDate.atTime(LocalTime.of(23, 59, 59)).atZone(zone)
+        } else if (isCrossMidnight) {
+            if (nowTime >= startLt) {
+                // 晚间：今天 start 到明天 end
+                startDate = todayDate.atTime(startLt).atZone(zone)
+                endDate = todayDate.plusDays(1).atTime(endLt).atZone(zone)
+            } else {
+                // 凌晨：昨天 start 到今天 end
+                startDate = todayDate.minusDays(1).atTime(startLt).atZone(zone)
+                endDate = todayDate.atTime(endLt).atZone(zone)
+            }
+        } else {
+            // 普通时段：今天 start 到今天 end
+            startDate = todayDate.atTime(startLt).atZone(zone)
+            endDate = todayDate.atTime(endLt).atZone(zone)
+        }
 
         return ActivityAnchor(
             activity = currentSlot.activity,
@@ -159,8 +183,40 @@ class ActivityAnchorManager(private val context: Context) {
             expectedEnd = endDate.toInstant().toEpochMilli(),
             source = AnchorSource.SCHEDULE,
             slotStart = currentSlot.start,
-            slotEnd = currentSlot.end
+            slotEnd = currentSlot.end,
+            replyable = inferReplyable(currentSlot.activity)
         )
+    }
+
+    /**
+     * 推断活动是否可回复消息
+     *
+     * 不可回复的活动特征：需要双手、全神贯注、或不宜看手机
+     * 可回复的活动特征：可以随时停下来看手机、双手空闲
+     *
+     * 关键词列表覆盖常见活动，未匹配的默认可回复（避免误判影响正常对话）
+     */
+    private fun inferReplyable(activity: String): Boolean {
+        val lower = activity.lowercase()
+        // 不可回复活动关键词
+        val nonReplyableKeywords = listOf(
+            // 运动
+            "打球", "篮球", "足球", "羽毛球", "网球", "乒乓", "排球", "棒球",
+            "健身", "跑步", "游泳", "瑜伽", "跳绳", "骑行", "骑车", "爬山",
+            // 清洁
+            "洗澡", "洗头", "淋浴", "泡澡",
+            // 家务
+            "做饭", "炒菜", "下厨", "烹饪", "洗碗", "拖地", "打扫", "洗衣服",
+            // 交通
+            "开车", "驾车",
+            // 乐器
+            "弹琴", "练琴", "吉他", "钢琴", "小提琴", "鼓",
+            // 创作
+            "画画", "绘画", "素描",
+            // 其他
+            "手术", "诊疗", "按摩", "理发"
+        )
+        return nonReplyableKeywords.none { keyword -> lower.contains(keyword) }
     }
 
     private fun parseEndTime(timeStr: String): LocalTime {
@@ -183,6 +239,7 @@ class ActivityAnchorManager(private val context: Context) {
                 put("startedAt", anchor.startedAt)
                 put("expectedEnd", anchor.expectedEnd)
                 put("source", anchor.source.name)
+                put("replyable", anchor.replyable)
             }
             prefs.edit().putString(KEY_LLM_ANCHOR, json.toString()).apply()
         } catch (e: Exception) {
@@ -199,12 +256,13 @@ class ActivityAnchorManager(private val context: Context) {
                 state = AgentState.fromId(json.getString("state")) ?: AgentState.IDLE,
                 startedAt = json.getLong("startedAt"),
                 expectedEnd = json.getLong("expectedEnd"),
-                source = AnchorSource.LLM
+                source = AnchorSource.LLM,
+                replyable = json.optBoolean("replyable", true)
             )
             // 只恢复未过期的 anchor
             if (!anchor.isExpired()) {
                 llmAnchor = anchor
-                Log.d(TAG, "恢复未过期的 LLM anchor：${anchor.activity}")
+                Log.d(TAG, "恢复未过期的 LLM anchor：${anchor.activity}，可回复=${anchor.replyable}")
             } else {
                 Log.d(TAG, "持久化的 LLM anchor 已过期，丢弃")
                 clearLlmAnchor()

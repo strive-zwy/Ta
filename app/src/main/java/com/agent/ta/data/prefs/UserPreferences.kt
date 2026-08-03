@@ -241,7 +241,7 @@ class UserPreferences(context: Context) {
         private const val KEY_BORED_INITIATE = "bored_initiate"
 
         const val DEFAULT_LLM_BASE_URL = "https://api.deepseek.com/v1"
-        const val DEFAULT_LLM_MODEL = "deepseek-chat"
+        const val DEFAULT_LLM_MODEL = "deepseek-v4-flash"
         const val DEFAULT_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
 
         // MiMo TTS 三个固定模型（由 TtsClient 根据场景自动选择）

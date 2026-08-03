@@ -70,6 +70,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        unitTests {
+            // android.util.Log 等在单元测试中返回默认值而非抛异常
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {

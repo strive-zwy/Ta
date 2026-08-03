@@ -53,7 +53,10 @@ class ScheduleAdjuster {
         private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
         /** 受保护的活动关键词（不可调整） */
-        private val PROTECTED_KEYWORDS = listOf("会议", "直播", "演出", "通告", "采访", "签约", "面试", "考试")
+        private val PROTECTED_KEYWORDS = listOf(
+            "会议", "直播", "演出", "通告", "采访", "签约", "面试", "考试",
+            "睡觉", "睡眠", "午休", "小憩"
+        )
     }
 
     /**
@@ -124,17 +127,13 @@ class ScheduleAdjuster {
                 recentAdjustments.removeLast()
             }
 
-            // 持久化到 DB
+            // 持久化到 DB（只更新 slotsJson，保留 originalSlotsJson 不变）
             val today = LocalDate.now(zoneId).format(DATE_FORMAT)
-            val entity = com.agent.ta.data.local.entity.DailyScheduleEntity(
+            dailyScheduleDao.updateActualSlots(
                 date = today,
-                slotsJson = json.encodeToString(newSlots),
-                isAdjusted = true,
-                source = "adjust",
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
+                newSlotsJson = json.encodeToString(newSlots),
+                source = "adjust"
             )
-            dailyScheduleDao.upsert(entity)
 
             Log.d(TAG, "作息已调整（$type）：${adjustment.reason}，原因：${adjustment.reason}")
         }
@@ -293,9 +292,18 @@ class ScheduleAdjuster {
 
     /**
      * 判断是否为受保护时段（重要工作/事件不可调整）
+     *
+     * - activity 含受保护关键词（会议/直播/睡觉等）不可调整
+     * - 跨午夜的不可用时段（如睡觉）不可调整
      */
     private fun isProtectedSlot(slot: DailySlot): Boolean {
-        return PROTECTED_KEYWORDS.any { slot.activity.contains(it) }
+        // 含受保护关键词的时段不可调整
+        if (PROTECTED_KEYWORDS.any { slot.activity.contains(it) }) return true
+        // 跨午夜的不可用时段（如睡觉）不可调整
+        if (slot.state == "unavailable" && isCrossMidnight(slot)) return true
+        // Phase 1 分级睡眠：含 sleepDepth 的睡眠时段不可 REPLACE/SKIP
+        if (slot.sleepDepth != null) return true
+        return false
     }
 
     /**
@@ -329,13 +337,16 @@ class ScheduleAdjuster {
 
     /**
      * 时间加分钟
+     *
+     * 钳制在 00:00-23:59 范围内，避免溢出午夜绕回（防止原本非跨午夜的时段变成跨午夜）
+     * 跨午夜只允许睡觉时段（由 normalizeSlots 保证）
      */
     private fun addMinutesToTime(timeStr: String, minutes: Int): String {
         return try {
             val time = if (timeStr == "24:00") LocalTime.of(23, 59) else LocalTime.parse(timeStr)
             val newTime = time.plusMinutes(minutes.toLong())
-            // 不超过 23:59（避免跨午夜混乱，跨午夜只允许睡觉时段）
-            val clamped = if (newTime == LocalTime.MIDNIGHT) LocalTime.of(23, 59) else newTime
+            // 检测溢出绕回：newTime <= time 且 minutes > 0 表示跨过了午夜
+            val clamped = if (minutes > 0 && newTime <= time) LocalTime.of(23, 59) else newTime
             String.format("%02d:%02d", clamped.hour, clamped.minute)
         } catch (e: Exception) {
             timeStr
@@ -344,12 +355,16 @@ class ScheduleAdjuster {
 
     /**
      * 时间减分钟
+     *
+     * 钳制在 00:00-23:59 范围内，避免溢出午夜绕回
      */
     private fun subtractMinutesFromTime(timeStr: String, minutes: Int): String {
         return try {
             val time = if (timeStr == "24:00") LocalTime.of(23, 59) else LocalTime.parse(timeStr)
             val newTime = time.minusMinutes(minutes.toLong())
-            String.format("%02d:%02d", newTime.hour, newTime.minute)
+            // 检测溢出绕回：newTime >= time 且 minutes > 0 表示跨过了午夜
+            val clamped = if (minutes > 0 && newTime >= time) LocalTime.MIDNIGHT else newTime
+            String.format("%02d:%02d", clamped.hour, clamped.minute)
         } catch (e: Exception) {
             timeStr
         }

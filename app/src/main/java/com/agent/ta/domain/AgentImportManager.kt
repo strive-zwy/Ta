@@ -78,6 +78,8 @@ class AgentImportManager(private val context: Context) {
         seeds.forEach { seed ->
             val content = seed.trim()
             if (content.isBlank()) return@forEach
+            // 去重：避免重复导入同一 .agent.zip 导致记忆库出现重复 seed
+            if (memoryDao.countSeedByContent(content) > 0) return@forEach
             memoryDao.insert(
                 com.agent.ta.data.local.entity.MemoryEntity(
                     type = "shared",

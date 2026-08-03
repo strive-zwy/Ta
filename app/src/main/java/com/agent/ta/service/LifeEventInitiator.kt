@@ -8,6 +8,7 @@ import com.agent.ta.domain.ChatInteractor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalTime
@@ -87,13 +88,9 @@ class LifeEventInitiator(private val context: Context) {
         // 概率判定
         if (Random.nextFloat() > TRIGGER_PROBABILITY) {
             Log.d(TAG, "节点 $nodeType 概率未通过，跳过")
-            // 仍记录为已触发，避免短时间内反复判定
-            triggeredNodes[nodeType] = now
+            // 概率未通过不记录去重，允许午睡后起床等合理的二次发生
             return
         }
-
-        // 记录触发
-        triggeredNodes[nodeType] = now
 
         // 随机延迟后执行
         val delayMs = Random.nextLong(0, MAX_DELAY_MS)
@@ -103,7 +100,8 @@ class LifeEventInitiator(private val context: Context) {
             delay(delayMs)
 
             // 再次检查静音时段（延迟后可能进入静音时段）
-            val hour = LocalTime.now().hour
+            // 与作息表统一使用 Asia/Shanghai 时区
+            val hour = LocalTime.now(java.time.ZoneId.of("Asia/Shanghai")).hour
             if (hour >= SILENT_START || hour < SILENT_END) {
                 Log.d(TAG, "延迟后进入静音时段，取消发起")
                 return@launch
@@ -122,6 +120,8 @@ class LifeEventInitiator(private val context: Context) {
                 AgentEngine.ensureTodayScheduleFresh(context)
                 val interactor = ChatInteractor(context)
                 interactor.agentInitiate()
+                // 真正成功触发后才记录 24h 去重（概率未通过/发起失败均不记录）
+                triggeredNodes[nodeType] = now
                 Log.d(TAG, "节点 $nodeType 主动消息已发起")
             } catch (e: Exception) {
                 Log.e(TAG, "节点 $nodeType 主动发起失败", e)
@@ -142,15 +142,24 @@ class LifeEventInitiator(private val context: Context) {
         newSlot: DailySlot
     ): NodeType? {
         val prevWasUnavailable = prevSlot?.state == "unavailable" || prevSlot?.state == "sleep"
+        // Phase 1 分级睡眠：浅睡视为"已醒"，不触发 WAKE_UP
+        val prevWasLightSleep = prevSlot?.state == "light_sleep" ||
+            (prevSlot?.state == "unavailable" && prevSlot?.sleepDepth == "light")
         val newIsUnavailable = newState == AgentState.UNAVAILABLE
 
-        // 起床：从 unavailable 切换到非 unavailable
-        if (prevWasUnavailable && !newIsUnavailable) {
+        // 深睡 → 浅睡（惊醒）：不触发任何节点
+        if (prevSlot?.state == "unavailable" && prevSlot?.sleepDepth == "deep" &&
+            newState == AgentState.LIGHT_SLEEP) {
+            return null
+        }
+
+        // 起床：从 unavailable 切换到非 unavailable（排除浅睡，浅睡视为已醒）
+        if (prevWasUnavailable && !prevWasLightSleep && !newIsUnavailable) {
             return NodeType.WAKE_UP
         }
 
-        // 睡觉：从非 unavailable 切换到 unavailable
-        if (!prevWasUnavailable && newIsUnavailable) {
+        // 睡觉：从非 unavailable 切换到 unavailable（排除从浅睡切入，浅睡已算睡着）
+        if (!prevWasUnavailable && !prevWasLightSleep && newIsUnavailable) {
             // 区分睡觉和洗澡
             val activity = newSlot.activity
             return if (containsAny(activity, "洗澡", "泡澡", "淋浴")) {
@@ -200,6 +209,13 @@ class LifeEventInitiator(private val context: Context) {
      */
     private fun containsAny(text: String, vararg keywords: String): Boolean {
         return keywords.any { text.contains(it) }
+    }
+
+    /**
+     * 停止所有延迟中的协程（Service 销毁时调用，避免延迟协程仍执行 agentInitiate）
+     */
+    fun stop() {
+        scope.cancel()
     }
 
     /**

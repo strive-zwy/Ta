@@ -26,9 +26,6 @@ class TimeContextObserver : Observer {
 
     private val timeContext = TimeContext.getInstance()
 
-    private var lastSlotStart: String = ""
-    private var lastDateString: String = ""
-
     override suspend fun collect(): ObserverSnapshot {
         val timestamp = timeContext.nowMillis()
         val now = timeContext.now()
@@ -71,9 +68,11 @@ class TimeContextObserver : Observer {
 
         val currentSlotStart = current.data["current_slot_start"] as? String ?: ""
         val currentDate = current.data["today_date"] as? String ?: ""
+        val prevSlotStart = previous.data["current_slot_start"] as? String ?: ""
+        val prevDate = previous.data["today_date"] as? String ?: ""
 
-        val slotChanged = currentSlotStart != lastSlotStart
-        val dayChanged = currentDate != lastDateString
+        val slotChanged = currentSlotStart != prevSlotStart
+        val dayChanged = currentDate != prevDate
 
         return slotChanged || dayChanged
     }

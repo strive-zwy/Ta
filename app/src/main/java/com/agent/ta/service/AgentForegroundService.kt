@@ -86,6 +86,7 @@ class AgentForegroundService : Service() {
                         AgentState.BUSY -> "$name 正在忙碌..."
                         AgentState.IDLE -> "$name 正在空闲..."
                         AgentState.UNAVAILABLE -> "$name 暂时无法回复..."
+                        AgentState.LIGHT_SLEEP -> "$name 睡梦中..."
                     }
                     val notification = notificationHelper.buildForegroundNotification(text)
                     val manager = getSystemService(NotificationManager::class.java)

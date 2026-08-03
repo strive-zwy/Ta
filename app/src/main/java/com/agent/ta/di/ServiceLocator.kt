@@ -3,7 +3,12 @@ package com.agent.ta.di
 import com.agent.ta.TaApplication
 import com.agent.ta.data.local.dao.AgentConfigDao
 import com.agent.ta.data.local.dao.ChatMessageDao
+import com.agent.ta.data.local.dao.CommitmentDao
+import com.agent.ta.data.local.dao.EmotionalStateDao
+import com.agent.ta.data.local.dao.MilestoneEventDao
+import com.agent.ta.data.local.dao.RelationshipStateDao
 import com.agent.ta.data.local.dao.DailyScheduleDao
+import com.agent.ta.data.local.dao.DailyStateDao
 import com.agent.ta.data.local.dao.FutureEventDao
 import com.agent.ta.data.local.dao.MemoryDao
 import com.agent.ta.data.local.dao.OnboardingStateDao
@@ -21,8 +26,10 @@ import com.agent.ta.domain.tool.builtin.WebSearchTool
 import com.agent.ta.domain.tool.builtin.TodoTool
 import com.agent.ta.domain.tool.builtin.MemoryTool
 import com.agent.ta.domain.tool.builtin.SetActivityTool
+import com.agent.ta.domain.tool.builtin.CreateCommitmentTool
 import com.agent.ta.infrastructure.heartbeat.Heartbeat
 import com.agent.ta.infrastructure.observer.ActivityAnchorObserver
+import com.agent.ta.infrastructure.observer.CommitmentObserver
 import com.agent.ta.infrastructure.observer.ObserverRegistry
 import com.agent.ta.infrastructure.observer.RecentConversationObserver
 import com.agent.ta.infrastructure.observer.TimeContextObserver
@@ -43,7 +50,10 @@ import com.agent.ta.cognitive.thinkact.ThinkActDecider
 object ServiceLocator {
 
     private val app: TaApplication
-        get() = TaApplication.instance
+        get() = TaApplication.instance ?: throw IllegalStateException(
+            "ServiceLocator accessed before TaApplication.onCreate. " +
+                "If this is a ContentProvider, use lazy initialization or move access to Application.onCreate."
+        )
 
     /** 应用级协程作用域，不绑定 Compose composition 生命周期 */
     val appScope: kotlinx.coroutines.CoroutineScope
@@ -71,6 +81,21 @@ object ServiceLocator {
 
     val futureEventDao: FutureEventDao
         get() = database.futureEventDao()
+
+    val dailyStateDao: DailyStateDao
+        get() = database.dailyStateDao()
+
+    val commitmentDao: CommitmentDao
+        get() = database.commitmentDao()
+
+    val relationshipStateDao: RelationshipStateDao
+        get() = database.relationshipStateDao()
+
+    val milestoneEventDao: MilestoneEventDao
+        get() = database.milestoneEventDao()
+
+    val emotionalStateDao: EmotionalStateDao
+        get() = database.emotionalStateDao()
 
     val userPreferences: UserPreferences by lazy {
         UserPreferences(app)
@@ -108,6 +133,7 @@ object ServiceLocator {
      * - ActivityAnchorObserver: 监控活动锚点过期/变化
      * - TimeContextObserver: 监控时段切换/跨天
      * - RecentConversationObserver: 监控用户长时间未响应
+     * - CommitmentObserver: 监控到期承诺（AlarmManager 兜底）
      *
      * 使用方式：
      * - 主回复路径: registry.collectAll() 获取完整快照注入 Prompt
@@ -140,6 +166,7 @@ object ServiceLocator {
         observerRegistry.register(ActivityAnchorObserver())
         observerRegistry.register(TimeContextObserver())
         observerRegistry.register(RecentConversationObserver())
+        observerRegistry.register(CommitmentObserver())
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -194,6 +221,7 @@ object ServiceLocator {
      * - manage_todo：待办事项管理（add/list/complete，影响作息安排）
      * - query_memory：记忆查询（让 LLM 主动检索历史记忆）
      * - set_activity：设置当前活动（LLM 显式声明活动锚点，解决前后回复矛盾）
+     * - create_commitment：创建承诺/约定/提醒（appointment/promise/reminder，AlarmManager 调度）
      *
      * 自定义工具通过 .skill.zip 导入后动态注册（阶段 7 实现）
      */
@@ -205,6 +233,7 @@ object ServiceLocator {
             register(TodoTool())
             register(MemoryTool())
             register(SetActivityTool())
+            register(CreateCommitmentTool())
         }
     }
 }

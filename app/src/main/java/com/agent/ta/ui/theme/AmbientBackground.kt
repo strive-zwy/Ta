@@ -227,11 +227,18 @@ private fun AgentState.toPalette(): MistyLakePalette {
             vignetteColor = Color(0xFF1B5E5C)
         )
         AgentState.UNAVAILABLE -> MistyLakePalette(
-            baseColor = Color(0xFF0E1820),           // 深夜湖（休息）
+            baseColor = Color(0xFF0E1820),           // 深夜湖（深睡）
             blob1Color = Color(0xFF1B3A5C),          // 深蓝月光
             blob2Color = Color(0xFF2A1B5C),          // 深紫夜
             blob3Color = Color(0xFF1B5E5C),          // 雾湖青
             vignetteColor = Color(0xFF000000)
+        )
+        AgentState.LIGHT_SLEEP -> MistyLakePalette(
+            baseColor = Color(0xFF1A2230),           // 浅夜湖（浅睡惊醒）
+            blob1Color = Color(0xFF2A4A6C),          // 月光蓝
+            blob2Color = Color(0xFF3A2B6C),          // 暖紫
+            blob3Color = Color(0xFF2B6E5C),          // 雾湖青
+            vignetteColor = Color(0xFF0A0E14)
         )
     }
 }

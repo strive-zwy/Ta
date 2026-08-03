@@ -25,10 +25,6 @@ class ActivityAnchorObserver : Observer {
 
     override val id: String = "activity_anchor"
 
-    private var lastActivity: String = ""
-    private var lastProgressStage: String = ""
-    private var lastSource: String = ""
-
     override suspend fun collect(): ObserverSnapshot {
         val anchor = AgentEngine.getCurrentActivityAnchor()
         val timestamp = System.currentTimeMillis()
@@ -76,14 +72,17 @@ class ActivityAnchorObserver : Observer {
         val currentActivity = current.data["activity"] as? String ?: ""
         val currentProgress = current.data["progress"] as? String ?: ""
         val currentSource = current.data["source"] as? String ?: ""
+        val prevActivity = previous.data["activity"] as? String ?: ""
+        val prevProgress = previous.data["progress"] as? String ?: ""
+        val prevSource = previous.data["source"] as? String ?: ""
 
         // 进度阶段变化（刚开始 → 进行中 → 快结束 → 已超时）
         val currentStage = extractProgressStage(currentProgress)
-        val previousStage = extractProgressStage(lastProgressStage)
+        val previousStage = extractProgressStage(prevProgress)
 
-        val activityChanged = currentActivity != lastActivity
+        val activityChanged = currentActivity != prevActivity
         val stageChanged = currentStage != previousStage
-        val sourceChanged = currentSource != lastSource
+        val sourceChanged = currentSource != prevSource
 
         return activityChanged || stageChanged || sourceChanged
     }

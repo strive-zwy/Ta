@@ -1,6 +1,7 @@
 package com.agent.ta.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -14,8 +15,13 @@ import androidx.room.PrimaryKey
  * 用途：
  * - DailyPlanner 生成当天作息时，查询今天/近期的事件作为 prompt 参考
  * - 事件过期后自动清理
+ *
+ * 唯一索引 (date, description)：防止 LLM 多次提取同一事件导致重复记录
  */
-@Entity(tableName = "future_events")
+@Entity(
+    tableName = "future_events",
+    indices = [Index(value = ["date", "description"], unique = true)]
+)
 data class FutureEventEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,

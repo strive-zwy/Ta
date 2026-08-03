@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Onboarding 对话流程管理器
@@ -22,26 +24,31 @@ class OnboardingManager(private val context: Context) {
     private val onboardingDao = ServiceLocator.onboardingStateDao
     private val interactor = ChatInteractor(context)
 
+    /** Onboarding 状态读写锁，避免并发推进导致重复触发 */
+    private val stateMutex = Mutex()
+
     /**
      * 启动 Onboarding（配置完成后调用）
      */
     fun start() {
         scope.launch {
-            val state = onboardingDao.get()
-            if (state != null && state.phase == "completed") return@launch
+            stateMutex.withLock {
+                val state = onboardingDao.get()
+                if (state != null && state.phase == "completed") return@launch
 
-            // 标记开始
-            onboardingDao.upsert(
-                OnboardingStateEntity(
-                    phase = "in_progress",
-                    currentStep = 0,
-                    totalSteps = 4,
-                    startedAt = System.currentTimeMillis()
+                // 标记开始
+                onboardingDao.upsert(
+                    OnboardingStateEntity(
+                        phase = "in_progress",
+                        currentStep = 0,
+                        totalSteps = 4,
+                        startedAt = System.currentTimeMillis()
+                    )
                 )
-            )
 
-            // Agent 主动发起第一条消息（打招呼 + 问名字）
-            interactor.triggerOnboardingMessage()
+                // Agent 主动发起第一条消息（打招呼 + 问名字）
+                interactor.triggerOnboardingMessage()
+            }
         }
     }
 
@@ -50,17 +57,19 @@ class OnboardingManager(private val context: Context) {
      */
     fun onUserReplied() {
         scope.launch {
-            val state = onboardingDao.get() ?: return@launch
-            if (state.phase != "in_progress") return@launch
+            stateMutex.withLock {
+                val state = onboardingDao.get() ?: return@launch
+                if (state.phase != "in_progress") return@launch
 
-            val nextStep = state.currentStep + 1
-            if (nextStep >= state.totalSteps) {
-                // Onboarding 完成
-                onboardingDao.complete(System.currentTimeMillis())
-            } else {
-                onboardingDao.updateProgress("in_progress", nextStep)
-                // 触发下一轮 Agent 提问
-                interactor.triggerOnboardingMessage()
+                val nextStep = state.currentStep + 1
+                if (nextStep >= state.totalSteps) {
+                    // Onboarding 完成
+                    onboardingDao.complete(System.currentTimeMillis())
+                } else {
+                    onboardingDao.updateProgress("in_progress", nextStep)
+                    // 触发下一轮 Agent 提问
+                    interactor.triggerOnboardingMessage()
+                }
             }
         }
     }

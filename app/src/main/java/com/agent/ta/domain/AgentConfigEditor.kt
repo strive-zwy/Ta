@@ -6,6 +6,8 @@ import com.agent.ta.data.model.AgentConfig
 import com.agent.ta.di.ServiceLocator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 
 /**
@@ -27,6 +29,9 @@ class AgentConfigEditor {
         isLenient = true
         encodeDefaults = true
     }
+
+    /** update 序列化锁，避免并发读-改-写覆盖 */
+    private val updateMutex = Mutex()
 
     /** 读取当前配置（内存缓存，非阻塞） */
     fun get(): AgentConfig = ServiceLocator.agentConfigProvider.get()
@@ -65,9 +70,11 @@ class AgentConfigEditor {
      * @param transform 接收当前配置，返回修改后的配置
      */
     suspend fun update(transform: (AgentConfig) -> AgentConfig) {
-        val current = get()
-        val updated = transform(current)
-        save(updated)
+        updateMutex.withLock {
+            val current = get()
+            val updated = transform(current)
+            save(updated)
+        }
     }
 
     companion object {

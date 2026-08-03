@@ -8,6 +8,9 @@ import com.agent.ta.di.ServiceLocator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.put
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -77,6 +80,93 @@ class AgentConfigExporter {
                             zos.closeEntry()
                         }
                     }
+                }
+
+                // Phase 2 关系系统：写入关系快照 relationship.json
+                try {
+                    val relationshipState = ServiceLocator.relationshipStateDao.get()
+                    val recentMilestones = ServiceLocator.milestoneEventDao.getRecent(50)
+                    val relationshipSnapshot = buildJsonObject {
+                        if (relationshipState != null) {
+                            put("state", buildJsonObject {
+                                put("currentStage", relationshipState.currentStage)
+                                put("intimacyScore", relationshipState.intimacyScore)
+                                put("trustScore", relationshipState.trustScore)
+                                put("interactionCount", relationshipState.interactionCount)
+                                put("lastInteractionAt", relationshipState.lastInteractionAt)
+                            })
+                        }
+                        put("milestones", buildJsonArray {
+                            recentMilestones.forEach { m ->
+                                add(buildJsonObject {
+                                    put("type", m.type)
+                                    put("title", m.title)
+                                    put("triggeredAt", m.triggeredAt)
+                                    put("triggerSource", m.triggerSource)
+                                })
+                            }
+                        })
+                    }.toString()
+                    zos.putNextEntry(ZipEntry("relationship.json"))
+                    zos.write(relationshipSnapshot.toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
+                } catch (e: Exception) {
+                    Log.w(TAG, "导出关系快照失败（不影响主流程）", e)
+                }
+
+                // 写入 memory.json — 习得记忆 top 50（排除 source="seed" 的初始记忆）
+                try {
+                    val allMemories = ServiceLocator.memoryDao.getByMinImportance(0)
+                    val topMemories = allMemories
+                        .filter { it.source != "seed" }
+                        .sortedWith(
+                            compareByDescending<com.agent.ta.data.local.entity.MemoryEntity> { it.importance }
+                                .thenByDescending { it.createdAt }
+                        )
+                        .take(50)
+                    val memorySnapshot = buildJsonObject {
+                        put("topMemories", buildJsonArray {
+                            topMemories.forEach { m ->
+                                add(buildJsonObject {
+                                    put("type", m.type)
+                                    put("category", m.category)
+                                    put("content", m.content)
+                                    put("importance", m.importance)
+                                })
+                            }
+                        })
+                        put("exportedAt", System.currentTimeMillis())
+                    }.toString()
+                    zos.putNextEntry(ZipEntry("memory.json"))
+                    zos.write(memorySnapshot.toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
+                } catch (e: Exception) {
+                    Log.w(TAG, "导出习得记忆失败（不影响主流程）", e)
+                }
+
+                // 写入 recent_chats.json — 近期对话 top 100（仅导出 text 非空的消息，不含 audio_path）
+                try {
+                    val allMessages = ServiceLocator.chatMessageDao.getAll()
+                    val recentChats = allMessages
+                        .filter { !it.text.isNullOrBlank() }
+                        .takeLast(100)
+                    val recentChatsSnapshot = buildJsonObject {
+                        put("recentChats", buildJsonArray {
+                            recentChats.forEach { msg ->
+                                add(buildJsonObject {
+                                    put("direction", msg.direction)
+                                    put("text", msg.text)
+                                    put("createdAt", msg.createdAt)
+                                })
+                            }
+                        })
+                        put("exportedAt", System.currentTimeMillis())
+                    }.toString()
+                    zos.putNextEntry(ZipEntry("recent_chats.json"))
+                    zos.write(recentChatsSnapshot.toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
+                } catch (e: Exception) {
+                    Log.w(TAG, "导出近期对话失败（不影响主流程）", e)
                 }
             }
         } ?: throw IllegalStateException("无法打开输出流")

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,8 +37,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -162,6 +165,7 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
     Box(modifier = Modifier
         .fillMaxSize()
         .background(MaterialTheme.colorScheme.background)
+        .imePadding()  // 键盘弹出时整体上移，避免底部输入框被遮挡
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
         // ===== 1. 顶部返回栏（固定，不随页面滑动）=====
@@ -662,6 +666,20 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
                     llmModel = ""
                 }
                 showLlmAddDialog = false
+            },
+            onApplyPreset = { preset ->
+                val entry = ModelEntry(
+                    id = System.currentTimeMillis().toString(16) + (0..0xFFFF).random().toString(16),
+                    name = preset.name,
+                    baseUrl = preset.baseUrl,
+                    model = preset.model
+                )
+                llmModels.add(entry)
+                llmActiveId = entry.id
+                llmBaseUrl = preset.baseUrl
+                llmApiKey = ""   // 用户只需填 API Key
+                llmModel = preset.model
+                showLlmAddDialog = false
             }
         )
     }
@@ -838,13 +856,41 @@ private fun ModelPickerDialog(
 }
 
 /**
- * 添加模型对话框：输入模型名称后创建空配置的新模型
+ * LLM 预设提供商
+ *
+ * 用户点击预设后自动填充 baseUrl/model/name，只需填 API Key
+ */
+private data class LlmPreset(
+    val name: String,
+    val baseUrl: String,
+    val model: String,
+    val desc: String
+)
+
+private val LLM_PRESETS = listOf(
+    LlmPreset(
+        name = "日日新",
+        baseUrl = "https://token.sensenova.cn/v1",
+        model = "deepseek-v4-flash",
+        desc = "商汤日日新 · deepseek-v4-flash"
+    ),
+    LlmPreset(
+        name = "DeepSeek",
+        baseUrl = "https://api.deepseek.com/v1",
+        model = "deepseek-v4-flash",
+        desc = "DeepSeek 官方 · deepseek-v4-flash"
+    )
+)
+
+/**
+ * 添加模型对话框：支持预设提供商快捷创建（只需填 API Key）或自定义命名
  */
 @Composable
 private fun AddModelDialog(
     title: String,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: (String) -> Unit,
+    onApplyPreset: (LlmPreset) -> Unit = {}
 ) {
     var name by remember { mutableStateOf("") }
     AlertDialog(
@@ -852,8 +898,64 @@ private fun AddModelDialog(
         title = { Text(title, fontWeight = FontWeight.SemiBold) },
         text = {
             Column {
+                // ===== 预设提供商快捷区 =====
                 Text(
-                    text = "为这个模型起一个易记的名字（如 DeepSeek / Grok / MiMo）",
+                    text = "快速预设（只需填 API Key）",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                LLM_PRESETS.forEach { preset ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onApplyPreset(preset) }
+                            .padding(vertical = 10.dp, horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = preset.name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = preset.desc,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = "选择",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                // ===== 自定义命名区 =====
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "或自定义命名（需手动填写全部配置）",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -862,7 +964,7 @@ private fun AddModelDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = "模型名称",
-                    placeholder = "如：DeepSeek",
+                    placeholder = "如：Grok",
                     singleLine = true
                 )
             }

@@ -51,6 +51,7 @@ class BoredInitiator(private val context: Context) {
     private val thinkActDecider = ServiceLocator.thinkActDecider
     private val chatDao = ServiceLocator.chatMessageDao
     private val configProvider = ServiceLocator.agentConfigProvider
+    private val emotionalService = com.agent.ta.domain.EmotionalService()
 
     /** 最近失败尝试记录（时间戳列表，1 小时窗口）
      *  用于 Think 阶段的 prior_attempts 参数，避免在用户长时间不响应时反复调 LLM */
@@ -122,32 +123,54 @@ class BoredInitiator(private val context: Context) {
         if (!enabled || probability <= 0f) return
 
         // ════ 预筛选层 ════
-        // 1. 静音时段检查
-        val hour = java.time.LocalTime.now().hour
+        // 1. 静音时段检查（与作息表统一使用 Asia/Shanghai 时区）
+        val hour = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Shanghai")).hour
         if (hour >= SILENT_START || hour < SILENT_END) {
             Log.d(TAG, "静音时段，跳过")
             return
         }
 
-        // 2. 冷却检查（固定 30 分钟）
-        val recentCount = chatDao.countOutboundSince(
-            System.currentTimeMillis() - COOLDOWN_MS
-        )
-        if (recentCount > 0) {
-            Log.d(TAG, "距上次主动发起不足 30 分钟，跳过")
+        // 2. Phase 3 情感势能门控
+        //    - 势能 < 20：心里没事不想说，拦截
+        //    - 势能 >= 80：情绪上头，绕过冷却
+        //    - 势能 20~79：正常放行，仍走冷却检查
+        val emotionalState = try {
+            emotionalService.getCurrentState()
+        } catch (e: Exception) {
+            Log.w(TAG, "读取情绪状态失败，按放行处理", e)
+            null
+        }
+        val energy = emotionalState?.potentialEnergy ?: 0
+        val bypassCooldown = energy >= com.agent.ta.domain.EmotionalService.POTENTIAL_THRESHOLD_HIGH
+        if (energy < com.agent.ta.domain.EmotionalService.POTENTIAL_THRESHOLD_LOW) {
+            Log.d(TAG, "势能 $energy < ${com.agent.ta.domain.EmotionalService.POTENTIAL_THRESHOLD_LOW}，心里没事不想说，跳过")
             return
         }
+        if (bypassCooldown) {
+            Log.d(TAG, "势能 $energy >= ${com.agent.ta.domain.EmotionalService.POTENTIAL_THRESHOLD_HIGH}，绕过冷却")
+        }
 
-        // 3. 概率判定
+        // 3. 冷却检查（固定 30 分钟）—— 势能 >= 80 时绕过
+        if (!bypassCooldown) {
+            val recentCount = chatDao.countOutboundSince(
+                System.currentTimeMillis() - COOLDOWN_MS
+            )
+            if (recentCount > 0) {
+                Log.d(TAG, "距上次主动发起不足 30 分钟，跳过")
+                return
+            }
+        }
+
+        // 4. 概率判定
         if (Random.nextFloat() > probability) {
             Log.d(TAG, "概率判定未通过（p=$probability），跳过")
             return
         }
 
-        // 4. 清理过期失败记录
+        // 5. 清理过期失败记录
         pruneExpiredFailures()
 
-        // 5. 失败次数预检查（避免无谓调 LLM）
+        // 6. 失败次数预检查（避免无谓调 LLM）
         if (recentFailures.size >= MAX_RECENT_FAILURES) {
             Log.d(TAG, "最近失败 ${recentFailures.size} 次，跳过 LLM Think")
             return
@@ -189,6 +212,13 @@ class BoredInitiator(private val context: Context) {
         Log.d(TAG, "触发主动发起（state=${state.displayName}, topic=${thinkResult.topic}）")
         val interactor = ChatInteractor(context)
         interactor.agentInitiate(actResult.topicHint)
+
+        // Phase 3 情感势能：发起成功后消耗势能（情绪释放）
+        try {
+            emotionalService.consumeEnergy(com.agent.ta.domain.EmotionalService.CONSUME_ON_INITIATE)
+        } catch (e: Exception) {
+            Log.w(TAG, "消耗势能失败（不影响主流程）", e)
+        }
 
         // 成功发起，清理失败记录
         recentFailures.clear()

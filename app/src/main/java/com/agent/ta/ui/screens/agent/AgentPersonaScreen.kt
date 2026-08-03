@@ -45,6 +45,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.agent.ta.data.model.AgentIdentity
 import com.agent.ta.data.model.ExampleDialogue
 import com.agent.ta.data.model.Persona
 import com.agent.ta.di.ServiceLocator
@@ -97,6 +98,7 @@ private val SENTENCE_LENGTH_OPTIONS = listOf(
 fun AgentPersonaScreen(onBack: () -> Unit) {
     val editor = ServiceLocator.agentConfigEditor
     val persona = remember { editor.get().agent.persona }
+    var identity by remember { mutableStateOf(editor.get().identity) }
 
     // 性格标签
     val personality = remember { persona.personality.toMutableStateList() }
@@ -156,6 +158,17 @@ fun AgentPersonaScreen(onBack: () -> Unit) {
                     .padding(horizontal = 16.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // ===== 卡片0：身份内核（设定驱动架构） =====
+                ConfigCard(
+                    title = "身份内核",
+                    description = "设定驱动架构：身份内核影响所有决策和表达"
+                ) {
+                    IdentityEditCard(
+                        identity = identity,
+                        onIdentityChange = { identity = it }
+                    )
+                }
+
                 // ===== 卡片1：性格与口头禅 =====
                 ConfigCard(title = "性格与口头禅") {
                     SectionLabel("性格标签")
@@ -426,7 +439,10 @@ fun AgentPersonaScreen(onBack: () -> Unit) {
                 )
                 scope.launch {
                     editor.update { config ->
-                        config.copy(agent = config.agent.copy(persona = newPersona))
+                        config.copy(
+                            agent = config.agent.copy(persona = newPersona),
+                            identity = identity
+                        )
                     }
                     justSaved = true
                     delay(1000)

@@ -23,6 +23,7 @@ import com.agent.ta.ui.screens.agent.AgentPersonaScreen
 import com.agent.ta.ui.screens.agent.AgentAvatarScreen
 import com.agent.ta.ui.screens.agent.AgentVoiceScreen
 import com.agent.ta.ui.screens.agent.AgentBehaviorScreen
+import com.agent.ta.ui.screens.agent.CelebrityClonerScreen
 
 /**
  * TaNavHost — M3 Expressive 风格升级
@@ -110,7 +111,7 @@ fun TaNavHost(navController: NavHostController) {
                 onBack = { navController.popBackStack() }
             )
         }
-        // ===== Agent 配置页（从设置页 → Agent 配置入口 → 5 个子页面）=====
+        // ===== Agent 配置页（从设置页 → Agent 配置入口 → 5 个子页面 + 克隆）=====
         composable(Routes.AGENT_CONFIG) {
             AgentConfigScreen(
                 onBack = { navController.popBackStack() },
@@ -118,7 +119,8 @@ fun TaNavHost(navController: NavHostController) {
                 onPersona = { navController.navigate(Routes.AGENT_PERSONA) },
                 onAvatar = { navController.navigate(Routes.AGENT_AVATAR) },
                 onVoice = { navController.navigate(Routes.AGENT_VOICE) },
-                onBehavior = { navController.navigate(Routes.AGENT_BEHAVIOR) }
+                onBehavior = { navController.navigate(Routes.AGENT_BEHAVIOR) },
+                onClone = { navController.navigate(Routes.AGENT_CLONE) }
             )
         }
         composable(Routes.AGENT_BASIC) {
@@ -135,6 +137,9 @@ fun TaNavHost(navController: NavHostController) {
         }
         composable(Routes.AGENT_BEHAVIOR) {
             AgentBehaviorScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.AGENT_CLONE) {
+            CelebrityClonerScreen(onBack = { navController.popBackStack() })
         }
     }
 }

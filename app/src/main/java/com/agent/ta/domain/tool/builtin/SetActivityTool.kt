@@ -54,6 +54,10 @@ class SetActivityTool : AgentTool {
             "durationMinutes" to JsonObject(mapOf(
                 "type" to JsonPrimitive("integer"),
                 "description" to JsonPrimitive("预计持续时长（分钟），到期后自动回退到作息表派生。范围 5-480")
+            )),
+            "replyable" to JsonObject(mapOf(
+                "type" to JsonPrimitive("boolean"),
+                "description" to JsonPrimitive("当前活动是否腾得出手回复消息。打球/健身/洗澡/做饭/开车等需要双手或全神贯注的活动设为 false；刷手机/看电视/写代码等可随时看手机的活动设为 true。不传则系统根据活动内容自动判断")
             ))
         )),
         "required" to JsonArray(listOf(JsonPrimitive("activity"), JsonPrimitive("state"), JsonPrimitive("durationMinutes")))
@@ -75,15 +79,19 @@ class SetActivityTool : AgentTool {
             return ToolResult.Error("durationMinutes 应在 5-480 范围内，当前：$durationMinutes")
         }
 
-        val anchorManager: ActivityAnchorManager = ServiceLocator.activityAnchorManager
-        val anchor = anchorManager.setActivityFromLlm(activity, state, durationMinutes)
+        val replyable = parseBooleanField(params, "replyable")
 
+        val anchorManager: ActivityAnchorManager = ServiceLocator.activityAnchorManager
+        val anchor = anchorManager.setActivityFromLlm(activity, state, durationMinutes, replyable)
+
+        val replyableHint = if (!anchor.replyable) "（此活动期间无法回复消息，用户消息会等活动结束后处理）" else ""
         return ToolResult.Success(
-            content = "已设置当前活动：${anchor.activity}（状态：${state.displayName}，持续 ${durationMinutes} 分钟）。后续回复会以此活动为准。",
+            content = "已设置当前活动：${anchor.activity}（状态：${state.displayName}，持续 ${durationMinutes} 分钟，可回复=${anchor.replyable}）$replyableHint。后续回复会以此活动为准。",
             metadata = mapOf(
                 "activity" to activity,
                 "state" to state.id,
-                "durationMinutes" to durationMinutes
+                "durationMinutes" to durationMinutes,
+                "replyable" to anchor.replyable
             )
         )
     }
@@ -101,6 +109,15 @@ class SetActivityTool : AgentTool {
         return try {
             val obj = json.parseToJsonElement(params) as? JsonObject ?: return null
             (obj[field] as? JsonPrimitive)?.content?.toIntOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun parseBooleanField(params: String, field: String): Boolean? {
+        return try {
+            val obj = json.parseToJsonElement(params) as? JsonObject ?: return null
+            (obj[field] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
         } catch (e: Exception) {
             null
         }
