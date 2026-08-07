@@ -34,8 +34,22 @@ class AgentConfigProvider {
     val config: StateFlow<AgentConfig> = _config.asStateFlow()
 
     /**
-     * 从 DB 加载激活配置（若存在）到内存缓存
-     * App 启动 / 导入新配置后调用
+     * 当前已加载配置对应的 Agent 实例 ID（DB 主键）。
+     * - 已持久化的激活 Agent：对应 entity.id
+     * - 未持久化（仅内存默认 Agent）：null
+     *
+     * 所有需要写回数据的异步流程应优先使用 ActiveAgentManager.activeAgentId，
+     * 此处仅供 UI / 同步读取场景使用。
+     */
+    private val _agentId = MutableStateFlow<Long?>(null)
+    val agentId: StateFlow<Long?> = _agentId.asStateFlow()
+
+    /**
+     * 从 DB 加载激活配置（若存在）到内存缓存，同时刷新实例 ID。
+     * App 启动 / 导入新配置后调用。
+     *
+     * 注意：调用方应先通过 ActiveAgentManager.ensureDefaultAgentPersisted()
+     * 确保已有持久化的激活记录，避免长期停留在「仅内存默认 Agent」状态。
      */
     suspend fun reload() = withContext(Dispatchers.IO) {
         try {
@@ -43,14 +57,17 @@ class AgentConfigProvider {
             if (entity != null) {
                 val parsed = json.decodeFromString<AgentConfig>(entity.configJson)
                 _config.value = parsed
-                Log.d(TAG, "已加载自定义 Agent 配置：${parsed.agent.name}")
+                _agentId.value = entity.id
+                Log.d(TAG, "已加载自定义 Agent 配置：${parsed.agent.name}（id=${entity.id}）")
             } else {
                 _config.value = DefaultAgent.create()
-                Log.d(TAG, "未发现自定义配置，使用默认 Agent")
+                _agentId.value = null
+                Log.w(TAG, "未发现激活配置，临时使用内存默认 Agent（agentId=null）")
             }
         } catch (e: Exception) {
             Log.e(TAG, "加载自定义配置失败，回退默认 Agent", e)
             _config.value = DefaultAgent.create()
+            _agentId.value = null
         }
     }
 
@@ -58,6 +75,11 @@ class AgentConfigProvider {
      * 同步取当前配置（内存缓存，不会阻塞）
      */
     fun get(): AgentConfig = _config.value
+
+    /**
+     * 同步取当前已加载配置的 Agent 实例 ID（未持久化时为 null）
+     */
+    fun getAgentId(): Long? = _agentId.value
 
     companion object {
         private const val TAG = "AgentConfigProvider"

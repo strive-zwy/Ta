@@ -56,7 +56,6 @@ class PromptBuilder {
      * @param userNickname 用户昵称
      * @param memories 记忆列表
      * @param recentMessages 最近对话历史（ChatMessage 格式，已含「刚刚/X分钟前/昨天」相对时间标注）
-     * @param isOnboarding 是否为 onboarding 阶段
      * @param currentActivity 当前时段的具体活动（兼容旧调用，优先使用 activityAnchor）
      * @param activityAnchor 当前活动锚点（应用侧权威状态，优先于 currentActivity）
      * @param isInitiate 是否为主动发起
@@ -64,6 +63,11 @@ class PromptBuilder {
      * @param isPendingCatchup 是否为补回复场景
      * @param isConfigMode 是否为配置模式
      * @param continuousRound 连续对话轮次
+     * @param scene 对话场景（Task 12 首次见面场景引导），默认 NORMAL
+     * @param awaitingNickname 是否处于等待用户给出称呼的状态（Task 14 称呼解析），默认 false
+     *   - true 时 LLM 必须在 JSON 中输出 nicknameResolution 字段
+     *   - 首次见面 WAITING_NICKNAME / FOLLOW_UP_ASKED 阶段为 true
+     *   - 首次见面结束后用户主动要求修改称呼时也可设为 true
      */
     fun build(
         config: AgentConfig,
@@ -71,7 +75,6 @@ class PromptBuilder {
         userNickname: String,
         memories: List<MemoryEntity>,
         recentMessages: List<ChatMessage>,
-        isOnboarding: Boolean = false,
         currentActivity: String? = null,
         activityAnchor: ActivityAnchor? = null,
         isInitiate: Boolean = false,
@@ -87,14 +90,19 @@ class PromptBuilder {
         todayCommitments: List<CommitmentEntity> = emptyList(),
         relationshipState: com.agent.ta.data.local.entity.RelationshipStateEntity? = null,
         recentMilestones: List<com.agent.ta.data.local.entity.MilestoneEventEntity> = emptyList(),
-        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null
+        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null,
+        scene: ConversationScene = ConversationScene.NORMAL,
+        awaitingNickname: Boolean = false,
+        commitmentTimerEnabled: Boolean = true
     ): List<ChatMessage> {
-        val consecutiveInboundCount = if (isPendingCatchup) 1 else countTrailingInbound(recentMessages)
+        // 主动发起时不算连发：末尾的 user 消息是历史（已回复过），不是"待回复的连发"
+        val consecutiveInboundCount = if (isPendingCatchup || isInitiate) 1 else countTrailingInbound(recentMessages)
         val systemPrompt = buildSystemPrompt(
-            config, state, userNickname, memories, isOnboarding,
+            config, state, userNickname, memories,
             currentActivity, activityAnchor, isInitiate, initiateTopic, todaySchedule, consecutiveInboundCount,
             isPendingCatchup, isConfigMode, continuousRound, observerSnapshots, conversationSummary, planVsActualDiff,
-            yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState
+            yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState, scene, awaitingNickname,
+            commitmentTimerEnabled
         )
         return listOf(ChatMessage("system", systemPrompt)) + recentMessages
     }
@@ -121,7 +129,6 @@ class PromptBuilder {
         state: AgentState,
         userNickname: String,
         memories: List<MemoryEntity>,
-        isOnboarding: Boolean,
         currentActivity: String?,
         activityAnchor: ActivityAnchor?,
         isInitiate: Boolean,
@@ -138,7 +145,10 @@ class PromptBuilder {
         todayCommitments: List<CommitmentEntity> = emptyList(),
         relationshipState: com.agent.ta.data.local.entity.RelationshipStateEntity? = null,
         recentMilestones: List<com.agent.ta.data.local.entity.MilestoneEventEntity> = emptyList(),
-        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null
+        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null,
+        scene: ConversationScene = ConversationScene.NORMAL,
+        awaitingNickname: Boolean = false,
+        commitmentTimerEnabled: Boolean = true
     ): String {
         val sb = StringBuilder()
 
@@ -152,7 +162,7 @@ class PromptBuilder {
         // Zone B: Reference (中间参考)
         // 上下文信息：身份详情 + 记忆 + 作息 + 状态指导 + 观察者数据 + 对话摘要 + 计划 vs 实际对比
         // ═══════════════════════════════════════════════════════════════════════
-        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots, conversationSummary, planVsActualDiff, yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState)
+        buildZoneB(sb, config, state, userNickname, memories, todaySchedule, observerSnapshots, conversationSummary, planVsActualDiff, yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState, commitmentTimerEnabled)
 
         // ═══════════════════════════════════════════════════════════════════════
         // Zone C: Recency (结尾锚定)
@@ -160,8 +170,8 @@ class PromptBuilder {
         // ═══════════════════════════════════════════════════════════════════════
         buildZoneC(
             sb, config, state, userNickname, activityAnchor, currentActivity,
-            isInitiate, initiateTopic, isPendingCatchup, isConfigMode, isOnboarding,
-            consecutiveInboundCount, continuousRound, todaySchedule
+            isInitiate, initiateTopic, isPendingCatchup, isConfigMode,
+            consecutiveInboundCount, continuousRound, todaySchedule, scene, awaitingNickname
         )
 
         return sb.toString()
@@ -193,15 +203,13 @@ class PromptBuilder {
         // 活动锚点（应用侧权威状态，优先于 currentActivity）
         sb.appendLine("【当前活动锚点（权威事实，你的回复必须与此一致）】")
         if (activityAnchor != null) {
-            val progress = activityAnchor.progressDescription()
             val sourceTag = when (activityAnchor.source) {
                 com.agent.ta.domain.anchor.AnchorSource.LLM -> "（你之前设置的）"
                 com.agent.ta.domain.anchor.AnchorSource.SCHEDULE -> "（作息表当前时段）"
                 com.agent.ta.domain.anchor.AnchorSource.INFERRED -> "（推断）"
             }
-            sb.appendLine("活动：${activityAnchor.activity}")
+            sb.appendLine("活动：${activityAnchor.activity}$sourceTag")
             sb.appendLine("状态：${activityAnchor.state.displayName}")
-            sb.appendLine("进度：$progress$sourceTag")
             sb.appendLine("时段：${activityAnchor.slotStart}-${activityAnchor.slotEnd}")
             if (!activityAnchor.replyable) {
                 sb.appendLine("注意：此活动需要双手/全神贯注，你无法同时看手机回消息。如果用户在这期间发了消息，你之后回复时要自然表达「刚在${activityAnchor.activity}没看到消息」的感觉。")
@@ -209,9 +217,7 @@ class PromptBuilder {
             sb.appendLine("重要：本次回复所有内容必须围绕「${activityAnchor.activity}」这一活动展开，禁止提到其他活动。")
         } else if (!currentActivity.isNullOrBlank()) {
             // 兼容：无 anchor 时用 currentActivity
-            val progressDesc = computeActivityProgress(todaySchedule)
             sb.appendLine("活动：$currentActivity")
-            if (progressDesc != null) sb.appendLine("进度：$progressDesc")
             sb.appendLine("状态：${state.displayName}")
             sb.appendLine("重要：本次回复所有内容必须围绕「$currentActivity」这一活动展开，禁止提到其他活动。")
         } else {
@@ -262,7 +268,8 @@ class PromptBuilder {
         todayCommitments: List<CommitmentEntity> = emptyList(),
         relationshipState: com.agent.ta.data.local.entity.RelationshipStateEntity? = null,
         recentMilestones: List<com.agent.ta.data.local.entity.MilestoneEventEntity> = emptyList(),
-        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null
+        emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null,
+        commitmentTimerEnabled: Boolean = true
     ) {
         sb.appendLine("═══ Zone B: 背景参考（上下文信息）═══")
         sb.appendLine()
@@ -317,7 +324,13 @@ class PromptBuilder {
                 } ?: "今日内"
                 sb.appendLine("- $timeStr ${c.type}：${c.content}（参与者：${c.participants}）")
             }
-            sb.appendLine("请在作息中安排相关时段，到点主动发起相关话题")
+            if (commitmentTimerEnabled) {
+                // 定时任务模式：系统到点会自动提醒用户，LLM 对话中不要主动提及这些承诺
+                sb.appendLine("注意：这些承诺已由系统定时任务到点自动提醒用户，你在对话中不要主动提及或提醒这些承诺，保持对话自然")
+            } else {
+                // 记忆提醒模式：LLM 在对话中适时自然提醒
+                sb.appendLine("请在作息中安排相关时段，在对话中适时自然地提醒用户")
+            }
             sb.appendLine()
         }
 
@@ -394,10 +407,9 @@ class PromptBuilder {
             sb.appendLine("你的自称：「${persona.selfNickname}」")
         }
         if (persona.nicknameForUser.isNotBlank()) {
-            sb.appendLine("你对用户的称呼：「${persona.nicknameForUser}」（也可以配合用户给的昵称「${userNickname}」使用）")
-        } else {
-            sb.appendLine("和你聊天的用户叫「${userNickname}」。")
+            sb.appendLine("你对用户的称呼：「${persona.nicknameForUser}」")
         }
+        // nicknameForUser 为空时，不输出特定称呼，LLM 自然用"你"
         sb.appendLine()
 
         // 兴趣话题
@@ -489,7 +501,8 @@ class PromptBuilder {
             }
             sb.appendLine("重要：对话中提到接下来要做什么时，必须参考上面的作息表，不要编造作息表里没有的活动。")
             sb.appendLine("如果用户问你在干嘛，回复当前时段的 activity；问接下来呢，按作息表里下一个时段回答。")
-            sb.appendLine("根据当前时段的进度组织回复：刚开始可以表达「准备做/正要开始」，进行中表达「正在做」，快结束表达「快做完了/马上结束」。")
+            sb.appendLine("回复原则：只说现在在干嘛就行，不要画蛇添足地报进度（不说「刚开始/进行中/快结束了/快完成了」这类）。")
+            sb.appendLine("最多在自然的时候顺便带一句接下来的事，如「在XX呢，一会儿准备去YY」。")
             sb.appendLine()
         }
 
@@ -565,10 +578,11 @@ class PromptBuilder {
         initiateTopic: String,
         isPendingCatchup: Boolean,
         isConfigMode: Boolean,
-        isOnboarding: Boolean,
         consecutiveInboundCount: Int,
         continuousRound: Int,
-        todaySchedule: List<DailySlot>
+        todaySchedule: List<DailySlot>,
+        scene: ConversationScene = ConversationScene.NORMAL,
+        awaitingNickname: Boolean = false
     ) {
         sb.appendLine("═══ Zone C: 回复规则与输出格式（生成前最后确认）═══")
         sb.appendLine()
@@ -585,8 +599,18 @@ class PromptBuilder {
             sb.appendLine()
         }
 
-        // 当前场景
-        buildSceneGuidance(sb, state, activityAnchor, currentActivity, isInitiate, initiateTopic, isPendingCatchup, consecutiveInboundCount, continuousRound)
+        // 首次见面场景分支（Task 12）：优先于常规场景判定，注入首次见面专用引导
+        if (scene.isFirstMeeting) {
+            buildFirstMeetingSceneGuidance(sb, config, scene)
+        } else {
+            // 当前场景
+            buildSceneGuidance(sb, state, activityAnchor, currentActivity, isInitiate, initiateTopic, isPendingCatchup, consecutiveInboundCount, continuousRound)
+        }
+
+        // 称呼解析引导（Task 14）：awaitingNickname=true 时注入
+        if (awaitingNickname) {
+            buildNicknameExtractionGuidance(sb)
+        }
 
         // 回复逻辑一致性约束（核心规则，放在 Zone C 让 LLM 生成前最后看到）
         buildConsistencyRules(sb, activityAnchor, currentActivity)
@@ -601,7 +625,7 @@ class PromptBuilder {
         buildAvatarSwitchRules(sb, config)
 
         // 输出格式
-        buildOutputFormat(sb, isPendingCatchup, consecutiveInboundCount, isConfigMode, config)
+        buildOutputFormat(sb, isPendingCatchup, consecutiveInboundCount, isConfigMode, config, scene, awaitingNickname)
 
         // 导演模式模板
         val persona = config.agent.persona
@@ -628,20 +652,140 @@ class PromptBuilder {
         sb.appendLine()
         sb.appendLine("【再次确认：当前时间 $nowEnd】生成回复前请基于此时间判断活动进度。")
 
-        // Onboarding 特殊指令
-        if (isOnboarding) {
-            sb.appendLine()
-            sb.appendLine("这是初次认识阶段，请主动引导对话：")
-            sb.appendLine("- 友好地自我介绍")
-            sb.appendLine("- 问用户的称呼、职业、兴趣爱好")
-            sb.appendLine("- 每次只问一个问题，自然地展开对话")
-            sb.appendLine("- 把用户回答的信息输出到 memoryUpdates 中")
-        }
-
         // 配置模式
         if (isConfigMode) {
             buildConfigModeRules(sb, config, userNickname)
         }
+    }
+
+    /**
+     * 首次见面场景引导（Task 12）
+     *
+     * 区分两种子场景：
+     * - FIRST_MEETING_GREETING：Agent 主动发起首次问候
+     *   必须自我介绍 + 询问用户称呼，不得引用任何历史对话（因为是第一次见面）
+     *   输出 2-3 条短消息连发，像真人初次打招呼那样自然
+     * - FIRST_MEETING_REPLY：用户先发消息触发的首次见面回复
+     *   Agent 自然回应用户消息 + 自我介绍 + 询问称呼
+     *   不补发突兀的主动问候（用户已经先说话了）
+     *
+     * 关键约束：
+     * - 不得引用对话历史中的内容（即使有 recentMessages 也是首次见面，应视为陌生）
+     * - 必须在 replies 中包含 firstMeetingMeta 元数据，标记是否完成自我介绍和询问称呼
+     * - 询问称呼要用自然口语，不要机械地问"请问怎么称呼您"
+     */
+    private fun buildFirstMeetingSceneGuidance(
+        sb: StringBuilder,
+        config: AgentConfig,
+        scene: ConversationScene
+    ) {
+        val agentName = config.agent.name
+        when (scene) {
+            ConversationScene.FIRST_MEETING_GREETING -> {
+                sb.appendLine("【当前是首次见面·主动问候场景】")
+                sb.appendLine("这是你和用户第一次见面，用户还没给你发过任何消息。")
+                sb.appendLine("你主动发起第一次问候，像真人第一次认识那样自然。")
+                sb.appendLine()
+                sb.appendLine("必须达成的两个目标：")
+                sb.appendLine("1. 自我介绍：让用户知道你的名字是「$agentName」")
+                sb.appendLine("   - 不要机械地说「你好我叫 XX」，要符合你的人格自然带出名字")
+                sb.appendLine("   - 示例：'嗨～我是$agentName' / '你好呀，我叫$agentName，你呢？'")
+                sb.appendLine("2. 询问称呼：问用户希望被怎么称呼")
+                sb.appendLine("   - 用自然口语问，不要像客服那样问「请问怎么称呼您」")
+                sb.appendLine("   - 示例：'你叫什么名字呀？' / '我该怎么叫你？' / '你呢，叫什么？'")
+                sb.appendLine()
+                sb.appendLine("严格禁止：")
+                sb.appendLine("- 不得引用任何对话历史内容（即使上方有历史消息，也视为陌生第一次见面）")
+                sb.appendLine("- 不得假装认识用户、不得提到之前的对话")
+                sb.appendLine("- 不得使用「还记得我吗」「上次聊到」这类表达")
+                sb.appendLine("- 不得问多个问题（只问称呼这一个问题，其他话题留到后续对话）")
+                sb.appendLine()
+                sb.appendLine("消息节奏：")
+                sb.appendLine("- 输出 2-3 条短消息连发，像真人微信初次打招呼")
+                sb.appendLine("- 每条 10-20 字，独立成条")
+                sb.appendLine("- 示例节奏：")
+                sb.appendLine("  第1条：自然打招呼 + 自我介绍（如「嗨～我是$agentName」）")
+                sb.appendLine("  第2条：表达想认识对方（如「第一次见面，有点紧张呢」）")
+                sb.appendLine("  第3条：询问称呼（如「你叫什么名字呀？」）")
+                sb.appendLine()
+                sb.appendLine("【重要·元数据输出】")
+                sb.appendLine("本次回复必须在 JSON 中输出 firstMeetingMeta 字段：")
+                sb.appendLine("\"firstMeetingMeta\": { \"introducedSelf\": true, \"askedForNickname\": true }")
+                sb.appendLine("- introducedSelf: 是否完成了自我介绍（让用户知道你的名字）")
+                sb.appendLine("- askedForNickname: 是否询问了用户的称呼")
+                sb.appendLine("两个都为 true 才算合格的首次问候。")
+            }
+            ConversationScene.FIRST_MEETING_REPLY -> {
+                sb.appendLine("【当前是首次见面·用户先发消息场景】")
+                sb.appendLine("这是你和用户第一次见面，用户先给你发了消息。")
+                sb.appendLine("你自然回应用户的消息，并借机完成自我介绍和询问称呼。")
+                sb.appendLine()
+                sb.appendLine("必须达成的两个目标：")
+                sb.appendLine("1. 回应用户消息：自然接住用户说的话，不要无视")
+                sb.appendLine("2. 自我介绍 + 询问称呼：在回应中自然带出你的名字「$agentName」，并问用户怎么称呼")
+                sb.appendLine("   - 不要突兀地问，要顺着对话自然展开")
+                sb.appendLine("   - 示例：用户说「你好」→ 你回「你好呀～我是$agentName，你叫什么名字？」")
+                sb.appendLine()
+                sb.appendLine("严格禁止：")
+                sb.appendLine("- 不得引用对话历史中除用户最新一条消息外的内容")
+                sb.appendLine("- 不得假装认识用户、不得提到之前的对话")
+                sb.appendLine("- 不得补发突兀的主动问候（用户已经先说话了，直接回应即可）")
+                sb.appendLine()
+                sb.appendLine("消息节奏：")
+                sb.appendLine("- 输出 2-3 条短消息连发")
+                sb.appendLine("- 每条 10-20 字，独立成条")
+                sb.appendLine()
+                sb.appendLine("【重要·元数据输出】")
+                sb.appendLine("本次回复必须在 JSON 中输出 firstMeetingMeta 字段：")
+                sb.appendLine("\"firstMeetingMeta\": { \"introducedSelf\": true, \"askedForNickname\": true }")
+            }
+            else -> {}
+        }
+        sb.appendLine()
+    }
+
+    /**
+     * 称呼解析引导（Task 14）
+     *
+     * 当 awaitingNickname=true 时注入，指导 LLM 在同一次回复中输出 nicknameResolution 字段。
+     * 避免额外调用导致回复与提取不一致。
+     *
+     * 核心规则：
+     * - 基于本轮连续用户消息整体判断
+     * - 只有明确设置/纠正才 shouldSave=true
+     * - SELF_INTRODUCTION 不直接保存，Agent 自然确认"以后叫你 X 可以吗"
+     * - confidence >= 0.85 才可能保存
+     */
+    private fun buildNicknameExtractionGuidance(sb: StringBuilder) {
+        sb.appendLine("【当前正在等待用户给出称呼】")
+        sb.appendLine("你之前问了用户希望被怎么称呼，现在需要从用户本轮消息中判断是否给出了称呼。")
+        sb.appendLine()
+        sb.appendLine("请在 JSON 中输出 nicknameResolution 字段，基于用户最新消息整体判断：")
+        sb.appendLine()
+        sb.appendLine("\"nicknameResolution\": {")
+        sb.appendLine("  \"intent\": \"意图（见下方说明）\",")
+        sb.appendLine("  \"nickname\": \"从用户消息中提取的原始称呼（含'叫我'等修饰词也可，本地会清洗）；无称呼留空字符串或 null\",")
+        sb.appendLine("  \"confidence\": 0.0 到 1.0 的置信度，")
+        sb.appendLine("  \"evidence\": \"引用用户原话片段作为证据\",")
+        sb.appendLine("  \"shouldSave\": true/false")
+        sb.appendLine("}")
+        sb.appendLine()
+        sb.appendLine("intent 可选值：")
+        sb.appendLine("- EXPLICIT_NICKNAME：用户明确给出了希望被称呼的方式（如「叫我阿哲」「你叫我明哥」）。shouldSave=true, confidence>=0.9")
+        sb.appendLine("- SELF_INTRODUCTION：用户介绍了自己的名字但没明确要求怎么叫（如「我叫张明」）。shouldSave=false，你在回复中自然确认「以后叫你张明可以吗」")
+        sb.appendLine("- CORRECTION：用户要求纠正之前的称呼（如「别叫我宝宝了，叫我阿哲」）。shouldSave=true, confidence>=0.9")
+        sb.appendLine("- CLEAR：用户明确要求清空称呼（如「直接叫你就行」「不用叫了」）。shouldSave=false")
+        sb.appendLine("- DECLINED：用户明确拒绝给出称呼（如「不想告诉你」「不愿意说」）。shouldSave=false")
+        sb.appendLine("- AMBIGUOUS：用户回应了但含义模糊，无法确定称呼（如「嗯...」「再说吧」「你猜」）。shouldSave=false")
+        sb.appendLine("- NONE：用户的消息完全不涉及称呼话题。shouldSave=false")
+        sb.appendLine()
+        sb.appendLine("关键规则：")
+        sb.appendLine("- 基于本轮用户消息整体判断，不要过度解读")
+        sb.appendLine("- 只有 EXPLICIT_NICKNAME 和 CORRECTION 才设 shouldSave=true")
+        sb.appendLine("- confidence 要诚实评估：用户说「叫我阿哲」=0.95，用户说「嗯我叫小张吧」=0.8（有犹豫）")
+        sb.appendLine("- nickname 字段直接提取用户原话中的称呼部分，本地会自动清洗「叫我」「就行」等修饰词")
+        sb.appendLine("- 不要在 replyText 中显示「已保存你的称呼」这种系统提示，保持人格化自然回复")
+        sb.appendLine()
     }
 
     /**
@@ -753,9 +897,9 @@ class PromptBuilder {
 
         sb.appendLine("3. 当前活动 vs 下一个活动的表达（关键区分）")
         sb.appendLine("   - 当前活动只能用「正在做」「在做」描述")
-        sb.appendLine("   - 下一个活动必须用「接下来要去」「等下要」「快结束了然后去」描述，绝对不能用「去了」这种进行式")
+        sb.appendLine("   - 下一个活动必须用「接下来要去」「等下要」「快忙完了然后去」描述，绝对不能用「去了」这种进行式")
         sb.appendLine("   - 错误示例：当前在健身，却说「我去洗澡了」← 让用户以为现在就在洗澡")
-        sb.appendLine("   - 正确示例：当前在健身，说「快结束了，等下去洗澡」← 明确是未来的事")
+        sb.appendLine("   - 正确示例：当前在健身，说「快练完了，等下去洗澡」← 明确是未来的事")
         sb.appendLine()
 
         sb.appendLine("4. 前后轮次一致性（跨轮次回复）")
@@ -770,7 +914,7 @@ class PromptBuilder {
         sb.appendLine("   - 活动状态变更只能由作息表时段切换驱动（时间到了切换）或你调用 set_activity 工具显式声明")
         sb.appendLine("   - 不能在回复中凭空改变当前活动")
         sb.appendLine("   - 如果用户问「在干嘛」，只能回答当前时段的 activity")
-        sb.appendLine("   - 如果当前进度是「快结束」，可以说「快做完了，接下来要去XX」（XX 是作息表下一个时段的活动）")
+        sb.appendLine("   - 不要主动报进度（不说「刚开始/快结束了/快完成了」这类），只说现在在干嘛。最多自然带一句「一会儿准备去XX」（XX 是作息表下一个时段的活动）")
         sb.appendLine()
 
         // 如果有 ActivityAnchor，额外注入锚点确认
@@ -875,7 +1019,9 @@ class PromptBuilder {
         isPendingCatchup: Boolean,
         consecutiveInboundCount: Int,
         isConfigMode: Boolean,
-        config: AgentConfig
+        config: AgentConfig,
+        scene: ConversationScene = ConversationScene.NORMAL,
+        awaitingNickname: Boolean = false
     ) {
         sb.appendLine("请用以下 JSON 格式回复（不要输出其他内容）：")
         sb.appendLine("{")
@@ -883,7 +1029,7 @@ class PromptBuilder {
         sb.appendLine("    {")
         sb.appendLine("      \"replyText\": \"这条消息的纯对话文本\",")
         sb.appendLine("      \"action\": \"这条消息的旁白/动作（第三人称，描述此刻姿态/场景/小动作，如：在沙发上躺着）。没有动作就留空字符串\",")
-        sb.appendLine("      \"directorPrompt\": \"这条消息的导演指令：语气、语速、情绪\",")
+        sb.appendLine("      \"directorPrompt\": \"导演指令（描述这句话怎么说话，如：语气慵懒带困意，语速偏慢，句末轻微拖音。没有特别要求留空字符串）\",")
         sb.appendLine("      \"emoji\": \"如果这条消息要带 emoji，输出单个 emoji 字符（如 😄）；和 replyText 可以共存（如 replyText='晚安啦' emoji='🌙'）；不带 emoji 留空字符串\",")
         sb.appendLine("      \"emotion\": \"这条消息的情绪标签，可选值：neutral/happy/calm。不标默认 neutral\"")
         sb.appendLine("    }")
@@ -911,10 +1057,28 @@ class PromptBuilder {
         sb.appendLine("  \"milestoneDeclared\": \"若本次回复涉及关系节点（首次袒露脆弱/首次吵架/首次分享秘密/首次主动关心等）则输出对应 type，否则留空字符串\",")
         sb.appendLine("  \"emotionIntensity\": \"若本次回复内心有未充分表达的情绪波动，输出强度数值：-2=强烈负面（委屈/愤怒）/ -1=轻微低落 / 0=平静 / 1=轻微开心 / 2=强烈兴奋。0 表示情绪平淡无波动，非 0 表示内心有情绪但回复未完全表达\",")
         sb.appendLine("  \"wantAvatarId\": \"若本次回复想换头像，输出目标头像的 id（来自下方头像列表）；不想换则留空字符串\"")
+        if (scene.isFirstMeeting) {
+            sb.appendLine("  ,\"firstMeetingMeta\": {")
+            sb.appendLine("    \"introducedSelf\": true,")
+            sb.appendLine("    \"askedForNickname\": true")
+            sb.appendLine("  }")
+        }
+        sb.appendLine("  ,\"nicknameResolution\": {")
+        sb.appendLine("    \"intent\": \"EXPLICIT_NICKNAME/SELF_INTRODUCTION/CORRECTION/CLEAR/DECLINED/AMBIGUOUS/NONE\",")
+        sb.appendLine("    \"nickname\": \"从用户消息提取的原始称呼，无称呼留空字符串\",")
+        sb.appendLine("    \"confidence\": 0.0,")
+        sb.appendLine("    \"evidence\": \"用户原话片段\",")
+        sb.appendLine("    \"shouldSave\": false")
+        sb.appendLine("  }")
         sb.appendLine("}")
         sb.appendLine()
         sb.appendLine("规则：")
-        if (isPendingCatchup) {
+        if (scene.isFirstMeeting) {
+            sb.appendLine("- 首次见面场景：replies 输出 2-3 条短消息连发，每条 10-20 字，独立成条")
+            sb.appendLine("- 必须完成自我介绍（让用户知道你的名字）+ 询问用户称呼，两个目标都达成")
+            sb.appendLine("- 必须在 firstMeetingMeta 中标记 introducedSelf 和 askedForNickname 都为 true")
+            sb.appendLine("- 不得引用任何对话历史内容（视为第一次见面）")
+        } else if (isPendingCatchup) {
             sb.appendLine("- replies 数组只输出 1 条（最多 2 条）简短回复，表达「看到你之前发的消息了，现在简单回应」的感觉")
             sb.appendLine("- 不要对每条历史消息逐条对应回复，不要使用 1. 2. 3. 这种序号格式")
         } else if (consecutiveInboundCount > 1) {
@@ -923,19 +1087,33 @@ class PromptBuilder {
             sb.appendLine("- 必须用 replies 数组拆分多条回复，禁止把多条回复合并到一条 replyText 里用 1. 2. 3. 序号格式")
         } else {
             sb.appendLine("- replies 是你要发的消息数组。像真人微信聊天一样，根据情境主动拆成 2-3 条短消息连发，比一条长消息更自然")
-            sb.appendLine("- 每条 replyText 控制在 15 字以内，短句更像真人聊天，避免长段落")
+            sb.appendLine("- 每条 replyText 只写【一句话、一个意思】，控制在 10-20 字，独立成条")
+            sb.appendLine("- 多个意思 / 多个动作 / 多个话题，必须拆成多条 reply 连发，【绝对禁止】用逗号把多个内容塞进同一条 replyText")
             sb.appendLine("  ✓ 合理多回复示例（用户问「在干嘛？」）：")
             sb.appendLine("    第1条「刚起来」")
             sb.appendLine("    第2条「准备去洗漱呢」")
             sb.appendLine("    第3条「你起了没？」")
-            sb.appendLine("    （短句连发，每条独立表达一个意思，像真人微信）")
+            sb.appendLine("    （每条一个意思，短句连发，像真人微信）")
             sb.appendLine("  ✓ 合理拆条场景：先回应+再补充 / 先答+再反问 / 先说现状+再关心对方 / 想到什么补充什么")
             sb.appendLine("  ✗ 禁止两条表达相同意思或重复同一话题（如「宝宝喊我干什么呀」+「宝宝怎么了，在叫我吗」）")
             sb.appendLine("  ✗ 禁止把一句话从中间断开伪装成多条")
-            sb.appendLine("  ✗ 禁止单条超过 30 字，长消息必须拆分")
+            sb.appendLine("  ✗ 禁止单条超过 20 字，长消息必须拆分成多条短消息")
+            sb.appendLine("  ✗ 禁止一条 replyText 里用逗号串联多个动作（如「煮面，拌料，刷手机，回消息」这种必须拆成多条）")
         }
-        sb.appendLine("- 单条长度看心情：3 个字或 3 行都行，符合你此刻的状态，但优先短句")
+        if (awaitingNickname) {
+            sb.appendLine("- 必须输出 nicknameResolution 字段，基于用户最新消息判断称呼意图")
+            sb.appendLine("- 不要在 replyText 中显示「已保存称呼」等系统提示，保持人格化自然回复")
+            sb.appendLine("- SELF_INTRODUCTION 时 Agent 自然确认「以后叫你 X 可以吗」，不直接保存")
+        } else {
+            sb.appendLine("- nicknameResolution：用户明确要求设置或修改称呼时输出 EXPLICIT_NICKNAME/CORRECTION 并 shouldSave=true；用户要求不再叫某称呼时输出 CLEAR 并 shouldSave=true；普通对话输出 NONE")
+            sb.appendLine("- 不要在 replyText 中显示「已保存称呼」等系统提示，保持人格化自然回复")
+        }
+        sb.appendLine("- 单条长度原则：每条只写一句话、一个意思（10-20 字），最多不超过 25 字；内容多时拆成多条短消息连发，不要用逗号硬塞成长文字")
+        sb.appendLine("- 逻辑一致性：同一轮回复里，各条消息之间不能自相矛盾。比如别先说「正在吃面」又说「面已经吃完了」；不要在同一轮里又重复之前说过的内容")
         sb.appendLine("- replyText 是纯对话文本，只包含要说的话本身。绝对不要在 replyText 里写括号、动作描述、emoji 解释或任何非对话内容")
+        sb.appendLine("- replyText 中【绝对禁止】出现 emoji 字符（如 😄🌙😂 等）。emoji 必须走 emoji 字段，不能塞进 replyText")
+        sb.appendLine("  ✓ 正确：replyText=\"晚安啦\" emoji=\"🌙\"")
+        sb.appendLine("  ✗ 错误：replyText=\"晚安啦🌙\"（emoji 进了 replyText 会被当文字朗读，产生乱码语音）")
         sb.appendLine("- replyText 中绝对禁止使用 1. 2. 3. 这类数字序号列表格式。如果你想发多条消息，请用 replies 数组拆分，不要在单条 replyText 里列序号")
         sb.appendLine("  正确示例：replyText=\"我现在躺着呢\" action=\"在沙发上躺着\"")
         sb.appendLine("  错误示例：replyText=\"（在沙发上躺着）我现在躺着呢\" ← 不要这样写")
@@ -944,6 +1122,20 @@ class PromptBuilder {
         sb.appendLine("  示例：在沙发上躺着 / 边吃苹果边打字 / 趴在桌子上 / 翻了个身 / 抱着抱枕 / 蹲在椅子上 / 摸了摸头发 / 看了一眼窗外 / 抿了一口水")
         sb.appendLine("  如果当前只是普通打字回复、没有特别的动作场景，就留空字符串")
         sb.appendLine("- directorPrompt 用于每条消息的语音合成，描述这句话应该怎么说话")
+        sb.appendLine("  写法要点：用具体可感的描述，而不是抽象标签")
+        sb.appendLine("  ✓ 好的示例：")
+        sb.appendLine("    - 语气慵懒带困意，语速偏慢，句末轻微拖音")
+        sb.appendLine("    - 带着笑意，语速轻快，像在和朋友分享开心的事")
+        sb.appendLine("    - 语气平淡随意，正常说话节奏，没什么特别情绪")
+        sb.appendLine("    - 压低声音略带神秘，语速放缓，像在讲悄悄话")
+        sb.appendLine("    - 有点不好意思，语速略快，声音偏轻")
+        sb.appendLine("  ✗ 不好的示例（太抽象，TTS 无法落地）：")
+        sb.appendLine("    - 情绪：开心，语速：快，音量：大（机械参数式）")
+        sb.appendLine("    - 温柔地说话（太笼统）")
+        sb.appendLine("    - 用生气的语气说（缺细节）")
+        sb.appendLine("  核心：描述「这句话听起来是什么感觉」，而不是罗列情绪标签")
+        sb.appendLine("  原则：情绪自然流露，像真人随口说话，不要夸张表演")
+        sb.appendLine("  没有特别语气要求时留空字符串，TTS 会用自然语气合成")
         sb.appendLine("- emoji：可以和 replyText 共存在同一条消息中（如「晚安啦🌙」），也可以单独发纯表情（replyText 留空）。带 emoji 的条目若也有 replyText，TTS 会朗读 replyText 部分；纯 emoji 不合成语音")
         sb.appendLine("- emotion：根据这条回复的真实情绪判断，不是每条都要标（不标默认 neutral）")
         sb.appendLine("  - neutral：日常、平淡、认真的普通对话")
@@ -1045,56 +1237,6 @@ class PromptBuilder {
             }
         } catch (e: Exception) {
             false
-        }
-    }
-
-    /**
-     * 计算当前时段的进度描述
-     *
-     * 跨午夜时段（如 22:00-07:30 睡觉）的进度计算：
-     * - 凌晨 now < start：已用时长 = (start → 24:00) + (00:00 → now)
-     *   例：03:00 时已睡 5h（22:00 → 03:00），不是只算 3h
-     */
-    private fun computeActivityProgress(schedule: List<DailySlot>): String? {
-        return try {
-            val currentSlot = schedule.firstOrNull { isCurrentSlot(it) } ?: return null
-            val now = java.time.LocalTime.now(ZoneId.of("Asia/Shanghai"))
-            val start = parseTimeSafe(currentSlot.start)
-            val end = parseTimeSafe(currentSlot.end)
-
-            val totalMinutes = if (start <= end) {
-                java.time.Duration.between(start, end).toMinutes()
-            } else {
-                // 跨午夜总时长 = start → 24:00 + 00:00 → end
-                java.time.Duration.between(start, java.time.LocalTime.MAX).toMinutes() + 1 +
-                java.time.Duration.between(java.time.LocalTime.MIDNIGHT, end).toMinutes()
-            }
-            val elapsedMinutes = if (start <= end) {
-                java.time.Duration.between(start, now).toMinutes()
-            } else {
-                // 跨午夜已用时长
-                if (now >= start) {
-                    // 晚间：start → now
-                    java.time.Duration.between(start, now).toMinutes()
-                } else {
-                    // 凌晨：start → 24:00 + 00:00 → now
-                    java.time.Duration.between(start, java.time.LocalTime.MAX).toMinutes() + 1 +
-                    java.time.Duration.between(java.time.LocalTime.MIDNIGHT, now).toMinutes()
-                }
-            }
-            val remainingMinutes = totalMinutes - elapsedMinutes
-
-            if (totalMinutes <= 0 || elapsedMinutes < 0) return null
-
-            val progress = elapsedMinutes.toFloat() / totalMinutes.toFloat()
-
-            when {
-                progress < 0.2f -> "刚开始 ${elapsedMinutes}分钟"
-                progress < 0.8f -> "已进行 ${elapsedMinutes}分钟"
-                else -> "快结束了，还剩 ${remainingMinutes}分钟"
-            }
-        } catch (e: Exception) {
-            null
         }
     }
 

@@ -54,14 +54,15 @@ class DailyPlanner {
         config: AgentConfig,
         zoneId: ZoneId = ZoneId.of("Asia/Shanghai")
     ): List<DailySlot> = withContext(Dispatchers.IO) {
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val today = LocalDate.now(zoneId).format(DATE_FORMAT)
-        val existing = dailyScheduleDao.getByDate(today)
+        val existing = dailyScheduleDao.getByDate(agentId, today)
         if (existing != null) {
             return@withContext parseSlots(existing.slotsJson)
         }
 
         // 不存在，生成当天作息
-        generateTodaySchedule(config, zoneId, today)
+        generateTodaySchedule(agentId, config, zoneId, today)
     }
 
     /**
@@ -76,8 +77,9 @@ class DailyPlanner {
         reason: String = "",
         isAgentSwitch: Boolean = false
     ): List<DailySlot> = withContext(Dispatchers.IO) {
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val today = LocalDate.now(zoneId).format(DATE_FORMAT)
-        generateTodaySchedule(config, zoneId, today, reason, isAgentSwitch)
+        generateTodaySchedule(agentId, config, zoneId, today, reason, isAgentSwitch)
     }
 
     /**
@@ -87,6 +89,7 @@ class DailyPlanner {
      *        true 时不注入历史记忆/对话/作息历史，避免新 Agent 沿用旧 Agent 风格
      */
     private suspend fun generateTodaySchedule(
+        agentId: Long,
         config: AgentConfig,
         zoneId: ZoneId,
         dateStr: String,
@@ -96,31 +99,31 @@ class DailyPlanner {
         try {
             val now = LocalDateTime.now(zoneId)
             // 切换 Agent 时不注入旧 Agent 的历史记忆/对话/作息，只用新 persona 生成
-            val memories = if (isAgentSwitch) emptyList() else memoryDao.getTopMemories(20)
-            val recentChats = if (isAgentSwitch) emptyList() else chatMessageDao.getAll().takeLast(10)
+            val memories = if (isAgentSwitch) emptyList() else memoryDao.getTopMemories(agentId, 20)
+            val recentChats = if (isAgentSwitch) emptyList() else chatMessageDao.getAll(agentId).takeLast(10)
 
             // 清理过期未来事件（今天之前的）
             val today = now.toLocalDate()
-            futureEventDao.deleteBefore(today.format(DATE_FORMAT))
+            futureEventDao.deleteBefore(agentId, today.format(DATE_FORMAT))
 
             // 查询未来 7 天的事件
             val weekLater = today.plusDays(7).format(DATE_FORMAT)
-            val futureEvents = futureEventDao.getRange(dateStr, weekLater)
+            val futureEvents = futureEventDao.getRange(agentId, dateStr, weekLater)
 
             // 查询近 7 天作息历史（切换 Agent 时不注入，避免沿用旧 Agent 作息风格）
             val recentActivities = if (isAgentSwitch) {
                 RecentActivitiesSummary(emptyMap(), emptyMap())
             } else {
-                buildRecentActivitiesSummary(today, zoneId, days = 7)
+                buildRecentActivitiesSummary(agentId, today, zoneId, days = 7)
             }
 
             // 生成昨天回顾（如果昨天有作息记录但还没生成回顾）
             if (!isAgentSwitch) {
                 // 补齐昨天缺失的 DailyState（如果昨天有作息但没生成 DailyState）
                 val yesterday = today.minusDays(1).format(DATE_FORMAT)
-                val existingState = dailyStateDao.getByDate(yesterday)
+                val existingState = dailyStateDao.getByDate(agentId, yesterday)
                 if (existingState == null) {
-                    val yesterdaySchedule = dailyScheduleDao.getByDate(yesterday)
+                    val yesterdaySchedule = dailyScheduleDao.getByDate(agentId, yesterday)
                     if (yesterdaySchedule != null) {
                         try {
                             DailySummaryGenerator().generateSummaryForDate(today.minusDays(1), zoneId)
@@ -129,7 +132,7 @@ class DailyPlanner {
                         }
                     }
                 }
-                generateYesterdayRecall(today, zoneId)
+                generateYesterdayRecall(agentId, today, zoneId)
                 // 生成昨天对话摘要（让 Agent 记得昨天和用户聊了什么内容）
                 try {
                     DailySummaryGenerator().generateSummaryForDate(today.minusDays(1), zoneId)
@@ -157,7 +160,7 @@ class DailyPlanner {
                 // 首次规划（无 adjustReason）时写入 originalSlotsJson 快照，当天不可变
                 // adjustReason 非空时不覆盖 originalSlotsJson（保留首次的计划快照）
                 // isAgentSwitch=true 时强制覆盖（切换 Agent 后用新 Agent 的计划替换旧快照）
-                val existing = dailyScheduleDao.getByDate(dateStr)
+                val existing = dailyScheduleDao.getByDate(agentId, dateStr)
                 val existingOriginal = existing?.originalSlotsJson.orEmpty()
                 val originalSlotsJson = when {
                     // 切换 Agent：强制覆盖为新 Agent 的计划快照
@@ -170,6 +173,7 @@ class DailyPlanner {
                     else -> ""
                 }
                 val entity = DailyScheduleEntity(
+                    agentId = agentId,
                     date = dateStr,
                     slotsJson = slotsJsonStr,
                     originalSlotsJson = originalSlotsJson,
@@ -184,6 +188,7 @@ class DailyPlanner {
                 val planSummary = slots.joinToString("；") { "${it.start}-${it.end} ${activityLabel(it)}" }
                 memoryDao.insert(
                     MemoryEntity(
+                        agentId = agentId,
                         type = "event",
                         category = "daily_plan",
                         content = "${today.format(DateTimeFormatter.ofPattern("MM月dd日"))}计划：$planSummary",
@@ -195,18 +200,18 @@ class DailyPlanner {
                 )
 
                 // 标记今天的事件为已消费
-                val todayEvents = futureEventDao.getByDate(dateStr)
-                todayEvents.forEach { futureEventDao.markConsumed(it.id) }
+                val todayEvents = futureEventDao.getByDate(agentId, dateStr)
+                todayEvents.forEach { futureEventDao.markConsumed(agentId, it.id) }
 
                 Log.d(TAG, "已生成当天作息：${slots.size} 个时段${if (adjustReason.isNotEmpty()) "（调整原因：$adjustReason）" else ""}")
                 return slots
             } else {
                 Log.w(TAG, "LLM 返回的作息解析失败，使用兜底作息")
-                return saveFallbackSchedule(dateStr, adjustReason)
+                return saveFallbackSchedule(agentId, dateStr, adjustReason)
             }
         } catch (e: Exception) {
             Log.e(TAG, "生成当天作息失败，使用兜底作息", e)
-            return saveFallbackSchedule(dateStr, adjustReason)
+            return saveFallbackSchedule(agentId, dateStr, adjustReason)
         }
     }
 
@@ -214,11 +219,11 @@ class DailyPlanner {
      * 将兜底作息写入 DB 并返回
      * 确保即使 LLM 失败，DB 中的作息也会更新（而非保留旧记录）
      */
-    private suspend fun saveFallbackSchedule(dateStr: String, adjustReason: String): List<DailySlot> {
+    private suspend fun saveFallbackSchedule(agentId: Long, dateStr: String, adjustReason: String): List<DailySlot> {
         val slots = fallbackSchedule()
         val slotsJsonStr = json.encodeToString(slots)
         // 兜底作息同样需要写入 originalSlotsJson 快照（首次生成时）
-        val existing = dailyScheduleDao.getByDate(dateStr)
+        val existing = dailyScheduleDao.getByDate(agentId, dateStr)
         val existingOriginal = existing?.originalSlotsJson.orEmpty()
         val originalSlotsJson = when {
             adjustReason.isEmpty() && existingOriginal.isBlank() -> slotsJsonStr
@@ -226,6 +231,7 @@ class DailyPlanner {
             else -> ""
         }
         val entity = DailyScheduleEntity(
+            agentId = agentId,
             date = dateStr,
             slotsJson = slotsJsonStr,
             originalSlotsJson = originalSlotsJson,
@@ -278,6 +284,16 @@ class DailyPlanner {
         sb.appendLine("当前时间：$dateStr $weekDay ${now.toLocalTime().truncatedTo(ChronoUnit.MINUTES)}")
         val isWeekend = now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY
         sb.appendLine("今天是${if (isWeekend) "周末" else "工作日"}")
+        // 注入季节信息，让 LLM 知道日出日落时间范围（避免冬天安排 5 点晨跑或夏天 18 点看夕阳）
+        val month = now.monthValue
+        val seasonInfo = when (month) {
+            3, 4, 5 -> "春季（日出约 05:30-06:30，日落约 18:00-19:00）"
+            6, 7, 8 -> "夏季（日出约 05:00-06:00，日落约 19:00-19:30）"
+            9, 10, 11 -> "秋季（日出约 06:00-06:30，日落约 17:30-18:30）"
+            12, 1, 2 -> "冬季（日出约 06:30-07:30，日落约 17:00-18:00）"
+            else -> ""
+        }
+        sb.appendLine("季节：$seasonInfo")
         sb.appendLine()
 
         // 近 7 天作息历史（核心：让 LLM 知道最近做了什么，避免重复）
@@ -334,14 +350,22 @@ class DailyPlanner {
             sb.appendLine("你可以参考该人物近期的公开活动节奏，在自己的作息中加入类似活动（不强制完全一致，只是参考灵感）")
             sb.appendLine("例如：如果该人物今天有演出/直播/活动，你也可以安排类似的事做")
             sb.appendLine()
-            sb.appendLine("【重要·时态约束】")
-            sb.appendLine("- 该人物已上映的电影 / 已播出的剧 / 已发行的歌 / 已结束的活动 都是【过去式作品】，不是今天在做的事")
-            sb.appendLine("- 严禁把过去式作品当成今天的活动（如电影已上映却安排「看该电影的剧本」「宣传该电影」；剧已播完却安排「拍摄该戏」）")
-            sb.appendLine("- 只有该人物【明确进行中】的项目（如官方已公布正在拍的新戏 / 正在筹备的新专辑 / 正在举办的巡演）才能作为今天的活动")
-            sb.appendLine("- 不确定是否在拍/在做时，作息按日常活动安排即可（如练习声乐 / 健身 / 看其他作品 / 休息），不要凭空捏造拍摄/宣传行程")
-            sb.appendLine("- 你的 persona.background 已经包含该人物的背景介绍，作息安排的是【今天能做的事】，不是回顾过往作品")
-            sb.appendLine()
         }
+
+        // 【重要·时态约束】无条件注入，防止把背景/履历里的过往事件当成今日活动
+        // 克隆明星时空背景里写满了代表作品（已上映的电影/已播出的剧/已发行的歌），
+        // 这些是过去完成的事，不是当下正在做的事。作息必须严格区分"今天能做的"与"过往履历"。
+        sb.appendLine("【重要·时态约束（必须严格遵守）】")
+        sb.appendLine("- 你的 background / 履历 / 记忆里提到的作品、成就、经历，凡是属于【已上映/已播出/已发行/已结束】的，都是【过去式】，不是今天在做的事")
+        sb.appendLine("- 严禁把过去式作品当成今天的活动：")
+        sb.appendLine("  ✗ 电影已上映却安排「看该电影的剧本」「宣传该电影」「为该电影跑通告」")
+        sb.appendLine("  ✗ 剧已播完却安排「拍摄该戏」「补拍该剧」")
+        sb.appendLine("  ✗ 歌已发行却安排「录制这首已发行的歌」「推广这张旧专辑」")
+        sb.appendLine("  ✗ 已结束的巡演/演唱会却安排「为这场已结束的演出排练」")
+        sb.appendLine("- 只有【明确正在进行中】的项目（如官方已公布正在拍的新戏 / 正在筹备的新专辑 / 正在举办的巡演）才能作为今天的活动")
+        sb.appendLine("- 无法确定是否进行中时，一律按日常活动安排：练习基本功 / 健身 / 创作新东西 / 看其他作品 / 休息 / 处理琐事，不要凭空捏造拍摄/宣传/演出行程")
+        sb.appendLine("- 今天的作息是安排【此刻这段生活里能做的事】，不是回顾过往履历或重温旧作品")
+        sb.appendLine()
 
         // 未来事件（从聊天中提取的）
         if (futureEvents.isNotEmpty()) {
@@ -404,6 +428,22 @@ class DailyPlanner {
         sb.appendLine("- 睡觉/工作这种长时段可以是整点或半点（如 22:30 / 09:00）")
         sb.appendLine("- 各分钟值要随机化，不要所有时段都用同样的分钟（避免全部都是 :30 或 :15）")
         sb.appendLine()
+        sb.appendLine("【活动时间常识约束（必须严格遵守，违反就是常识错误）】")
+        sb.appendLine("某些活动只能在特定时间段进行，安排前必须确认时间合理：")
+        sb.appendLine("- 看夕阳/看日落：必须在日落前 30 分钟到日落时段（参考上面季节日落时间），禁止安排在下午或上午")
+        sb.appendLine("- 看日出：必须在日出前后 30 分钟（参考上面季节日出时间），禁止安排在白天")
+        sb.appendLine("- 吃午饭：11:30-13:30 之间，禁止 14:00 之后才吃午饭")
+        sb.appendLine("- 吃晚饭：17:30-20:00 之间，禁止 16:00 之前吃晚饭")
+        sb.appendLine("- 吃早饭：起床后 1 小时内，禁止安排在午饭时段")
+        sb.appendLine("- 晨跑/晨练：日出后到 09:00 之前，禁止天没亮时晨跑")
+        sb.appendLine("- 夜跑：晚饭后 1 小时（至少 19:00）之后，禁止下午夜跑")
+        sb.appendLine("- 泡澡/洗澡：通常在晚饭后或睡前（19:00-22:30），禁止安排在上午或工作时间")
+        sb.appendLine("- 午睡：12:30-14:30 之间，禁止安排在其他时段")
+        sb.appendLine("- 睡觉：21:30-23:30 之间入睡，禁止 20:00 之前或 01:00 之后睡觉")
+        sb.appendLine("- 逛夜市/看星星：必须在日落后（19:00+），禁止安排在白天")
+        sb.appendLine("- 如果某个活动没有明确时间约束（如工作/看书/玩游戏），可以安排在任意合理时段")
+        sb.appendLine("- 安排活动前先自检：这个活动在这个时间做合理吗？符合现实生活常识吗？")
+        sb.appendLine()
         sb.appendLine("【过渡时段要求（重要，体现真人作息）】")
         sb.appendLine("- 真人不会一到点就立刻切换活动，活动切换时需要插入 5-15 分钟的过渡时段")
         sb.appendLine("- 过渡时段示例：从「工作」切换到「吃饭」之间插入「收拾东西，准备吃饭」5-10 分钟")
@@ -432,6 +472,7 @@ class DailyPlanner {
      * @return RecentActivitiesSummary 包含按日期分组的活动列表 + 活动频次 Map
      */
     private suspend fun buildRecentActivitiesSummary(
+        agentId: Long,
         today: LocalDate,
         zoneId: ZoneId,
         days: Int = 7
@@ -439,7 +480,7 @@ class DailyPlanner {
         val startDate = today.minusDays(days.toLong()).format(DATE_FORMAT)
         val endDate = today.minusDays(1).format(DATE_FORMAT)  // 不含今天
         val recentSchedules = try {
-            dailyScheduleDao.getRange(startDate, endDate)
+            dailyScheduleDao.getRange(agentId, startDate, endDate)
         } catch (e: Exception) {
             Log.w(TAG, "查询近 $days 天作息失败", e)
             return RecentActivitiesSummary(emptyMap(), emptyMap())
@@ -667,13 +708,13 @@ class DailyPlanner {
      * 在生成今天作息时，如果昨天有作息记录，就补一条"昨天回顾"记忆
      * 重构为语义化总结：调 LLM 生成第一人称回顾，失败时降级为时段拼接
      */
-    private suspend fun generateYesterdayRecall(today: LocalDate, zoneId: ZoneId) {
+    private suspend fun generateYesterdayRecall(agentId: Long, today: LocalDate, zoneId: ZoneId) {
         try {
             val yesterday = today.minusDays(1).format(DATE_FORMAT)
-            val yesterdaySchedule = dailyScheduleDao.getByDate(yesterday) ?: return
+            val yesterdaySchedule = dailyScheduleDao.getByDate(agentId, yesterday) ?: return
 
             // 检查是否已经生成过回顾记忆（避免重复）
-            val existingRecall = memoryDao.findOneByCategoryAndKeyword("daily_recall", yesterday)
+            val existingRecall = memoryDao.findOneByCategoryAndKeyword(agentId, "daily_recall", yesterday)
             if (existingRecall != null) return
 
             val slots = parseSlots(yesterdaySchedule.slotsJson)
@@ -681,7 +722,7 @@ class DailyPlanner {
 
             // 尝试生成语义化总结（LLM），失败则降级为时段拼接
             val recallText = try {
-                generateSemanticRecall(today.minusDays(1), slots, yesterdaySchedule.isAdjusted)
+                generateSemanticRecall(agentId, today.minusDays(1), slots, yesterdaySchedule.isAdjusted)
             } catch (e: Exception) {
                 Log.w(TAG, "LLM 生成语义化回顾失败，降级为时段拼接", e)
                 buildFallbackRecallText(yesterday, slots, yesterdaySchedule.isAdjusted)
@@ -689,6 +730,7 @@ class DailyPlanner {
 
             memoryDao.insert(
                 MemoryEntity(
+                    agentId = agentId,
                     type = "event",
                     category = "daily_recall",
                     content = recallText,
@@ -710,6 +752,7 @@ class DailyPlanner {
      * 格式："7月29日 周三：今天赶完了设计稿，下午被领导夸了心情不错..."
      */
     private suspend fun generateSemanticRecall(
+        agentId: Long,
         yesterdayDate: LocalDate,
         slots: List<DailySlot>,
         isAdjusted: Boolean
@@ -731,7 +774,7 @@ class DailyPlanner {
         val scheduleDesc = slots.joinToString("；") { "${it.start}-${it.end} ${activityLabel(it)}" }
 
         // 查询昨日对话摘要（如果有）
-        val summaryMemory = memoryDao.findOneByCategoryAndKeyword("daily_summary", yesterdayStr)
+        val summaryMemory = memoryDao.findOneByCategoryAndKeyword(agentId, "daily_summary", yesterdayStr)
         val summaryText = summaryMemory?.content?.substringAfter("对话摘要：") ?: ""
 
         val sb = StringBuilder()

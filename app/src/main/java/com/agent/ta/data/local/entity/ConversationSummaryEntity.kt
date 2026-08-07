@@ -1,6 +1,7 @@
 package com.agent.ta.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -16,10 +17,15 @@ import androidx.room.PrimaryKey
  * - 每达到桶大小时触发 LLM 生成
  * - 失败时降级为截断前 50 字，不阻塞主流程
  */
-@Entity(tableName = "conversation_summaries")
+@Entity(
+    tableName = "conversation_summaries",
+    indices = [Index(value = ["agentId", "bucketId"])]
+)
 data class ConversationSummaryEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    /** 所属 Agent 实例 ID（多 Agent 数据隔离） */
+    val agentId: Long,
     /** 桶 ID（从 1 开始递增） */
     val bucketId: Long,
     /** 该桶包含的消息起始 ID */

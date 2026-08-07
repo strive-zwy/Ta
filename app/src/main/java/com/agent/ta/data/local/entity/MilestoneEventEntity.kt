@@ -1,6 +1,7 @@
 package com.agent.ta.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -21,10 +22,15 @@ import androidx.room.PrimaryKey
  * - stage_transition_to_acquaintance（阶段切换：进入初识）
  * - stage_transition_to_familiar / intimate / confidant
  */
-@Entity(tableName = "milestone_events")
+@Entity(
+    tableName = "milestone_events",
+    indices = [Index(value = ["agentId", "type", "triggeredAt"])]
+)
 data class MilestoneEventEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    /** 所属 Agent 实例 ID（多 Agent 数据隔离） */
+    val agentId: Long,
     val type: String,              // "first_vulnerability" / "stage_transition_to_intimate" 等
     val title: String,            // 显示名，如"第一次袒露脆弱"
     val triggeredAt: Long,        // 触发时间戳

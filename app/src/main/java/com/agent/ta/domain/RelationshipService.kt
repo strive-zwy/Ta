@@ -20,6 +20,9 @@ import kotlinx.serialization.json.put
  * - recordMilestone：写入里程碑事件（含去重）
  * - getCurrentState：读取当前状态（首次自动初始化）
  * - getRecentMilestones：读取最近里程碑供 prompt 注入
+ *
+ * 多 Agent 隔离：所有方法在内部捕获当前 active agentId，
+ * 整个操作流程只读写该 Agent 的数据。
  */
 class RelationshipService {
 
@@ -52,10 +55,15 @@ class RelationshipService {
     }
 
     /**
-     * 读取当前关系状态（首次自动初始化）
+     * 读取当前 Agent 的关系状态（首次自动初始化）
      */
     suspend fun getCurrentState(): RelationshipStateEntity = withContext(Dispatchers.IO) {
-        initializer.ensureInitialized()
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        initializer.ensureInitialized(agentId)
+    }
+
+    suspend fun getCurrentState(agentId: Long): RelationshipStateEntity = withContext(Dispatchers.IO) {
+        initializer.ensureInitialized(agentId)
     }
 
     /**
@@ -64,9 +72,9 @@ class RelationshipService {
      * @param isUserInitiated 是否为用户主动发起
      * @param messageLength 回复文本长度
      */
-    suspend fun onTurnCompleted(emotion: String, isUserInitiated: Boolean, messageLength: Int) {
+    suspend fun onTurnCompleted(agentId: Long, emotion: String, isUserInitiated: Boolean, messageLength: Int) {
         withContext(Dispatchers.IO) {
-            val state = initializer.ensureInitialized()
+            val state = initializer.ensureInitialized(agentId)
             val ctx = RelationshipEngine.TurnContext(
                 emotion = emotion,
                 isUserInitiated = isUserInitiated,
@@ -81,6 +89,7 @@ class RelationshipService {
             val now = System.currentTimeMillis()
 
             ServiceLocator.relationshipStateDao.updateScores(
+                agentId = agentId,
                 intimacy = newIntimacy,
                 trust = newTrust,
                 interactionCount = update.newInteractionCount,
@@ -90,19 +99,19 @@ class RelationshipService {
 
             // 阶段切换自动触发里程碑
             update.stageTransition?.let { newStage ->
-                ServiceLocator.relationshipStateDao.updateStage(newStage.id, now)
+                ServiceLocator.relationshipStateDao.updateStage(agentId, newStage.id, now)
                 val type = "stage_transition_to_${newStage.id}"
                 val title = MILESTONE_TITLE_MAP[type] ?: "关系进入${newStage.displayName}阶段"
-                recordMilestoneInternal(type, title, "engine_detected", mapOf("newStage" to newStage.id, "intimacy" to newIntimacy))
+                recordMilestoneInternal(agentId, type, title, "engine_detected", mapOf("newStage" to newStage.id, "intimacy" to newIntimacy))
                 Log.d(TAG, "关系阶段切换：${state.currentStage} → ${newStage.id}（intimacy=$newIntimacy）")
             }
 
             // Engine 兜底检测模式触发里程碑
-            val recentMilestones = ServiceLocator.milestoneEventDao.getRecent(10)
+            val recentMilestones = ServiceLocator.milestoneEventDao.getRecent(agentId, 10)
             val patternType = engine.shouldTriggerMilestoneByPattern(ctx, recentMilestones, update.newInteractionCount)
             patternType?.let {
                 val title = MILESTONE_TITLE_MAP[it] ?: it
-                recordMilestoneInternal(it, title, "engine_detected", mapOf("emotion" to emotion, "turnCount" to update.newInteractionCount))
+                recordMilestoneInternal(agentId, it, title, "engine_detected", mapOf("emotion" to emotion, "turnCount" to update.newInteractionCount))
                 Log.d(TAG, "Engine 检测到模式触发里程碑：$it")
             }
 
@@ -115,7 +124,8 @@ class RelationshipService {
      */
     suspend fun applyDailyDecayIfNeeded() {
         withContext(Dispatchers.IO) {
-            val state = initializer.ensureInitialized()
+            val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+            val state = initializer.ensureInitialized(agentId)
             val now = System.currentTimeMillis()
             val zone = java.time.ZoneId.of("Asia/Shanghai")
             val lastDecayDate = java.time.Instant.ofEpochMilli(state.lastDecayAt)
@@ -127,13 +137,14 @@ class RelationshipService {
             if (lastDecayDate.isBefore(today)) {
                 val newState = engine.applyDailyDecay(state)
                 ServiceLocator.relationshipStateDao.updateScores(
+                    agentId = agentId,
                     intimacy = newState.intimacyScore,
                     trust = newState.trustScore,
                     interactionCount = state.interactionCount,
                     lastInteractionAt = state.lastInteractionAt,
                     updatedAt = now
                 )
-                ServiceLocator.relationshipStateDao.updateDecayTime(now, now)
+                ServiceLocator.relationshipStateDao.updateDecayTime(agentId, now, now)
                 Log.d(TAG, "每日衰减完成：intimacy ${state.intimacyScore} → ${newState.intimacyScore}, trust ${state.trustScore} → ${newState.trustScore}")
             }
         }
@@ -148,15 +159,17 @@ class RelationshipService {
      * @return 是否成功写入（true 表示写入，false 表示被去重跳过）
      */
     suspend fun recordMilestone(
+        agentId: Long,
         type: String,
         title: String,
         source: String,
         context: Map<String, Any>
     ): Boolean = withContext(Dispatchers.IO) {
-        recordMilestoneInternal(type, title, source, context)
+        recordMilestoneInternal(agentId, type, title, source, context)
     }
 
     private suspend fun recordMilestoneInternal(
+        agentId: Long,
         type: String,
         title: String,
         source: String,
@@ -165,7 +178,7 @@ class RelationshipService {
         // 去重检查：同 type 在 24 小时内不重复（stage_transition 永不重复同类型）
         val now = System.currentTimeMillis()
         val sinceTs = now - DEDUP_WINDOW_MS
-        val recentSameType = ServiceLocator.milestoneEventDao.getByType(type)
+        val recentSameType = ServiceLocator.milestoneEventDao.getByType(agentId, type)
             .filter { it.triggeredAt >= sinceTs }
 
         // stage_transition 类型永不重复同 type
@@ -193,6 +206,7 @@ class RelationshipService {
         }.toString()
 
         val event = MilestoneEventEntity(
+            agentId = agentId,
             type = type,
             title = title,
             triggeredAt = now,
@@ -208,7 +222,12 @@ class RelationshipService {
      * 读取最近 N 条里程碑（供 prompt 注入）
      */
     suspend fun getRecentMilestones(limit: Int = 5): List<MilestoneEventEntity> = withContext(Dispatchers.IO) {
-        ServiceLocator.milestoneEventDao.getRecent(limit)
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        ServiceLocator.milestoneEventDao.getRecent(agentId, limit)
+    }
+
+    suspend fun getRecentMilestones(agentId: Long, limit: Int = 5): List<MilestoneEventEntity> = withContext(Dispatchers.IO) {
+        ServiceLocator.milestoneEventDao.getRecent(agentId, limit)
     }
 
     /**

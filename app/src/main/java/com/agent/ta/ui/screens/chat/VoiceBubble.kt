@@ -16,6 +16,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -158,6 +161,7 @@ fun VoiceMessageFooter(
         }
 
         // ===== 2. 展开的文字卡片（在 chip 下方，气泡外独立卡片）=====
+        // 不限 maxLines：转文字必须完整显示，长文字通过 maxHeight + 垂直滚动查看
         AnimatedVisibility(
             visible = showText && !transcript.isNullOrBlank(),
             enter = expandVertically(
@@ -172,17 +176,17 @@ fun VoiceMessageFooter(
                 modifier = Modifier
                     .padding(top = 4.dp)
                     .fillMaxWidth()
+                    .heightIn(max = 200.dp)  // 限高避免超长文字撑爆屏幕，超出可滚动
                     .clip(RoundedCornerShape(12.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Text(
                     text = transcript ?: "",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    overflow = TextOverflow.Ellipsis,
-                    maxLines = 5
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         }

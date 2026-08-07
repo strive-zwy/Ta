@@ -59,19 +59,20 @@ class MemoryTool : AgentTool {
         val keyword = parseField(params, "keyword")
         val type = parseField(params, "type")
         val limit = parseLongField(params, "limit")?.toInt() ?: 10
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
 
         val memories = when {
             // 关键词搜索优先
             !keyword.isNullOrBlank() -> {
-                ServiceLocator.memoryDao.searchByKeyword(keyword, limit.coerceAtMost(20))
+                ServiceLocator.memoryDao.searchByKeyword(agentId, keyword, limit.coerceAtMost(20))
             }
             // 按类型查询
             !type.isNullOrBlank() -> {
-                ServiceLocator.memoryDao.getByType(type).take(limit)
+                ServiceLocator.memoryDao.getByType(agentId, type).take(limit)
             }
             // 默认返回 top N
             else -> {
-                ServiceLocator.memoryDao.getTopMemories(limit)
+                ServiceLocator.memoryDao.getTopMemories(agentId, limit)
             }
         }
 

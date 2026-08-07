@@ -54,7 +54,61 @@ data class AgentReply(
      * - 指向的 id 不存在时由 ChatInteractor 兜底（保持原头像）
      * Agent 根据 AvatarConfig.description 自主判断何时换头像（如情绪转变/活动场景切换）
      */
-    val wantAvatarId: String? = null
+    val wantAvatarId: String? = null,
+    /**
+     * 首次见面元数据（Task 12）
+     *
+     * 仅在 FIRST_MEETING_GREETING / FIRST_MEETING_REPLY 场景下由 LLM 输出。
+     * ChatInteractor 校验 introducedSelf 和 askedForNickname：
+     * - GREETING 场景要求两者都为 true；失败时纠正重试一次，再失败用最小兜底问句
+     * - REPLY 场景不强制（用户先发消息时 Agent 自然回应即可）
+     * 普通对话场景不输出此字段，默认 null。
+     */
+    val firstMeetingMeta: FirstMeetingMeta? = null,
+    /**
+     * 称呼解析结果（Task 14）
+     *
+     * 在首次见面 WAITING_NICKNAME / FOLLOW_UP_ASKED 阶段，以及首次见面完成后用户修改称呼时，
+     * LLM 在普通回复中同时输出此字段，避免额外调用导致回复与提取不一致。
+     *
+     * ChatInteractor 通过 NicknameResolver.parse 清洗后，再由 NicknameResolver.decideSave 判断是否保存。
+     * 普通对话场景不输出此字段，默认 null。
+     */
+    val nicknameResolution: NicknameResolution? = null
+)
+
+/**
+ * 称呼解析结果（Task 14）
+ *
+ * LLM 在回复中同时输出，用于结构化提取用户对称呼的意图。
+ * 本地通过 NicknameResolver 解析和校验后决定是否保存。
+ *
+ * @param intent 意图：EXPLICIT_NICKNAME / SELF_INTRODUCTION / DECLINED / AMBIGUOUS / CORRECTION / CLEAR / NONE
+ * @param nickname LLM 提取的原始称呼（可能含"叫我"等修饰词，由 NicknameValidator 清洗）
+ * @param confidence 置信度 [0, 1]，越界由 NicknameResolver 钳制
+ * @param evidence 证据短语（LLM 引用的用户原话片段）
+ * @param shouldSave LLM 认为是否应该保存（本地仍需通过 confidence 阈值和 NicknameValidator 校验）
+ */
+@Serializable
+data class NicknameResolution(
+    val intent: String = "NONE",
+    val nickname: String? = null,
+    val confidence: Float = 0f,
+    val evidence: String = "",
+    val shouldSave: Boolean = false
+)
+
+/**
+ * 首次见面元数据（Task 12）
+ *
+ * LLM 在首次见面场景输出，用于本地校验问候是否达成两个核心目标：
+ * 1. 自我介绍（introducedSelf）
+ * 2. 询问称呼（askedForNickname）
+ */
+@Serializable
+data class FirstMeetingMeta(
+    val introducedSelf: Boolean = false,
+    val askedForNickname: Boolean = false
 )
 
 /**

@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 /**
- * Agent 情绪状态（运行时单条记录，id 固定为 1）
+ * Agent 情绪状态（每个 Agent 一条记录，主键为 agentId）
  *
  * Phase 3 情感势能驱动主动发起系统的核心数据模型。
  * 与 RelationshipStateEntity（Phase 2 关系系统）完全解耦，互不干扰。
@@ -20,7 +20,7 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "emotional_state")
 data class EmotionalStateEntity(
     @PrimaryKey
-    val id: Long = 1,                      // 固定为1，单条记录
+    val agentId: Long,                     // 所属 Agent 实例 ID（多 Agent 数据隔离，每个 Agent 一条）
     val valence: Float,                    // -1.0(苦) ~ 1.0(乐) 效价
     val arousal: Float,                    // 0.0(平静) ~ 1.0(激动) 唤醒度
     val potentialEnergy: Int,              // 0-100 未表达情绪积累

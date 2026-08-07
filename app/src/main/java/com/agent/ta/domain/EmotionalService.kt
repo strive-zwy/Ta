@@ -17,30 +17,23 @@ import java.time.format.DateTimeFormatter
  * - 关系系统管 intimacyScore/trustScore/interactionCount（影响回复延迟）
  * - 情绪系统管 valence/arousal/potentialEnergy（影响主动发起门控 + 语气）
  * - 两者都通过 onTurnCompleted 触发，但各自独立更新
+ *
+ * 多 Agent 隔离：所有方法在内部捕获当前 active agentId，
+ * 整个操作流程只读写该 Agent 的数据。
  */
 class EmotionalService {
 
     private val dao = ServiceLocator.emotionalStateDao
 
     /**
-     * 获取当前情绪状态（首次调用自动初始化中性状态）
+     * 获取当前 Agent 的情绪状态（首次调用自动初始化中性状态）
      */
     suspend fun getCurrentState(): EmotionalStateEntity {
-        return dao.get() ?: run {
-            val now = System.currentTimeMillis()
-            val initial = EmotionalStateEntity(
-                id = 1,
-                valence = 0f,
-                arousal = 0.3f,
-                potentialEnergy = 0,
-                lastEmotion = null,
-                lastUserInteractionAt = now,
-                lastDecayAt = now
-            )
-            dao.upsert(initial)
-            initial
-        }
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        return getState(agentId)
     }
+
+    suspend fun getCurrentState(agentId: Long): EmotionalStateEntity = getState(agentId)
 
     /**
      * 对话轮驱动：LLM 回复后调用，根据自报情绪强度更新状态
@@ -48,14 +41,15 @@ class EmotionalService {
      * @param emotionIntensity -2.0(强烈负面) ~ +2.0(强烈兴奋)
      * @param emotion 情绪标签（happy/sad/angry/neutral...）
      */
-    suspend fun onTurnCompleted(emotionIntensity: Float, emotion: String) {
-        val current = getCurrentState()
+    suspend fun onTurnCompleted(agentId: Long, emotionIntensity: Float, emotion: String) {
+        val current = getState(agentId)
         val update = EmotionalEngine.applyTurnEnd(emotionIntensity, emotion, current)
 
         val newEnergy = (current.potentialEnergy + update.energyIncrement).coerceIn(0, 100)
         val now = System.currentTimeMillis()
 
         dao.updateState(
+            agentId = agentId,
             valence = update.newValence,
             arousal = update.newArousal,
             potentialEnergy = newEnergy,
@@ -70,10 +64,17 @@ class EmotionalService {
     /**
      * 用户发消息时调用：重置静默计时
      */
-    suspend fun onUserMessageReceived() {
-        getCurrentState()  // 确保初始化
-        dao.updateLastUserInteraction(System.currentTimeMillis())
+    suspend fun onUserMessageReceived(agentId: Long) {
+        getState(agentId)
+        dao.updateLastUserInteraction(agentId, System.currentTimeMillis())
         Log.d(TAG, "onUserMessageReceived: 重置静默计时")
+    }
+
+    private suspend fun getState(agentId: Long): EmotionalStateEntity {
+        return dao.get(agentId) ?: run {
+            val now = System.currentTimeMillis()
+            EmotionalStateEntity(agentId, 0f, 0.3f, 0, null, now, now).also { dao.upsert(it) }
+        }
     }
 
     /**
@@ -83,6 +84,7 @@ class EmotionalService {
      * 衰减在积累之后，更符合"想分享→时间过去→情绪淡化"的心理节奏。
      */
     suspend fun applyHourlyDecayAndAccumulation() {
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val current = getCurrentState()
         val now = System.currentTimeMillis()
 
@@ -95,6 +97,7 @@ class EmotionalService {
         val decayUpdate = EmotionalEngine.applyHourlyDecay(tempState)
 
         dao.updateState(
+            agentId = agentId,
             valence = decayUpdate.newValence,
             arousal = decayUpdate.newArousal,
             potentialEnergy = decayUpdate.newEnergy,
@@ -110,14 +113,16 @@ class EmotionalService {
      * 跨天触发：读取昨日 daily_state，应用睡眠基线
      */
     suspend fun applySleepBaselineIfNeeded() {
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val current = getCurrentState()
         val yesterday = LocalDate.now(ZoneId.of("Asia/Shanghai"))
             .minusDays(1)
             .format(DateTimeFormatter.ISO_LOCAL_DATE)
-        val yesterdayState = ServiceLocator.dailyStateDao.getByDate(yesterday)
+        val yesterdayState = ServiceLocator.dailyStateDao.getByDate(agentId, yesterday)
 
         val newState = EmotionalEngine.applySleepBaseline(yesterdayState, current)
         dao.updateState(
+            agentId = agentId,
             valence = newState.valence,
             arousal = newState.arousal,
             potentialEnergy = current.potentialEnergy,  // 不重置势能
@@ -133,9 +138,10 @@ class EmotionalService {
      * 消耗势能（BoredInitiator 主动发起成功后调用）
      */
     suspend fun consumeEnergy(amount: Int) {
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val current = getCurrentState()
         val newEnergy = (current.potentialEnergy - amount).coerceAtLeast(0)
-        dao.updateEnergy(newEnergy)
+        dao.updateEnergy(agentId, newEnergy)
         Log.d(TAG, "consumeEnergy: $amount, energy ${current.potentialEnergy}→$newEnergy")
     }
 

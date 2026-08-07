@@ -67,19 +67,30 @@ import java.io.FileOutputStream
 
 /**
  * 把 SAF Uri 指向的图片复制到内部存储，返回绝对路径。
- * 存放位置：filesDir/avatars/<avatarId>/avatar_<timestamp>.jpg
+ * 存放位置：filesDir/avatars/<avatarId>/avatar_<timestamp>.<ext>
+ * 根据文件头识别真实格式，使用正确扩展名，避免扩展名与内容不一致。
  */
 private fun copyUriToInternal(context: Context, uri: Uri, avatarId: String): String? {
     return try {
         val dir = File(context.filesDir, "avatars/$avatarId").apply { mkdirs() }
-        val fileName = "avatar_${System.currentTimeMillis()}.jpg"
-        val destFile = File(dir, fileName)
+        // 读取前 64 字节用于格式检测
+        val header = ByteArray(64)
         context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(destFile).use { output ->
-                input.copyTo(output)
-            }
+            val read = input.read(header)
+            if (read <= 0) return null
+            val detectBytes = if (read < header.size) header.copyOf(read) else header
+            val ext = com.agent.ta.util.AgentImportPolicy.detectImageExtension(detectBytes)
+                ?: "jpg" // 无法识别时默认 jpg，BitmapFactory 仍可按内容解码
+            val fileName = "avatar_${System.currentTimeMillis()}.$ext"
+            val destFile = File(dir, fileName)
+            // 重新打开流写入完整内容
+            context.contentResolver.openInputStream(uri)?.use { fullInput ->
+                FileOutputStream(destFile).use { output ->
+                    fullInput.copyTo(output)
+                }
+            } ?: return null
+            destFile.absolutePath
         } ?: return null
-        destFile.absolutePath
     } catch (e: Exception) {
         null
     }

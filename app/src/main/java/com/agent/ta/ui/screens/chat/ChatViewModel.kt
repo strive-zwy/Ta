@@ -6,11 +6,11 @@ import com.agent.ta.data.local.entity.ChatMessageEntity
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.domain.ChatInteractor
 import com.agent.ta.util.VoicePlayer
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 class ChatViewModel : ViewModel() {
 
@@ -18,9 +18,95 @@ class ChatViewModel : ViewModel() {
     private val chatDao = ServiceLocator.chatMessageDao
     private val interactor = ChatInteractor(appContext)
     private val voicePlayer = VoicePlayer(appContext)
+    private val activeAgentManager = ServiceLocator.activeAgentManager
 
-    val messages: StateFlow<List<ChatMessageEntity>> = chatDao.observeAll()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
+    val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()
+
+    private val _hasMoreOlder = MutableStateFlow(false)
+    val hasMoreOlder: StateFlow<Boolean> = _hasMoreOlder.asStateFlow()
+
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private var newestLoadedCreatedAt: Long = 0L
+    private var oldestLoadedCreatedAt: Long = Long.MAX_VALUE
+    private var currentAgentId: Long? = null
+    private var newMessageObserver: Job? = null
+
+    init {
+        viewModelScope.launch {
+            activeAgentManager.activeAgentId.collect { agentId ->
+                newMessageObserver?.cancel()
+                newMessageObserver = null
+                currentAgentId = agentId
+                if (agentId != null) {
+                    loadInitial(agentId)
+                    startObservingNewMessages(agentId)
+                } else {
+                    _messages.value = emptyList()
+                    _hasMoreOlder.value = false
+                    newestLoadedCreatedAt = 0L
+                    oldestLoadedCreatedAt = Long.MAX_VALUE
+                }
+            }
+        }
+    }
+
+    private suspend fun loadInitial(agentId: Long) {
+        val recent = chatDao.getRecentMessagesDesc(agentId, 50)
+        // DESC → 反转为 ASC 用于显示
+        _messages.value = recent.reversed()
+        if (recent.isNotEmpty()) {
+            newestLoadedCreatedAt = recent.first().createdAt
+            oldestLoadedCreatedAt = recent.last().createdAt
+            _hasMoreOlder.value = recent.size == 50
+        } else {
+            newestLoadedCreatedAt = 0L
+            oldestLoadedCreatedAt = Long.MAX_VALUE
+            _hasMoreOlder.value = false
+        }
+    }
+
+    private fun startObservingNewMessages(agentId: Long) {
+        newMessageObserver = viewModelScope.launch {
+            chatDao.observeMessagesAfter(agentId, newestLoadedCreatedAt)
+                .collect { newMessages ->
+                    if (newMessages.isNotEmpty()) {
+                        val current = _messages.value.toMutableList()
+                        val existingIds = current.map { it.id }.toSet()
+                        val toAdd = newMessages.filter { it.id !in existingIds }
+                        if (toAdd.isNotEmpty()) {
+                            current.addAll(toAdd)
+                            _messages.value = current
+                            newestLoadedCreatedAt = current.last().createdAt
+                        }
+                    }
+                }
+        }
+    }
+
+    fun loadMoreOlder() {
+        val agentId = currentAgentId ?: return
+        if (_isLoadingMore.value || !_hasMoreOlder.value) return
+
+        viewModelScope.launch {
+            _isLoadingMore.value = true
+            try {
+                val older = chatDao.getMessagesBeforeDesc(agentId, oldestLoadedCreatedAt, 20)
+                if (older.isNotEmpty()) {
+                    oldestLoadedCreatedAt = older.last().createdAt
+                    _hasMoreOlder.value = older.size == 20
+                    // 前置插入（反转为 ASC）
+                    _messages.value = older.reversed() + _messages.value
+                } else {
+                    _hasMoreOlder.value = false
+                }
+            } finally {
+                _isLoadingMore.value = false
+            }
+        }
+    }
 
     private val _inputText = MutableStateFlow("")
     val inputText: StateFlow<String> = _inputText.asStateFlow()
@@ -56,6 +142,7 @@ class ChatViewModel : ViewModel() {
     }
 
     override fun onCleared() {
+        newMessageObserver?.cancel()
         voicePlayer.release()
         super.onCleared()
     }

@@ -1,15 +1,21 @@
 package com.agent.ta.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * 聊天消息实体
  */
-@Entity(tableName = "chat_messages")
+@Entity(
+    tableName = "chat_messages",
+    indices = [Index(value = ["agentId", "createdAt"])]
+)
 data class ChatMessageEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    /** 所属 Agent 实例 ID（多 Agent 数据隔离） */
+    val agentId: Long,
     val direction: String,          // inbound | outbound
     val text: String?,              // 文本内容
     val audioPath: String?,         // 语音文件路径
@@ -23,5 +29,7 @@ data class ChatMessageEntity(
     /** 语音时长（秒），合成后落库，UI 展示真实时长而非写死 5 秒 */
     val audioDurationSec: Int? = null,
     /** 表情消息（emoji 字符，如 😄）。非 null 表示这是一条纯表情消息，UI 渲染大字号 emoji 而非文字气泡 */
-    val emoji: String? = null
+    val emoji: String? = null,
+    val batchId: String? = null,
+    val claimedAt: Long? = null
 )

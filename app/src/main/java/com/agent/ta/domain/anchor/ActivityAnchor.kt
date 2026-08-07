@@ -76,17 +76,21 @@ data class ActivityAnchor(
     }
 
     /**
-     * 进度描述（用于 prompt 注入，让 LLM 知道是刚开始/进行中/快结束）
+     * 进度描述（用于 prompt 注入）
+     *
+     * 只给具体时间事实（已多久/还剩多久/百分比），不给"刚开始/进行中/接近尾声"这类抽象标签——
+     * 标签会被 LLM 直接搬到对话里，听起来像机器播报。让 LLM 基于活动性质自己组织口语化表达。
      */
     fun progressDescription(now: Long = System.currentTimeMillis()): String {
         val elapsed = elapsedMinutes(now)
         val remaining = remainingMinutes(now)
-        return when {
-            remaining <= 0 -> "已超时"
-            elapsed < 5 -> "刚开始 ${elapsed}分钟"
-            remaining <= 5 -> "快结束了，还剩 ${remaining}分钟"
-            else -> "已进行 ${elapsed}分钟"
-        }
+        if (remaining <= 0) return "已超时"
+
+        val total = elapsed + remaining
+        if (total <= 0) return "已进行 ${elapsed}分钟"
+        val percent = (elapsed.toFloat() / total.toFloat() * 100).toInt().coerceIn(0, 100)
+
+        return "已${elapsed}分钟，约还剩${remaining}分钟（${percent}%）"
     }
 }
 

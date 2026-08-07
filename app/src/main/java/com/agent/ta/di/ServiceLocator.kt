@@ -16,6 +16,7 @@ import com.agent.ta.data.local.dao.StateLogDao
 import com.agent.ta.data.prefs.UserPreferences
 import com.agent.ta.data.remote.LlmClient
 import com.agent.ta.data.remote.TtsClient
+import com.agent.ta.domain.ActiveAgentManager
 import com.agent.ta.domain.AgentConfigEditor
 import com.agent.ta.domain.AgentConfigProvider
 import com.agent.ta.domain.anchor.ActivityAnchorManager
@@ -97,6 +98,9 @@ object ServiceLocator {
     val emotionalStateDao: EmotionalStateDao
         get() = database.emotionalStateDao()
 
+    val firstMeetingStateDao: com.agent.ta.data.local.dao.FirstMeetingStateDao
+        get() = database.firstMeetingStateDao()
+
     val userPreferences: UserPreferences by lazy {
         UserPreferences(app)
     }
@@ -108,6 +112,25 @@ object ServiceLocator {
     val agentConfigProvider: AgentConfigProvider by lazy { AgentConfigProvider() }
 
     val agentConfigEditor: AgentConfigEditor by lazy { AgentConfigEditor() }
+
+    /**
+     * 活跃 Agent 实例管理器（应用级唯一权威 agentId 状态）
+     *
+     * - 启动时调用 ensureDefaultAgentPersisted() 确保有持久化激活实例
+     * - 导入/切换 Agent 时调用 switchTo(agentId)
+     * - 异步流程在开始时捕获 activeAgentId，结果只写回该实例
+     */
+    val activeAgentManager: ActiveAgentManager by lazy { ActiveAgentManager() }
+
+    /**
+     * 首次见面状态机协调器（Task 11/15）
+     *
+     * 管理 NOT_STARTED → GREETING_IN_PROGRESS → WAITING_NICKNAME → 完成 的流转。
+     * 按 agentId 隔离，每个 Agent 独立维护首次见面进度。
+     */
+    val firstMeetingCoordinator: com.agent.ta.domain.firstmeeting.FirstMeetingCoordinator by lazy {
+        com.agent.ta.domain.firstmeeting.FirstMeetingCoordinator(firstMeetingStateDao)
+    }
 
     /**
      * 活动锚点管理器（应用侧权威状态）

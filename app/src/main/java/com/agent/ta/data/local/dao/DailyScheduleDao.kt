@@ -27,7 +27,7 @@ interface DailyScheduleDao {
      */
     @Transaction
     suspend fun upsertPreservingCreatedAt(entity: DailyScheduleEntity) {
-        val existing = getByDate(entity.date)
+        val existing = getByDate(entity.agentId, entity.date)
         if (existing == null) {
             insert(entity)
         } else {
@@ -43,11 +43,12 @@ interface DailyScheduleDao {
      */
     @Transaction
     suspend fun updateActualSlots(
+        agentId: Long,
         date: String,
         newSlotsJson: String,
         source: String = "adjust"
     ) {
-        val existing = getByDate(date) ?: return
+        val existing = getByDate(agentId, date) ?: return
         update(
             existing.copy(
                 slotsJson = newSlotsJson,
@@ -58,22 +59,22 @@ interface DailyScheduleDao {
         )
     }
 
-    @Query("SELECT * FROM daily_schedule WHERE date = :date LIMIT 1")
-    suspend fun getByDate(date: String): DailyScheduleEntity?
+    @Query("SELECT * FROM daily_schedule WHERE agentId = :agentId AND date = :date LIMIT 1")
+    suspend fun getByDate(agentId: Long, date: String): DailyScheduleEntity?
 
-    @Query("SELECT * FROM daily_schedule ORDER BY date DESC LIMIT 1")
-    suspend fun getLatest(): DailyScheduleEntity?
+    @Query("SELECT * FROM daily_schedule WHERE agentId = :agentId ORDER BY date DESC LIMIT 1")
+    suspend fun getLatest(agentId: Long): DailyScheduleEntity?
 
     /**
      * 查询指定日期范围内的作息记录（含两端，按日期倒序）
      * 用于 DailyPlanner 注入近 N 天作息历史，避免每天作息重复
      */
-    @Query("SELECT * FROM daily_schedule WHERE date >= :startDate AND date <= :endDate ORDER BY date DESC")
-    suspend fun getRange(startDate: String, endDate: String): List<DailyScheduleEntity>
+    @Query("SELECT * FROM daily_schedule WHERE agentId = :agentId AND date >= :startDate AND date <= :endDate ORDER BY date DESC")
+    suspend fun getRange(agentId: Long, startDate: String, endDate: String): List<DailyScheduleEntity>
 
-    @Query("DELETE FROM daily_schedule WHERE date < :beforeDate")
-    suspend fun deleteBefore(beforeDate: String): Int
+    @Query("DELETE FROM daily_schedule WHERE agentId = :agentId AND date < :beforeDate")
+    suspend fun deleteBefore(agentId: Long, beforeDate: String): Int
 
-    @Query("DELETE FROM daily_schedule")
-    suspend fun deleteAll()
+    @Query("DELETE FROM daily_schedule WHERE agentId = :agentId")
+    suspend fun deleteAll(agentId: Long)
 }

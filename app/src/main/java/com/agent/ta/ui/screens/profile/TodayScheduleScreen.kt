@@ -122,7 +122,8 @@ fun TodayScheduleScreen(onBack: () -> Unit) {
     suspend fun reloadToday() = withContext(Dispatchers.IO) {
         val dao = ServiceLocator.dailyScheduleDao
         val today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-        val entity: DailyScheduleEntity? = dao.getByDate(today)
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        val entity: DailyScheduleEntity? = dao.getByDate(agentId, today)
         if (entity != null) {
             val json = Json { ignoreUnknownKeys = true }
             slots = try {

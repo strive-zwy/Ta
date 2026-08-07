@@ -18,7 +18,7 @@ import com.agent.ta.service.AgentEngine
  *
  * hasDelta 判定：
  * - 活动内容变化（如从"健身"切换到"洗澡"）
- * - 进度阶段变化（刚开始 → 进行中 → 快结束 → 已超时）
+ * - 进度阶段变化（early → mid → late → expired，基于剩余时长占比）
  * - 来源变化（LLM → SCHEDULE）
  */
 class ActivityAnchorObserver : Observer {
@@ -36,11 +36,20 @@ class ActivityAnchorObserver : Observer {
                 com.agent.ta.domain.anchor.AnchorSource.SCHEDULE -> "作息表当前时段"
                 com.agent.ta.domain.anchor.AnchorSource.INFERRED -> "推断"
             }
+            val elapsed = anchor.elapsedMinutes(timestamp)
+            val remaining = anchor.remainingMinutes(timestamp)
+            val total = elapsed + remaining
+            val stage = when {
+                remaining <= 0 -> "expired"
+                total <= 0 -> "unknown"
+                remaining.toFloat() / total < 0.2f -> "late"
+                remaining.toFloat() / total < 0.5f -> "mid"
+                else -> "early"
+            }
 
             val promptHint = buildString {
                 appendLine("【活动锚点观察】")
                 appendLine("当前活动：${anchor.activity}（$sourceTag）")
-                appendLine("进度：$progress")
                 appendLine("时段：${anchor.slotStart}-${anchor.slotEnd}")
             }
 
@@ -52,7 +61,8 @@ class ActivityAnchorObserver : Observer {
                     "progress" to progress,
                     "source" to anchor.source.name,
                     "state" to anchor.state.id,
-                    "remaining_minutes" to anchor.remainingMinutes(timestamp)
+                    "remaining_minutes" to remaining,
+                    "stage" to stage
                 ),
                 promptHint = promptHint
             )
@@ -70,33 +80,14 @@ class ActivityAnchorObserver : Observer {
         if (previous == null) return true
 
         val currentActivity = current.data["activity"] as? String ?: ""
-        val currentProgress = current.data["progress"] as? String ?: ""
+        val currentStage = current.data["stage"] as? String ?: ""
         val currentSource = current.data["source"] as? String ?: ""
         val prevActivity = previous.data["activity"] as? String ?: ""
-        val prevProgress = previous.data["progress"] as? String ?: ""
+        val prevStage = previous.data["stage"] as? String ?: ""
         val prevSource = previous.data["source"] as? String ?: ""
 
-        // 进度阶段变化（刚开始 → 进行中 → 快结束 → 已超时）
-        val currentStage = extractProgressStage(currentProgress)
-        val previousStage = extractProgressStage(prevProgress)
-
-        val activityChanged = currentActivity != prevActivity
-        val stageChanged = currentStage != previousStage
-        val sourceChanged = currentSource != prevSource
-
-        return activityChanged || stageChanged || sourceChanged
-    }
-
-    /**
-     * 从进度描述中提取阶段（用于判断阶段切换）
-     */
-    private fun extractProgressStage(progress: String): String {
-        return when {
-            progress.contains("刚开始") -> "started"
-            progress.contains("快结束") -> "ending"
-            progress.contains("已超时") -> "expired"
-            progress.contains("已进行") -> "ongoing"
-            else -> "unknown"
-        }
+        return currentActivity != prevActivity ||
+            currentStage != prevStage ||
+            currentSource != prevSource
     }
 }

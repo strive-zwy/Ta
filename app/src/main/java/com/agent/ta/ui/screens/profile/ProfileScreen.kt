@@ -36,12 +36,15 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -103,17 +106,19 @@ fun ProfileScreen(
     onBack: () -> Unit = {},
     onModelConfig: () -> Unit,
     onAgentConfig: () -> Unit = {},
-    onTodaySchedule: () -> Unit = {}
+    onTodaySchedule: () -> Unit = {},
+    onCommitmentTasks: () -> Unit = {}
 ) {
     val prefs = ServiceLocator.userPreferences
     val context = LocalContext.current
     val agentConfig by ServiceLocator.agentConfigProvider.config.collectAsState()
     val agentState by AgentEngine.currentState.collectAsState()
 
-    var nickname by remember { mutableStateOf(prefs.userNickname) }
     var userAvatarPath by remember { mutableStateOf(prefs.userAvatarPath) }
+    var userNickname by remember { mutableStateOf(prefs.userNickname) }
     var showNicknameDialog by remember { mutableStateOf(false) }
     var showResetChatDialog by remember { mutableStateOf(false) }
+    var developerMode by remember { mutableStateOf(prefs.developerMode) }
     var showResetMemoryDialog by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
@@ -261,7 +266,7 @@ fun ProfileScreen(
                         .padding(horizontal = 16.dp, vertical = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    // 分组 A：账户（头像 + 称呼合并一行）
+                    // 分组 A：账户（用户头像）
                     MenuGroup(title = "账户") {
                         Row(
                             modifier = Modifier
@@ -305,6 +310,7 @@ fun ProfileScreen(
                             }
                             // 中间：标题 + 副标题
                             Column(modifier = Modifier.weight(1f)) {
+                                val userNick = prefs.userNickname
                                 Text(
                                     text = "账户信息",
                                     fontSize = 15.sp,
@@ -312,7 +318,7 @@ fun ProfileScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "称呼：$nickname",
+                                    text = "网名：$userNick",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(top = 2.dp)
@@ -332,18 +338,6 @@ fun ProfileScreen(
                     MenuGroup(title = "Agent") {
                         Column {
                             MenuRow(
-                                icon = Icons.Default.Schedule,
-                                title = "今日作息",
-                                subtitle = "查看${agentConfig.agent.name.ifBlank { "小雅" }}今天的动态安排",
-                                iconBgColor = VibeTagAmberBg,
-                                iconTint = VibeTagAmberFg,
-                                onClick = onTodaySchedule
-                            )
-                            HorizontalDivider(
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
-                            MenuRow(
                                 icon = Icons.Default.SmartToy,
                                 title = "Agent 配置",
                                 subtitle = "当前：${agentConfig.agent.name.ifBlank { "小雅" }} · 点击修改 Agent 配置",
@@ -351,17 +345,65 @@ fun ProfileScreen(
                                 iconTint = VibeTagIndigoFg,
                                 onClick = onAgentConfig
                             )
+                            if (developerMode) {
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                )
+                                MenuRow(
+                                    icon = Icons.Default.Schedule,
+                                    title = "今日作息",
+                                    subtitle = "查看${agentConfig.agent.name.ifBlank { "小雅" }}今天的动态安排",
+                                    iconBgColor = VibeTagAmberBg,
+                                    iconTint = VibeTagAmberFg,
+                                    onClick = onTodaySchedule
+                                )
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                )
+                                MenuRow(
+                                    icon = Icons.Default.Alarm,
+                                    title = "定时任务",
+                                    subtitle = "管理 Agent 的承诺与提醒",
+                                    iconBgColor = VibeTagAmberBg,
+                                    iconTint = VibeTagAmberFg,
+                                    onClick = onCommitmentTasks
+                                )
+                            }
                         }
                     }
 
                     // 分组 C：设置
                     MenuGroup(title = "设置") {
-                        MenuRow(
-                            icon = Icons.Default.Settings,
-                            title = "模型配置",
-                            subtitle = "${prefs.llmModel.ifBlank { "未选择" }} · LLM ${if (prefs.llmApiKey.isNotBlank()) "已配置" else "未配置"} · TTS ${if (prefs.ttsApiKey.isNotBlank()) "已配置" else "未配置"}",
-                            onClick = onModelConfig
-                        )
+                        Column {
+                            MenuRow(
+                                icon = Icons.Default.Settings,
+                                title = "模型配置",
+                                subtitle = "${prefs.llmModel.ifBlank { "未选择" }} · LLM ${if (prefs.llmApiKey.isNotBlank()) "已配置" else "未配置"} · TTS ${if (prefs.ttsApiKey.isNotBlank()) "已配置" else "未配置"}",
+                                onClick = onModelConfig
+                            )
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                            MenuRow(
+                                icon = Icons.Default.BugReport,
+                                title = "开发者模式",
+                                subtitle = if (developerMode) "已开启·显示今日作息和定时任务" else "已关闭",
+                                iconBgColor = VibeTagIndigoBg,
+                                iconTint = VibeTagIndigoFg,
+                                onClick = {
+                                    developerMode = !developerMode
+                                    prefs.developerMode = developerMode
+                                },
+                                trailingSwitch = developerMode,
+                                onSwitchChange = { value ->
+                                    developerMode = value
+                                    prefs.developerMode = value
+                                }
+                            )
+                        }
                     }
 
                     // 分组 D：危险操作 — 极浅红底（red-50）+ 深红标题 + 灰色详情 + 红色图标
@@ -400,13 +442,14 @@ fun ProfileScreen(
 
     // ===== 弹窗 =====
     if (showNicknameDialog) {
-        var editing by remember { mutableStateOf(nickname) }
+        // 对话框内编辑态（仅在打开时初始化一次）
+        var editNickname by remember { mutableStateOf(userNickname) }
         AlertDialog(
             onDismissRequest = { showNicknameDialog = false },
             title = { Text("账户信息") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // 头像选择
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // 头像选择（点击即时生效）
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -459,21 +502,36 @@ fun ProfileScreen(
                         }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    // 称呼输入
-                    OutlinedTextField(
-                        value = editing,
-                        onValueChange = { editing = it },
-                        label = { Text("Agent 对你的称呼") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // 网名输入
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "网名昵称",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "展示在账户信息中，区别于 Agent 对你的称呼",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = editNickname,
+                            onValueChange = { editNickname = it },
+                            placeholder = { Text("请输入网名") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val value = editing.ifBlank { "你" }
-                    prefs.userNickname = value
-                    nickname = value
+                    val trimmed = editNickname.trim()
+                    if (trimmed.isNotEmpty()) {
+                        userNickname = trimmed
+                        prefs.userNickname = trimmed
+                    }
                     showNicknameDialog = false
                 }) { Text("保存") }
             },
@@ -493,8 +551,9 @@ fun ProfileScreen(
                     onClick = {
                         scope.launch {
                             try {
-                                ServiceLocator.chatMessageDao.deleteAll()
-                                ServiceLocator.memoryDao.deleteAll()
+                                val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+                                ServiceLocator.chatMessageDao.deleteAll(agentId)
+                                ServiceLocator.memoryDao.deleteAll(agentId)
                                 Toast.makeText(context, "已清空聊天记录和记忆", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) {
                                 Toast.makeText(context, "清空失败：${e.message}", Toast.LENGTH_SHORT).show()
@@ -521,7 +580,8 @@ fun ProfileScreen(
                     onClick = {
                         scope.launch {
                             try {
-                                ServiceLocator.memoryDao.deleteAll()
+                                val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+                                ServiceLocator.memoryDao.deleteAll(agentId)
                                 Toast.makeText(context, "已清空记忆", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) {
                                 Toast.makeText(context, "清空失败：${e.message}", Toast.LENGTH_SHORT).show()
@@ -608,6 +668,8 @@ private fun MenuRow(
     iconBgColor: Color = VibePrimarySoft,
     trailingText: String? = null,
     trailingAvatarPath: String? = null,
+    trailingSwitch: Boolean? = null,
+    onSwitchChange: ((Boolean) -> Unit)? = null,
     danger: Boolean = false,
     // 危险操作卡片文字颜色覆盖（深红字，浅红底用）
     titleColor: Color = MaterialTheme.colorScheme.onSurface,
@@ -693,13 +755,21 @@ private fun MenuRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Icon(
-            imageVector = Icons.Default.ChevronRight,
-            contentDescription = null,
-            tint = if (danger) Color(0xFFDC2626)
-                   else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp)
-        )
+        // 右侧 Switch 开关（开发者模式等开关行使用）
+        if (trailingSwitch != null && onSwitchChange != null) {
+            Switch(
+                checked = trailingSwitch,
+                onCheckedChange = onSwitchChange
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = if (danger) Color(0xFFDC2626)
+                       else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }
 

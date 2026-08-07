@@ -49,7 +49,7 @@ class StateMachineSleepTest {
             sleepDepth = "light"
         )
 
-        stateMachine.init(listOf(slot), emptyMap())
+        stateMachine.init(listOf(slot), emptyMap(), 1L)
 
         assertEquals(
             "浅睡 slot 应让状态机进入 LIGHT_SLEEP",
@@ -72,7 +72,7 @@ class StateMachineSleepTest {
             sleepDepth = "deep"
         )
 
-        stateMachine.init(listOf(slot), emptyMap())
+        stateMachine.init(listOf(slot), emptyMap(), 1L)
 
         assertEquals(
             "深睡 slot 应让状态机进入 UNAVAILABLE",
@@ -95,7 +95,7 @@ class StateMachineSleepTest {
             sleepDepth = null
         )
 
-        stateMachine.init(listOf(slot), emptyMap())
+        stateMachine.init(listOf(slot), emptyMap(), 1L)
 
         assertEquals(
             "sleepDepth=null 应沿用 slot.state",
@@ -118,7 +118,7 @@ class StateMachineSleepTest {
             sleepDepth = "light"
         )
 
-        stateMachine.init(listOf(slot), emptyMap())
+        stateMachine.init(listOf(slot), emptyMap(), 1L)
 
         val delay = stateMachine.getReplyDelaySec()
         assertNotNull("LIGHT_SLEEP 应有延迟配置", delay)

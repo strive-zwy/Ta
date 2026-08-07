@@ -303,73 +303,11 @@ fun AgentConfigScreen(
             }
         }
 
-        // ===== AI 辅助克隆引导卡片（Phase 4 新增）=====
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-                .shadow(
-                    elevation = 4.dp,
-                    shape = RoundedCornerShape(20.dp),
-                    ambientColor = AiAccentPurple.copy(alpha = 0.18f),
-                    spotColor = AiAccentPurple.copy(alpha = 0.18f)
-                )
-                .clip(RoundedCornerShape(20.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(AiAccentPurple.copy(alpha = 0.10f), AiAccentPink.copy(alpha = 0.06f))
-                    )
-                )
-                .clickable { onClone() }
-                .padding(horizontal = 18.dp, vertical = 16.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 图标圆角块
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(AiAccentPurple.copy(alpha = 0.16f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = AiAccentPurple,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "AI 辅助克隆",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AiTextPrimary
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "输入明星名字，AI 自动生成身份设定",
-                        fontSize = 12.sp,
-                        color = AiTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = AiAccentPurple,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-
         // ===== 导入/导出按钮区 =====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // 导入配置 — 主操作：柔和蓝渐变填充 + 白字
@@ -440,11 +378,73 @@ fun AgentConfigScreen(
             }
         }
 
+        // ===== AI 辅助偶像克隆引导卡片（Phase 4 新增）=====
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .shadow(
+                    elevation = 4.dp,
+                    shape = RoundedCornerShape(20.dp),
+                    ambientColor = AiAccentPurple.copy(alpha = 0.18f),
+                    spotColor = AiAccentPurple.copy(alpha = 0.18f)
+                )
+                .clip(RoundedCornerShape(20.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(AiAccentPurple.copy(alpha = 0.10f), AiAccentPink.copy(alpha = 0.06f))
+                    )
+                )
+                .clickable { onClone() }
+                .padding(horizontal = 18.dp, vertical = 16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 图标圆角块
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AiAccentPurple.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = AiAccentPurple,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "AI辅助偶像克隆",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AiTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = "输入明星名字，AI 自动生成身份设定",
+                        fontSize = 12.sp,
+                        color = AiTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = AiAccentPurple,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
         // ===== 配置入口列表（5 项） — 辅助色区分功能 =====
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
                 .shadow(
                     elevation = 4.dp,
                     shape = RoundedCornerShape(24.dp),

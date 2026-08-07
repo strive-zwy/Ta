@@ -38,7 +38,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
@@ -83,6 +82,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.ta.data.model.ModelEntry
+import com.agent.ta.data.remote.LlmClient
+import com.agent.ta.data.remote.LlmDiagnosisResult
 import com.agent.ta.data.remote.TtsClient
 import com.agent.ta.data.remote.TtsDiagnosisResult
 import com.agent.ta.di.ServiceLocator
@@ -111,8 +112,6 @@ import kotlinx.coroutines.launch
 fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
     val prefs = ServiceLocator.userPreferences
 
-    var nickname by remember { mutableStateOf(prefs.userNickname) }
-
     // ===== LLM 多模型状态 =====
     val llmModels = remember { prefs.llmModels.toMutableStateList() }
     var llmActiveId by remember { mutableStateOf(prefs.llmActiveId.ifBlank { llmModels.firstOrNull()?.id ?: "" }) }
@@ -137,6 +136,8 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
     var showLlmPicker by remember { mutableStateOf(false) }
     var showLlmAddDialog by remember { mutableStateOf(false) }
 
+    var llmTesting by remember { mutableStateOf(false) }
+    var llmDiagnosis by remember { mutableStateOf<LlmDiagnosisResult?>(null) }
     var testing by remember { mutableStateOf(false) }
     var diagnosis by remember { mutableStateOf<TtsDiagnosisResult?>(null) }
     var justSaved by remember { mutableStateOf(false) }
@@ -232,20 +233,6 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
                     .padding(horizontal = 16.dp, vertical = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // 卡片 A：用户称呼
-                ConfigCard(
-                    icon = Icons.Default.AccountCircle,
-                    title = "用户称呼"
-                ) {
-                    VibeOutlinedTextField(
-                        value = nickname,
-                        onValueChange = { nickname = it },
-                        label = "称呼",
-                        placeholder = "对你的称呼",
-                        singleLine = true
-                    )
-                }
-
                 // 卡片 B：LLM 模型配置
                 ConfigCard(
                     icon = Icons.Default.Bolt,
@@ -297,6 +284,71 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
                         placeholder = "如：deepseek-chat / grok-4.5",
                         singleLine = true
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        val llmTestScale by animateFloatAsState(
+                            targetValue = if (llmTesting) 0.95f else 1f,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = 380f
+                            ),
+                            label = "llmTestScale"
+                        )
+                        Surface(
+                            modifier = Modifier
+                                .scale(llmTestScale)
+                                .clip(RoundedCornerShape(50))
+                                .clickable(
+                                    enabled = !llmTesting &&
+                                        llmBaseUrl.isNotBlank() &&
+                                        llmApiKey.isNotBlank() &&
+                                        llmModel.isNotBlank()
+                                ) {
+                                    llmTesting = true
+                                    llmDiagnosis = null
+                                    scope.launch {
+                                        llmDiagnosis = LlmClient().diagnose(
+                                            baseUrl = llmBaseUrl,
+                                            apiKey = llmApiKey,
+                                            model = llmModel
+                                        )
+                                        llmTesting = false
+                                    }
+                                },
+                            color = VibePrimarySoft,
+                            shape = RoundedCornerShape(50)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (llmTesting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        strokeWidth = 2.dp,
+                                        color = VibePrimary
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = VibePrimary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Text(
+                                    text = if (llmTesting) "正在测试…" else "测试模型",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = VibePrimary
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // 卡片 C：TTS 模型配置
@@ -488,9 +540,8 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
                     .clip(RoundedCornerShape(16.dp))
                     .background(brush = if (justSaved) successGradient else gradient)
                     .clickable(enabled = canSave && !justSaved) {
-                        // 保存 LLM 模型列表 + 当前激活 id + TTS baseUrl/apiKey + 称呼
+                        // 保存 LLM 模型列表 + 当前激活 id + TTS baseUrl/apiKey
                         syncLlmActive()
-                        prefs.userNickname = nickname.ifBlank { "你" }
                         prefs.llmModels = llmModels.toList()
                         prefs.llmActiveId = llmActiveId
                         prefs.ttsBaseUrl = ttsBaseUrl
@@ -543,6 +594,55 @@ fun ModelConfigScreen(onConfigured: () -> Unit, onBack: (() -> Unit)? = null) {
                 }
             }
         }
+    }
+
+    val llmResult = llmDiagnosis
+    if (llmResult != null) {
+        AlertDialog(
+            onDismissRequest = { llmDiagnosis = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val iconTint = if (llmResult.success) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(iconTint.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (llmResult.success) "✓" else "✗",
+                            color = iconTint,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text(if (llmResult.success) "模型测试成功" else "模型测试失败")
+                }
+            },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    InfoRow("测试消息", "hello")
+                    InfoRow("请求耗时", "${llmResult.elapsedMs} ms")
+                    InfoRow("结果", llmResult.message)
+                    if (llmResult.reply.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        SectionDivider()
+                        SectionTitle("模型回复")
+                        Spacer(Modifier.height(4.dp))
+                        CodeBlock(text = llmResult.reply)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { llmDiagnosis = null }) { Text("关闭") }
+            }
+        )
     }
 
     // ===== 诊断结果弹窗 =====

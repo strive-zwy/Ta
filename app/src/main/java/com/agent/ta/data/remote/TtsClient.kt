@@ -72,7 +72,7 @@ class TtsClient {
         voiceSamplePath: String? = null,
         config: VoiceConfig? = null,
         emotionHint: String? = null
-    ): ByteArray? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    ): TtsAudioResult? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try {
             // 1. 解析样本路径（优先 config.emotions[emotion]，其次 v1 sampleFile，最后调用方传入）
             val resolvedSample = resolveSamplePath(config, voiceSamplePath, emotionHint)
@@ -81,7 +81,9 @@ class TtsClient {
             Log.d(TAG, "TTS 模式：$mode，samplePath=$resolvedSample，voiceDescription=${config?.voiceDescription?.take(30)}")
 
             // 3. 注入对应情绪的 voice_params 到 directorPrompt
-            val finalDirectorPrompt = buildDirectorWithParams(directorPrompt, config, emotionHint)
+            val finalDirectorPrompt = config?.let {
+                TtsPromptPolicy.build(directorPrompt, it, emotionHint)
+            } ?: TtsPromptPolicy.NATURAL_CHAT_BASELINE
 
             // 4. 根据模式构造请求
             val request = when (mode) {
@@ -110,16 +112,21 @@ class TtsClient {
                 val parsed = try {
                     json.decodeFromString(TtsResponse.serializer(), rawBody)
                 } catch (e: Exception) {
-                    Log.e(TAG, "TTS 响应解析失败：${e.message}，rawBody=${rawBody.take(500)}")
+                    Log.e(TAG, "TTS 响应解析失败，bodyLength=${rawBody.length}", e)
                     null
                 }
                 val audio = parsed?.choices?.firstOrNull()?.message?.audio
-                val result = audio?.data?.takeIf { it.isNotBlank() }?.let { Base64.decode(it, Base64.DEFAULT) }
+                val bytes = audio?.data?.takeIf { it.isNotBlank() }?.let { Base64.decode(it, Base64.DEFAULT) }
                     ?: audio?.downloadUrl?.takeIf { it.isNotBlank() }?.let { downloadAudio(it) }
+                val result = bytes?.let { value ->
+                    TtsAudioFormat.resolve(audio?.format, value)?.let { format ->
+                        TtsAudioResult(value, format)
+                    }
+                }
                 if (result != null) {
-                    Log.d(TAG, "TTS 合成成功（$mode）：${result.size} bytes")
+                    Log.d(TAG, "TTS 合成成功（$mode）：${result.bytes.size} bytes，format=${result.format}")
                 } else {
-                    Log.w(TAG, "TTS 响应无音频数据（$mode），choices=${parsed?.choices?.size ?: 0}，rawBody=${rawBody.take(500)}")
+                    Log.w(TAG, "TTS 响应无音频数据（$mode），choices=${parsed?.choices?.size ?: 0}，bodyLength=${rawBody.length}")
                 }
                 result
             }
@@ -163,7 +170,7 @@ class TtsClient {
                 TtsMessage(role = "user", content = directorPrompt),
                 TtsMessage(role = "assistant", content = text)
             ),
-            audio = VoiceCloneAudioInput(format = sampleFormat, voice = voiceDataURL)
+            audio = VoiceCloneAudioInput(format = "wav", voice = voiceDataURL)
         )
     }
 
@@ -225,129 +232,7 @@ class TtsClient {
         fallbackPath: String?,
         emotionHint: String?
     ): String? {
-        if (config != null) {
-            // 用 VoiceConfig.sampleFileFor 处理 fallback 链：
-            // emotion → neutral → v1 sampleFile
-            return config.sampleFileFor(emotionHint)
-        }
-        return fallbackPath?.takeIf { it.isNotBlank() }
-    }
-
-    /**
-     * 把对应情绪的 voiceParams 注入到 directorPrompt（作为对 TTS 模型的提示）
-     *
-     * voiceParams 中的数值（如 speed=1.0）会被转换为语义描述（如"适中"），
-     * 让 TTS 模型更容易理解用户意图，而不是依赖数值精度。
-     */
-    private fun buildDirectorWithParams(
-        baseDirectorPrompt: String,
-        config: VoiceConfig?,
-        emotionHint: String?
-    ): String {
-        if (config == null) return baseDirectorPrompt
-        // 声音风格未开启：不注入声学参数，让 TTS 模型自主分析语气/语速/音量
-        if (!config.styleEnabled) {
-            val sb = StringBuilder(baseDirectorPrompt)
-            if (baseDirectorPrompt.isNotBlank() && !baseDirectorPrompt.endsWith("\n")) {
-                sb.appendLine()
-            }
-            if (config.voiceDescription.isNotBlank()) {
-                sb.appendLine("声音描述：${config.voiceDescription}")
-            }
-            appendNaturalnessGuide(sb)
-            return sb.toString()
-        }
-        val params = config.voiceParamsFor(emotionHint)
-        val sb = StringBuilder(baseDirectorPrompt)
-        if (baseDirectorPrompt.isNotBlank() && !baseDirectorPrompt.endsWith("\n")) {
-            sb.appendLine()
-        }
-        if (params.isEmpty() && config.voiceDescription.isBlank()) {
-            // 没有声学参数也没有声音描述，只注入自然度引导
-            appendNaturalnessGuide(sb)
-            return sb.toString()
-        }
-        sb.appendLine("【声学参数】")
-        if (params.isNotEmpty()) {
-            params.forEach { (key, value) ->
-                if (value.isNotBlank()) {
-                    val label = when (key) {
-                        "speed" -> "语速"
-                        "pitch" -> "音高"
-                        "volume" -> "音量"
-                        "emotion" -> "情绪"
-                        "intonation" -> "语调"
-                        else -> key
-                    }
-                    // speed/pitch 等数值转为语义描述，帮助 TTS 模型理解
-                    val semantic = when (key) {
-                        "speed" -> describeSpeedSemantically(value.toFloatOrNull())
-                        "pitch" -> describePitchSemantically(value.toFloatOrNull())
-                        else -> value
-                    }
-                    sb.appendLine("- $label：$semantic")
-                }
-            }
-        }
-        // 自然度通用指导
-        appendNaturalnessGuide(sb)
-        if (config.punctuationStyle.isNotBlank()) {
-            sb.appendLine("标点风格：${config.punctuationStyle}")
-        }
-        if (config.fillerWordsHandling.isNotBlank()) {
-            sb.appendLine("口头缀词处理：${config.fillerWordsHandling}")
-        }
-        return sb.toString()
-    }
-
-    /**
-     * 自然度引导：注入到 TTS prompt，提升语音自然度
-     *
-     * 针对 MiMo TTS 模型，引导其：
-     * - 像真人说话一样有呼吸节奏和停顿
-     * - 语气词自然融入而非生硬
-     * - 句末语调符合语境（疑问上扬/陈述收住/感叹加强）
-     * - 避免机械感和磕绊
-     */
-    private fun appendNaturalnessGuide(sb: StringBuilder) {
-        sb.appendLine("【自然度要求】")
-        sb.appendLine("- 像真人对面聊天一样说话，有呼吸节奏，句子之间用短暂停顿分隔（不是机械停顿）")
-        sb.appendLine("- 语气词（啊、呢、嘛、吧、哦）自然融入句末，不要每句都加，也不要一句不加")
-        sb.appendLine("- 句末语调符合语义：疑问句轻微上扬，陈述句自然收住，感叹句略加强")
-        sb.appendLine("- 避免一字一顿的机械感，避免重复磕绊，长句中间可适当换气")
-        sb.appendLine("- 情绪自然流露，不要夸张表演，像和朋友随意聊天")
-    }
-
-    /**
-     * 把 speed 数值转为语义描述
-     * 与 AgentVoiceScreen 的档位值对应：
-     *   0.75 → 偏慢 / 0.9 → 适中偏慢 / 1.0 → 适中 / 1.15 → 偏快 / 1.4 → 较快
-     */
-    private fun describeSpeedSemantically(speed: Float?): String {
-        if (speed == null) return "适中"
-        return when {
-            speed <= 0.8f -> "偏慢，从容不迫"
-            speed <= 0.95f -> "适中偏慢，自然柔和"
-            speed <= 1.05f -> "适中，自然说话节奏"
-            speed <= 1.25f -> "偏快，但吐字清晰"
-            else -> "较快，语速明快"
-        }
-    }
-
-    /**
-     * 把 pitch 数值转为语义描述
-     * 与 AgentVoiceScreen 的档位值对应：
-     *   0.75 → 低沉 / 0.9 → 偏低 / 1.0 → 自然 / 1.2 → 清亮 / 1.5 → 高亢
-     */
-    private fun describePitchSemantically(pitch: Float?): String {
-        if (pitch == null) return "自然"
-        return when {
-            pitch <= 0.8f -> "低沉"
-            pitch <= 0.95f -> "偏低，沉稳"
-            pitch <= 1.05f -> "自然"
-            pitch <= 1.3f -> "偏高，明亮"
-            else -> "高亢"
-        }
+        return VoiceSampleResolver.resolve(config, fallbackPath, emotionHint)
     }
 
     /**
@@ -422,7 +307,7 @@ class TtsClient {
         val config = ServiceLocator.agentConfigProvider.get().voice
         val resolvedSample = resolveSamplePath(config, voiceSamplePath, null)
         val mode = selectMode(resolvedSample, config)
-        val finalDirectorPrompt = buildDirectorWithParams(directorPrompt, config, null)
+        val finalDirectorPrompt = TtsPromptPolicy.build(directorPrompt, config, null)
 
         val request = when (mode) {
             TtsMode.VOICECLONE -> {

@@ -183,7 +183,12 @@ class CelebrityCloner(
 5. personaInterests 3-5 个标签
 6. gender 必须为 "male" 或 "female"（基于启发人物真实性别）
 7. age 为启发人物真实年龄（整数），无法判断时填 0
-8. 直接输出 JSON，不要 Markdown 代码块（不要 ```json 包裹），不要任何解释性文字"""
+8. 直接输出 JSON，不要 Markdown 代码块（不要 ```json 包裹），不要任何解释性文字
+
+【时态区分（重要）】
+- knownWorks 里列举的是该人物的过往作品，本身是【过去式】，用于体现成名履历
+- 在 personaBackground / originStory / worldSetting 中描述这些作品时，必须用过去式措辞（如"曾出演《XX》""成名作《XX》""已发行过专辑《XX》"），明确它们是已经完成的事，不要写成"正在拍摄《XX》""在拍戏"等进行时
+- 这样后续生成每日作息时，清楚哪些是过去式履历、哪些是当下进行中的事，避免把已上映的电影/已播出的剧当成今天在做的活动"""
 
         val userPrompt = if (searchResults.isBlank()) {
             "未获取到搜索资料，请基于你对 ${starName} 的通识生成。"

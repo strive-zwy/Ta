@@ -58,8 +58,11 @@ class NotificationHelper(private val context: Context) {
 
     /**
      * Agent 消息通知
+     *
+     * @param agentName 消息所属 Agent 的名称（由调用方从消息的 agentId 解析传入，
+     *                  不使用当前 active Agent 覆盖，防止切换期间通知张冠李戴）
      */
-    fun notifyAgentMessage(text: String, audioPath: String?) {
+    fun notifyAgentMessage(text: String, audioPath: String?, agentName: String) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }

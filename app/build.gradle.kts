@@ -15,6 +15,9 @@ val keystoreProperties = Properties().apply {
         load(FileInputStream(file))
     }
 }
+val releaseRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
 
 android {
     namespace = "com.agent.ta"
@@ -41,7 +44,7 @@ android {
 
     signingConfigs {
         create("release") {
-            // 仅当 keystore.properties 存在对应字段时填充，否则保持空（fallback 到 debug 签名）
+            // Release 构建要求完整 keystore 配置
             keystoreProperties["storeFile"]?.let { storeFile = file(it as String) }
             keystoreProperties["storePassword"]?.let { storePassword = it as String }
             keystoreProperties["keyAlias"]?.let { keyAlias = it as String }
@@ -51,11 +54,12 @@ android {
 
     buildTypes {
         release {
-            // 配置了 keystore.properties 则用 release 签名，否则用 debug 签名兜底（CI 未配置 secrets 时仍可出包）
-            signingConfig = if (keystoreProperties.containsKey("storeFile")) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            val requiredSigningKeys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+            check(!releaseRequested || requiredSigningKeys.all(keystoreProperties::containsKey)) {
+                "Release 构建需要完整的 keystore.properties：${requiredSigningKeys.joinToString()}"
+            }
+            if (requiredSigningKeys.all(keystoreProperties::containsKey)) {
+                signingConfig = signingConfigs.getByName("release")
             }
             optimization {
                 enable = false
@@ -69,6 +73,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     testOptions {
@@ -77,6 +82,11 @@ android {
             isReturnDefaultValues = true
         }
     }
+}
+
+// Room schema 导出目录，供迁移测试使用
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -101,6 +111,7 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    androidTestImplementation(libs.androidx.room.testing)
 
     // OkHttp + Retrofit
     implementation(libs.okhttp)

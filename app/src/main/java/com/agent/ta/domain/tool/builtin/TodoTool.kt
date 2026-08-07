@@ -89,8 +89,10 @@ class TodoTool : AgentTool {
         val date = parseField(params, "date")
             ?: LocalDate.now(zoneId).plusDays(1).format(DateTimeFormatter.ISO_LOCAL_DATE)
 
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val id = ServiceLocator.futureEventDao.insert(
             com.agent.ta.data.local.entity.FutureEventEntity(
+                agentId = agentId,
                 date = date,
                 description = description,
                 source = "todo"
@@ -108,7 +110,8 @@ class TodoTool : AgentTool {
     private suspend fun listTodos(params: String): ToolResult {
         val today = LocalDate.now(zoneId).format(DateTimeFormatter.ISO_LOCAL_DATE)
         val weekLater = LocalDate.now(zoneId).plusDays(30).format(DateTimeFormatter.ISO_LOCAL_DATE)
-        val todos = ServiceLocator.futureEventDao.getRange(today, weekLater)
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        val todos = ServiceLocator.futureEventDao.getRange(agentId, today, weekLater)
             .filter { !it.consumed }
             .sortedBy { it.date }
 
@@ -132,7 +135,8 @@ class TodoTool : AgentTool {
         val todoId = parseLongField(params, "todoId")
             ?: return ToolResult.Error("complete 操作缺少 todoId 参数")
 
-        ServiceLocator.futureEventDao.markConsumed(todoId)
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        ServiceLocator.futureEventDao.markConsumed(agentId, todoId)
         return ToolResult.Success(content = "待办事项（ID=$todoId）已标记为完成")
     }
 

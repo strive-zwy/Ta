@@ -20,6 +20,28 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
+data class LlmDiagnosisResult(
+    val success: Boolean,
+    val reply: String,
+    val elapsedMs: Long,
+    val message: String
+) {
+    companion object {
+        fun fromReply(reply: String, elapsedMs: Long): LlmDiagnosisResult {
+            val trimmed = reply.trim()
+            return LlmDiagnosisResult(
+                success = trimmed.isNotBlank(),
+                reply = trimmed,
+                elapsedMs = elapsedMs,
+                message = if (trimmed.isNotBlank()) "模型回复正常" else "模型返回了空内容"
+            )
+        }
+
+        fun failure(message: String, elapsedMs: Long): LlmDiagnosisResult =
+            LlmDiagnosisResult(false, "", elapsedMs, message)
+    }
+}
+
 /**
  * LLM 客户端（OpenAI 兼容协议）
  * 要求 LLM 输出 JSON 结构（replies 数组 + action + directorPrompt + memoryUpdates + futureEvents）
@@ -82,6 +104,36 @@ class LlmClient {
      */
     private fun cleanApiKey(): String = prefs.llmApiKey.filter { !it.isWhitespace() }
 
+    suspend fun diagnose(
+        baseUrl: String,
+        apiKey: String,
+        model: String
+    ): LlmDiagnosisResult {
+        val startedAt = System.currentTimeMillis()
+        return try {
+            val response = ApiClientFactory.createLlmApi(baseUrl.trim()).chatCompletion(
+                auth = "Bearer ${apiKey.filter { !it.isWhitespace() }}",
+                request = ChatCompletionRequest(
+                    model = model.trim(),
+                    messages = listOf(ChatMessage(role = "user", content = "hello")),
+                    temperature = 0.0
+                )
+            )
+            LlmDiagnosisResult.fromReply(
+                response.choices.firstOrNull()?.message?.content.orEmpty(),
+                System.currentTimeMillis() - startedAt
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LlmDiagnosisResult.failure(
+                message = e.message?.takeIf { it.isNotBlank() }
+                    ?: e.javaClass.simpleName,
+                elapsedMs = System.currentTimeMillis() - startedAt
+            )
+        }
+    }
+
     /**
      * 发起对话，返回结构化回复
      * 失败时自动重试，最多重试 3 次，延迟递增（指数退避）
@@ -97,7 +149,7 @@ class LlmClient {
         // 第一次尝试
         val firstAttempt = requestReplyOrNull(messages, temperature = 0.85)
         if (firstAttempt?.hasContent() == true) {
-            Log.d(TAG, "首次回复有效：replies=${firstAttempt.replies.size}, replyText=${firstAttempt.replyText.take(30)}")
+            Log.d(TAG, "首次回复有效：replies=${firstAttempt.replies.size}, textLength=${firstAttempt.replyText.length}")
             return firstAttempt
         }
         Log.w(TAG, "首次回复无效，开始重试。firstAttempt=${firstAttempt == null}, hasContent=${firstAttempt?.hasContent()}")
@@ -201,7 +253,7 @@ class LlmClient {
                     Log.w(TAG, "chatWithTools: LLM 返回空内容")
                     ToolCallResponse.Reply(AgentReply())
                 } else {
-                    Log.d(TAG, "chatWithTools: LLM 直接回复（前 200 字符）：${content.take(200)}")
+                    Log.d(TAG, "chatWithTools: LLM 直接回复，contentLength=${content.length}")
                     ToolCallResponse.Reply(parseReply(content))
                 }
             }
@@ -251,7 +303,7 @@ class LlmClient {
             Log.w(TAG, "LLM 返回空内容")
             return AgentReply()
         }
-        Log.d(TAG, "LLM 原始返回（前 500 字符）：${content.take(500)}")
+        Log.d(TAG, "LLM 返回成功，contentLength=${content.length}")
         return parseReply(content)
     }
 
@@ -339,7 +391,9 @@ class LlmClient {
                     commitmentUpdates = parseCommitmentUpdates(obj),
                     milestoneDeclared = parseMilestoneDeclared(obj),
                     emotionIntensity = parseEmotionIntensity(obj),
-                    wantAvatarId = parseWantAvatarId(obj)
+                    wantAvatarId = parseWantAvatarId(obj),
+                    firstMeetingMeta = parseFirstMeetingMeta(obj),
+                    nicknameResolution = parseNicknameResolution(obj)
                 )
             } else {
                 // 旧格式 fallback：单条 replyText + action
@@ -354,7 +408,9 @@ class LlmClient {
                     commitmentUpdates = parseCommitmentUpdates(obj),
                     milestoneDeclared = parseMilestoneDeclared(obj),
                     emotionIntensity = parseEmotionIntensity(obj),
-                    wantAvatarId = parseWantAvatarId(obj)
+                    wantAvatarId = parseWantAvatarId(obj),
+                    firstMeetingMeta = parseFirstMeetingMeta(obj),
+                    nicknameResolution = parseNicknameResolution(obj)
                 )
             }
         } catch (e: Exception) {
@@ -504,6 +560,54 @@ class LlmClient {
             value.jsonPrimitive.contentOrNull?.toFloatOrNull() ?: 0f
         } catch (e: Exception) {
             0f
+        }
+    }
+
+    /**
+     * 解析 firstMeetingMeta 字段（Task 12 首次见面元数据）
+     *
+     * LLM 在首次见面场景输出 introducedSelf / askedForNickname 两个布尔值，
+     * 用于本地校验问候是否达成两个核心目标。
+     * 缺失或解析失败返回 null（普通对话场景不输出此字段）。
+     */
+    private fun parseFirstMeetingMeta(obj: JsonObject): com.agent.ta.data.remote.dto.FirstMeetingMeta? {
+        return try {
+            val metaObj = obj["firstMeetingMeta"] as? JsonObject ?: return null
+            com.agent.ta.data.remote.dto.FirstMeetingMeta(
+                introducedSelf = metaObj["introducedSelf"]?.jsonPrimitive?.contentOrNull == "true",
+                askedForNickname = metaObj["askedForNickname"]?.jsonPrimitive?.contentOrNull == "true"
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 解析 nicknameResolution 字段（Task 14 称呼解析）
+     *
+     * LLM 在首次见面 WAITING_NICKNAME / FOLLOW_UP_ASKED 阶段，以及首次见面完成后
+     * 用户修改称呼时，在同一次普通回复中输出此字段。
+     *
+     * 缺失或解析失败返回 null（普通对话场景不输出此字段）。
+     * 越界的 confidence 和未知的 intent 由 NicknameResolver.parse 做进一步清洗。
+     */
+    private fun parseNicknameResolution(obj: JsonObject): com.agent.ta.data.remote.dto.NicknameResolution? {
+        return try {
+            val resObj = obj["nicknameResolution"] as? JsonObject ?: return null
+            val intent = resObj["intent"]?.jsonPrimitive?.contentOrNull ?: "NONE"
+            val nickname = resObj["nickname"]?.jsonPrimitive?.contentOrNull
+            val confidence = resObj["confidence"]?.jsonPrimitive?.contentOrNull?.toFloatOrNull() ?: 0f
+            val evidence = resObj["evidence"]?.jsonPrimitive?.contentOrNull ?: ""
+            val shouldSave = resObj["shouldSave"]?.jsonPrimitive?.contentOrNull == "true"
+            com.agent.ta.data.remote.dto.NicknameResolution(
+                intent = intent,
+                nickname = nickname,
+                confidence = confidence,
+                evidence = evidence,
+                shouldSave = shouldSave
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 

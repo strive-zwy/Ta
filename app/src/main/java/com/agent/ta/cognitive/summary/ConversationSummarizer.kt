@@ -35,6 +35,8 @@ import kotlinx.coroutines.sync.withLock
  * 使用场景：
  * - 主回复路径：getPriorSummaries() 注入 Prompt Zone B
  * - 后台预热：prewarmNextBucket() 预生成下一个桶
+ *
+ * 多 Agent 隔离：所有方法显式传入 agentId，确保 Agent A/B 摘要完全隔离。
  */
 class ConversationSummarizer(
     private val llmClient: LlmClient,
@@ -43,21 +45,24 @@ class ConversationSummarizer(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
 
-    /** L1 内存缓存：bucketId -> summary */
-    private val l1Cache = mutableMapOf<Long, String>()
+    /** L1 内存缓存：${agentId}_${bucketId} -> summary */
+    private val l1Cache = mutableMapOf<String, String>()
     private val cacheMutex = Mutex()
+
+    private fun cacheKey(agentId: Long, bucketId: Long) = "${agentId}_${bucketId}"
 
     /**
      * 获取当前桶之前的所有桶摘要合并文本
      *
      * 用于注入 Prompt Zone B，让 LLM 知道之前聊过什么
      *
+     * @param agentId 目标 Agent 实例 ID
      * @param currentBucketId 当前桶 ID（不含）
      * @return 合并后的摘要文本，无摘要时返回 null
      */
-    suspend fun getPriorSummaries(currentBucketId: Long): String? {
+    suspend fun getPriorSummaries(agentId: Long, currentBucketId: Long): String? {
         return try {
-            val summaries = summaryDao.getPriorSummaries(currentBucketId)
+            val summaries = summaryDao.getPriorSummaries(agentId, currentBucketId)
             if (summaries.isEmpty()) return null
 
             val mergedText = summaries.joinToString(" | ") { entity ->
@@ -81,7 +86,7 @@ class ConversationSummarizer(
      * 当消息数达到桶大小时触发
      * 应在每次 Agent 回复后调用
      */
-    suspend fun checkAndGenerateSummary(allMessages: List<ChatMessageEntity>) {
+    suspend fun checkAndGenerateSummary(agentId: Long, allMessages: List<ChatMessageEntity>) {
         val totalMessages = allMessages.size
         val expectedBuckets = totalMessages / BUCKET_SIZE
 
@@ -91,7 +96,7 @@ class ConversationSummarizer(
         }
 
         // 检查哪些桶还没生成摘要
-        val existingMaxBucketId = summaryDao.getMaxBucketId() ?: 0
+        val existingMaxBucketId = summaryDao.getMaxBucketId(agentId) ?: 0
 
         for (bucketId in (existingMaxBucketId + 1)..expectedBuckets) {
             val startIndex = ((bucketId - 1) * BUCKET_SIZE).toInt()
@@ -102,7 +107,7 @@ class ConversationSummarizer(
 
             // 后台生成，不阻塞主流程
             scope.launch {
-                generateAndPersist(bucketId, bucketMessages)
+                generateAndPersist(agentId, bucketId, bucketMessages)
             }
         }
     }
@@ -112,11 +117,11 @@ class ConversationSummarizer(
      *
      * 在用户长时间未响应时调用，提前生成可能需要的摘要
      */
-    suspend fun prewarmNextBucket() {
+    suspend fun prewarmNextBucket(agentId: Long) {
         try {
-            val allMessages = chatDao.getAll()
+            val allMessages = chatDao.getAll(agentId)
             val totalMessages = allMessages.size
-            val nextBucketId = (summaryDao.getMaxBucketId() ?: 0) + 1
+            val nextBucketId = (summaryDao.getMaxBucketId(agentId) ?: 0) + 1
             val nextBucketStart = ((nextBucketId - 1) * BUCKET_SIZE).toInt()
 
             // 仅当下一桶的消息数达到阈值时预热
@@ -132,14 +137,14 @@ class ConversationSummarizer(
             )
 
             // 检查是否已生成
-            if (summaryDao.getByBucketId(nextBucketId) != null) {
+            if (summaryDao.getByBucketId(agentId, nextBucketId) != null) {
                 Log.v(TAG, "桶 #$nextBucketId 已存在摘要，跳过预热")
                 return
             }
 
             scope.launch {
-                generateAndPersist(nextBucketId, bucketMessages)
-                Log.d(TAG, "桶 #$nextBucketId 预热完成")
+                generateAndPersist(agentId, nextBucketId, bucketMessages)
+                Log.d(TAG, "桶 #$nextBucketId 预热完成 (agentId=$agentId)")
             }
         } catch (e: Exception) {
             Log.e(TAG, "预热失败: ${e.message}", e)
@@ -149,8 +154,8 @@ class ConversationSummarizer(
     /**
      * 获取当前桶 ID（基于消息总数计算）
      */
-    suspend fun getCurrentBucketId(): Long {
-        val totalMessages = chatDao.getAll().size
+    suspend fun getCurrentBucketId(agentId: Long): Long {
+        val totalMessages = chatDao.getAll(agentId).size
         return (totalMessages / BUCKET_SIZE) + 1
     }
 
@@ -159,11 +164,12 @@ class ConversationSummarizer(
      *
      * 失败降级：LLM 失败时用截断前 50 字兜底
      */
-    private suspend fun generateAndPersist(bucketId: Long, messages: List<ChatMessageEntity>) {
+    private suspend fun generateAndPersist(agentId: Long, bucketId: Long, messages: List<ChatMessageEntity>) {
         try {
             val summary = generateSummaryViaLlm(messages)
 
             val entity = ConversationSummaryEntity(
+                agentId = agentId,
                 bucketId = bucketId,
                 startMessageId = messages.first().id,
                 endMessageId = messages.last().id,
@@ -176,10 +182,10 @@ class ConversationSummarizer(
 
             // 更新 L1 缓存
             cacheMutex.withLock {
-                l1Cache[bucketId] = summary
+                l1Cache[cacheKey(agentId, bucketId)] = summary
             }
 
-            Log.d(TAG, "桶 #$bucketId 摘要已生成并持久化（${messages.size}条消息 → ${summary.length}字）")
+            Log.d(TAG, "桶 #$bucketId 摘要已生成并持久化（agentId=$agentId, ${messages.size}条消息 → ${summary.length}字）")
         } catch (e: Exception) {
             Log.e(TAG, "生成桶 #$bucketId 摘要失败: ${e.message}", e)
         }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,8 +52,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.EmojiEmotions
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -61,9 +62,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -135,16 +139,40 @@ fun ChatScreen(
     val playingPath by viewModel.playingPath.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val isReplying by viewModel.isReplying.collectAsState()
+    val hasMoreOlder by viewModel.hasMoreOlder.collectAsState()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsState()
     val listState = rememberLazyListState()
     val agentConfig by ServiceLocator.agentConfigProvider.config.collectAsState()
     val agentState by AgentEngine.currentState.collectAsState()
     var showEmojiPanel by rememberSaveable { mutableStateOf(false) }
     var emojiCategoryIndex by rememberSaveable { mutableStateOf(0) }
 
-    // 消息列表变化时自动滚到底部
-    LaunchedEffect(messages.size, isReplying) {
+    // 仅当最后一条消息变化时（新消息追加）才自动滚到底部，
+    // 加载更早消息（前置插入）不触发滚动
+    var lastMsgId by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(messages.lastOrNull()?.id, isReplying) {
         if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+            val currentLastId = messages.last().id
+            if (currentLastId != lastMsgId) {
+                lastMsgId = currentLastId
+                listState.animateScrollToItem(messages.size - 1)
+            }
+        }
+    }
+
+    // 滚到顶部时自动加载更多
+    var canLoadMore by remember { mutableStateOf(true) }
+    val atTop by remember {
+        derivedStateOf {
+            hasMoreOlder && listState.firstVisibleItemIndex == 0
+        }
+    }
+    LaunchedEffect(atTop) {
+        if (atTop && canLoadMore && !isLoadingMore && messages.isNotEmpty()) {
+            canLoadMore = false
+            viewModel.loadMoreOlder()
+        } else if (!atTop) {
+            canLoadMore = true
         }
     }
 
@@ -173,27 +201,68 @@ fun ChatScreen(
             )
 
             // ===== 4. 消息列表 =====
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                state = listState,
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp)
+            // emoji 面板打开时，点击消息区域关闭面板（clickable 只响应 tap，不影响滚动）
+            val dismissModifier = if (showEmojiPanel && emojiEnabled) {
+                Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { showEmojiPanel = false }
+            } else Modifier
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .then(dismissModifier)
             ) {
-                // 日期分隔条
-                item { DateSeparator(timestamp = System.currentTimeMillis()) }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    // 加载更多指示器
+                    if (hasMoreOlder) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoadingMore) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                } else {
+                                    Text(
+                                        text = "继续上滑加载更多",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                        }
+                    }
 
-                itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
-                    MessageBubble(
-                        message = msg,
-                        isPlaying = playingPath == msg.audioPath && isPlaying,
-                        onTogglePlay = { msg.audioPath?.let { viewModel.toggleVoicePlay(it) } },
-                        enterDelayMs = TaMotion.staggerDelayMs(index)
-                    )
-                }
+                    // 日期分隔条
+                    item { DateSeparator(timestamp = System.currentTimeMillis()) }
 
-                // 正在输入 pill 气泡（消息流尾部）
-                if (isReplying && agentState != AgentState.UNAVAILABLE) {
-                    item { TypingBubble() }
+                    itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
+                        MessageBubble(
+                            message = msg,
+                            isPlaying = playingPath == msg.audioPath && isPlaying,
+                            onTogglePlay = { msg.audioPath?.let { viewModel.toggleVoicePlay(it) } },
+                            enterDelayMs = TaMotion.staggerDelayMs(index)
+                        )
+                    }
+
+                    // 正在输入 pill 气泡（消息流尾部）
+                    if (isReplying && agentState != AgentState.UNAVAILABLE) {
+                        item { TypingBubble() }
+                    }
                 }
             }
 
@@ -556,8 +625,16 @@ private fun MessageBubble(
             // 设计稿变体 1：Agent 语音消息的"转文字"按钮在气泡外，与时间戳并排
             val isAgentVoice = !isUser && message.audioPath != null
             if (isAgentVoice) {
+                // 转文字时把 emoji 拼到文字前面
+                val transcript = buildString {
+                    if (!message.emoji.isNullOrBlank()) {
+                        append(message.emoji)
+                        if (!message.text.isNullOrBlank()) append("  ")
+                    }
+                    if (!message.text.isNullOrBlank()) append(message.text)
+                }.ifBlank { null }
                 VoiceMessageFooter(
-                    transcript = message.text,
+                    transcript = transcript,
                     timestamp = message.createdAt,
                     timeText = formatTime(message.createdAt),
                     modifier = Modifier
@@ -633,15 +710,17 @@ private fun MessageContent(message: ChatMessageEntity, isUser: Boolean, isPlayin
         val hasText = !message.text.isNullOrBlank()
         val hasEmoji = !message.emoji.isNullOrBlank()
         val showText = hasText && (isUser || message.audioPath == null)
-        if (showText || hasEmoji) {
+        // 语音消息的 emoji 只在"转文字"中展示，不渲染在气泡内
+        val showEmoji = hasEmoji && message.audioPath == null
+        if (showText || showEmoji) {
             val combined = buildString {
-                if (hasEmoji) append(message.emoji)
-                if (hasEmoji && showText) append("  ")
+                if (showEmoji) append(message.emoji)
+                if (showEmoji && showText) append("  ")
                 if (showText) append(message.text)
             }
             Text(
                 text = combined,
-                fontSize = if (hasEmoji && !showText) 32.sp else 15.sp,
+                fontSize = if (showEmoji && !showText) 32.sp else 15.sp,
                 color = if (isUser) Color.White
                         else MaterialTheme.colorScheme.onSurface
             )
@@ -663,6 +742,9 @@ private fun VibeChatInputBar(
     onToggleEmojiPanel: () -> Unit,
     emojiEnabled: Boolean
 ) {
+    // 输入框焦点：点击输入框容器任意位置都能聚焦 BasicTextField
+    val inputFocusRequester = remember { FocusRequester() }
+
     // 悬浮 Dock：白底 + 圆角28 + 阴影，距底16/左右16
     Box(
         modifier = Modifier
@@ -686,22 +768,8 @@ private fun VibeChatInputBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // 麦克风按钮（44×44 圆形，#F3F6F7 底）
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(AiRoundBtnBg)
-                    .clickable { /* 未来：按住说话 */ },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Mic,
-                    contentDescription = "语音",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            // 语音输入入口暂隐藏，后续实现"按住说话"功能后再显示
+            // （原 44×44 圆形 Mic 按钮，git 历史可查）
 
             // 输入框（#FAFBFC 底 + 圆角22 + 无边框）
             Box(
@@ -710,6 +778,7 @@ private fun VibeChatInputBar(
                     .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(22.dp))
                     .background(AiInputFieldBg)
+                    .clickable { inputFocusRequester.requestFocus() }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
@@ -722,6 +791,9 @@ private fun VibeChatInputBar(
                     ),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(AiPrimary),
                     singleLine = false,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(inputFocusRequester),
                     decorationBox = { innerTextField ->
                         if (text.isEmpty()) {
                             Text(

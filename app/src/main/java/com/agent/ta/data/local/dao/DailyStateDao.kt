@@ -17,14 +17,14 @@ interface DailyStateDao {
     @Update
     suspend fun update(entity: DailyStateEntity)
 
-    @Query("SELECT * FROM daily_state WHERE date = :date LIMIT 1")
-    suspend fun getByDate(date: String): DailyStateEntity?
+    @Query("SELECT * FROM daily_state WHERE agentId = :agentId AND date = :date LIMIT 1")
+    suspend fun getByDate(agentId: Long, date: String): DailyStateEntity?
 
-    @Query("SELECT * FROM daily_state WHERE date >= :startDate AND date <= :endDate ORDER BY date DESC")
-    suspend fun getRange(startDate: String, endDate: String): List<DailyStateEntity>
+    @Query("SELECT * FROM daily_state WHERE agentId = :agentId AND date >= :startDate AND date <= :endDate ORDER BY date DESC")
+    suspend fun getRange(agentId: Long, startDate: String, endDate: String): List<DailyStateEntity>
 
-    @Query("SELECT * FROM daily_state ORDER BY date DESC LIMIT :limit")
-    suspend fun getRecent(limit: Int = 7): List<DailyStateEntity>
+    @Query("SELECT * FROM daily_state WHERE agentId = :agentId ORDER BY date DESC LIMIT :limit")
+    suspend fun getRecent(agentId: Long, limit: Int = 7): List<DailyStateEntity>
 
     /**
      * upsert 但保留 createdAt
@@ -32,7 +32,7 @@ interface DailyStateDao {
      */
     @Transaction
     suspend fun upsertPreservingCreatedAt(entity: DailyStateEntity) {
-        val existing = getByDate(entity.date)
+        val existing = getByDate(entity.agentId, entity.date)
         if (existing != null) {
             update(entity.copy(createdAt = existing.createdAt))
         } else {
@@ -40,6 +40,9 @@ interface DailyStateDao {
         }
     }
 
-    @Query("DELETE FROM daily_state WHERE date < :beforeDate")
-    suspend fun deleteBefore(beforeDate: String): Int
+    @Query("DELETE FROM daily_state WHERE agentId = :agentId AND date < :beforeDate")
+    suspend fun deleteBefore(agentId: Long, beforeDate: String): Int
+
+    @Query("DELETE FROM daily_state WHERE agentId = :agentId")
+    suspend fun deleteAll(agentId: Long)
 }

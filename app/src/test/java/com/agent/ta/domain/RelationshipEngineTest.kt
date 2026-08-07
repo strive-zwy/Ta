@@ -26,7 +26,7 @@ class RelationshipEngineTest {
     private fun makeState(intimacy: Int = 0, trust: Int = 0, interactionCount: Int = 0): RelationshipStateEntity {
         val now = System.currentTimeMillis()
         return RelationshipStateEntity(
-            id = 1,
+            agentId = 1L,
             currentStage = "stranger",
             intimacyScore = intimacy,
             trustScore = trust,

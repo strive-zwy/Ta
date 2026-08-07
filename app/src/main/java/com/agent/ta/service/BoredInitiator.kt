@@ -152,7 +152,9 @@ class BoredInitiator(private val context: Context) {
 
         // 3. 冷却检查（固定 30 分钟）—— 势能 >= 80 时绕过
         if (!bypassCooldown) {
+            val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
             val recentCount = chatDao.countOutboundSince(
+                agentId,
                 System.currentTimeMillis() - COOLDOWN_MS
             )
             if (recentCount > 0) {
@@ -233,7 +235,8 @@ class BoredInitiator(private val context: Context) {
             .atStartOfDay(zone)
             .toInstant()
             .toEpochMilli()
-        return chatDao.countOutboundSince(todayStart)
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        return chatDao.countOutboundSince(agentId, todayStart)
     }
 
     /**

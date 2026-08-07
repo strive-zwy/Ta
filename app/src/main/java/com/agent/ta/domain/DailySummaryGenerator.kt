@@ -61,11 +61,12 @@ class DailySummaryGenerator {
         zoneId: ZoneId = ZoneId.of("Asia/Shanghai")
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
             val dateStr = date.format(DATE_FORMAT)
             val dateDisplay = date.format(DISPLAY_FORMAT)
 
             // 检查是否已生成过摘要（避免重复）
-            val existingSummary = memoryDao.getTopMemories(100).any {
+            val existingSummary = memoryDao.getTopMemories(agentId, 100).any {
                 it.type == "event" && it.category == "daily_summary" && it.content.contains(dateStr)
             }
             if (existingSummary) {
@@ -74,20 +75,20 @@ class DailySummaryGenerator {
             }
 
             // 获取该日期的作息（用于补充上下文，也用于提取睡眠/活动信息）
-            val schedule = dailyScheduleDao.getByDate(dateStr)
+            val schedule = dailyScheduleDao.getByDate(agentId, dateStr)
             val scheduleSummary = schedule?.let { parseScheduleSummary(it) } ?: ""
 
             // 获取该日期的聊天记录
             val startTs = date.atStartOfDay(zoneId).toInstant().toEpochMilli()
             val endTs = date.plusDays(1).atStartOfDay(zoneId).toInstant().toEpochMilli()
-            val dayMessages = chatMessageDao.getAll().filter { msg ->
+            val dayMessages = chatMessageDao.getAll(agentId).filter { msg ->
                 msg.createdAt in startTs until endTs
             }
 
             if (dayMessages.isEmpty()) {
                 Log.d(TAG, "$dateStr 无聊天记录，跳过摘要生成")
                 // 即使没有聊天记录，也尝试写入结构化 DailyState（用于启动补齐）
-                schedule?.let { writeDailyState(dateStr, it, dayMessages, null, "") }
+                schedule?.let { writeDailyState(agentId, dateStr, it, dayMessages, null, "") }
                 return@withContext true
             }
 
@@ -96,7 +97,7 @@ class DailySummaryGenerator {
 
             // Step 30: 注入当天承诺历史，让摘要包含承诺完成情况
             // 复用前面已计算的 startTs/endTs（基于 Asia/Shanghai 时区）
-            val commitments = ServiceLocator.commitmentDao.getByDateRange(startTs, endTs)
+            val commitments = ServiceLocator.commitmentDao.getByDateRange(agentId, startTs, endTs)
             val prompt = if (commitments.isNotEmpty()) {
                 val csb = StringBuilder(basePrompt)
                 csb.appendLine()
@@ -137,6 +138,7 @@ class DailySummaryGenerator {
             // 存入记忆（兼容原有 daily_summary 写入）
             memoryDao.insert(
                 MemoryEntity(
+                    agentId = agentId,
                     type = "event",
                     category = "daily_summary",
                     content = "$dateStr 对话摘要：$cleanSummary",
@@ -149,7 +151,7 @@ class DailySummaryGenerator {
 
             // 写入结构化 DailyStateEntity
             schedule?.let {
-                writeDailyState(dateStr, it, dayMessages, structuredParams, cleanSummary)
+                writeDailyState(agentId, dateStr, it, dayMessages, structuredParams, cleanSummary)
             }
 
             Log.d(TAG, "已生成 $dateStr 的对话摘要")
@@ -289,6 +291,7 @@ class DailySummaryGenerator {
      * 从作息提取睡眠信息、从聊天记录统计互动、从 LLM 提取情绪参数
      */
     private suspend fun writeDailyState(
+        agentId: Long,
         dateStr: String,
         schedule: DailyScheduleEntity,
         dayMessages: List<com.agent.ta.data.local.entity.ChatMessageEntity>,
@@ -304,6 +307,7 @@ class DailySummaryGenerator {
 
             dailyStateDao.upsertPreservingCreatedAt(
                 DailyStateEntity(
+                    agentId = agentId,
                     date = dateStr,
                     sleepTime = sleepTime,
                     wakeTime = wakeTime,

@@ -27,8 +27,9 @@ class CommitmentObserver : Observer {
 
     override suspend fun collect(): ObserverSnapshot {
         val timestamp = timeContext.nowMillis()
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         // 查询已到触发时间但还未触发的承诺
-        val dueCommitments = ServiceLocator.commitmentDao.getDueCommitments(timestamp)
+        val dueCommitments = ServiceLocator.commitmentDao.getDueCommitments(agentId, timestamp)
 
         val dueCount = dueCommitments.size
         // 简要信息列表（供程序读取）

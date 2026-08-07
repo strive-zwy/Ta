@@ -38,11 +38,11 @@ class CommitmentScheduler(private val context: Context) {
         val intent = Intent(context, CommitmentTriggerReceiver::class.java).apply {
             action = CommitmentTriggerReceiver.ACTION_COMMITMENT_TRIGGER
             putExtra(CommitmentTriggerReceiver.EXTRA_COMMITMENT_ID, commitment.id)
+            putExtra(CommitmentTriggerReceiver.EXTRA_AGENT_ID, commitment.agentId)
         }
-        // 用 commitment.id 作为 requestCode，确保唯一
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            commitment.id.toInt(),
+            requestCode(commitment.agentId, commitment.id),
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -74,13 +74,15 @@ class CommitmentScheduler(private val context: Context) {
      *
      * 在承诺被完成/取消时调用，避免到点重复触发
      */
-    fun cancelCommitmentTrigger(commitmentId: Long) {
+    fun cancelCommitmentTrigger(agentId: Long, commitmentId: Long) {
         val intent = Intent(context, CommitmentTriggerReceiver::class.java).apply {
             action = CommitmentTriggerReceiver.ACTION_COMMITMENT_TRIGGER
+            putExtra(CommitmentTriggerReceiver.EXTRA_COMMITMENT_ID, commitmentId)
+            putExtra(CommitmentTriggerReceiver.EXTRA_AGENT_ID, agentId)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            commitmentId.toInt(),
+            requestCode(agentId, commitmentId),
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE
         )
@@ -92,5 +94,8 @@ class CommitmentScheduler(private val context: Context) {
 
     companion object {
         private const val TAG = "CommitmentScheduler"
+
+        private fun requestCode(agentId: Long, commitmentId: Long): Int =
+            31 * agentId.hashCode() + commitmentId.hashCode()
     }
 }

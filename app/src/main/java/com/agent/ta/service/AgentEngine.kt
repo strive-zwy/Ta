@@ -1,8 +1,9 @@
 package com.agent.ta.service
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
-import com.agent.ta.data.local.entity.OnboardingStateEntity
+import com.agent.ta.data.local.entity.CommitmentEntity
 import com.agent.ta.data.model.AgentState
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.domain.ChatInteractor
@@ -19,7 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.ZoneId
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Agent 全局引擎（单例）
@@ -54,8 +55,9 @@ object AgentEngine {
     @Volatile
     private var loadedScheduleDate: String? = null
 
-    /** start() 重入保护标志（AtomicBoolean 保证只初始化一次） */
-    private val isStarted = AtomicBoolean(false)
+    private val lifecycleState = AtomicReference(LifecycleState.STOPPED)
+
+    private val recoveryMutex = Mutex()
 
     /** ensureTodayScheduleFresh 互斥锁（防止并发重复调 LLM） */
     private val scheduleMutex = Mutex()
@@ -65,7 +67,9 @@ object AgentEngine {
      */
     fun start(context: Context) {
         // 重入保护：快速二次调用（如 BootReceiver + App 启动）时只初始化一次
-        if (!isStarted.compareAndSet(false, true)) {
+        if (!lifecycleState.compareAndSet(LifecycleState.STOPPED, LifecycleState.STARTING) &&
+            !lifecycleState.compareAndSet(LifecycleState.FAILED, LifecycleState.STARTING)
+        ) {
             Log.d(TAG, "AgentEngine 已启动，跳过重复初始化")
             return
         }
@@ -74,8 +78,10 @@ object AgentEngine {
         val appContext = context.applicationContext
 
         scope.launch {
-            // 0. 从 DB 加载已导入的自定义 Agent 配置（若有），否则用默认
-            com.agent.ta.di.ServiceLocator.agentConfigProvider.reload()
+            try {
+            // 0. 确保持久化的活跃 Agent 存在（首次启动插入默认 Agent 并激活），
+            //    同时刷新 AgentConfigProvider 内存缓存
+            ServiceLocator.activeAgentManager.ensureDefaultAgentPersisted()
 
             val config = com.agent.ta.di.ServiceLocator.agentConfigProvider.get()
 
@@ -87,7 +93,8 @@ object AgentEngine {
             Log.d(TAG, "当天作息：${slots.size} 个时段（日期：$loadedScheduleDate）")
 
             // 2. 初始化状态机
-            stateMachine.init(slots, config.behavior.replyDelaySec)
+            val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+            stateMachine.init(slots, config.behavior.replyDelaySec, agentId)
             _currentState.value = stateMachine.currentState.value
 
             // 2.5 初始化活动锚点管理器（从作息表当前时段派生 SCHEDULE anchor）
@@ -105,10 +112,53 @@ object AgentEngine {
             lifeEventInitiator = LifeEventInitiator(appContext)
 
             // 5. 处理被杀期间的待回复消息
+            ServiceLocator.chatMessageDao.releaseStaleProcessing(
+                System.currentTimeMillis() - PROCESSING_STALE_MS
+            )
             processPendingMessages(appContext)
 
-            // 6. 检查 Onboarding 状态
-            checkOnboarding(appContext)
+            // 5.5 承诺闹钟恢复 + 已到期承诺立即触发
+            // AlarmManager 在设备重启或 App 被杀后会丢失所有闹钟，需要从 DB 恢复
+            // 已到期但未触发的承诺（被杀期间错过触发时间的）立即补触发，避免"已存在未触发"状态
+            try {
+                val now = System.currentTimeMillis()
+                val pendingCommitments = ServiceLocator.commitmentDao.getByStatus(agentId, "pending")
+                    .filter { it.triggerAt != null }
+
+                // 读取承诺定时提醒开关：开启时由系统到点主动发消息，关闭时靠 LLM 在对话中自然提醒
+                val timerEnabled = ServiceLocator.userPreferences.commitmentTimerEnabled
+
+                val scheduler = CommitmentScheduler(appContext)
+                val dueList = mutableListOf<CommitmentEntity>()
+                val futureList = mutableListOf<CommitmentEntity>()
+
+                pendingCommitments.forEach { c ->
+                    if (c.triggerAt!! <= now) {
+                        dueList.add(c)
+                    } else {
+                        futureList.add(c)
+                    }
+                }
+
+                if (timerEnabled) {
+                    // 定时任务模式：已到期承诺立即补触发 + 未到期承诺重新注册闹钟
+                    dueList.forEach { commitment ->
+                        triggerCommitment(appContext, commitment)
+                    }
+                    futureList.forEach { commitment ->
+                        scheduler.scheduleCommitmentTrigger(commitment)
+                    }
+                    Log.d(TAG, "承诺恢复（定时模式）：补触发 ${dueList.size} 条已到期，重新调度 ${futureList.size} 条未到期")
+                } else {
+                    Log.d(TAG, "承诺恢复（记忆模式）：保留 ${dueList.size} 条到期承诺供对话自然提醒")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "承诺闹钟恢复失败（不影响主流程）", e)
+            }
+
+            // 6. 触发首次见面问候（Task 16：替代旧 Onboarding）
+            //    FirstMeetingCoordinator 内部 CAS 抢占，已完成或正在生成时静默跳过
+            checkFirstMeeting(appContext)
 
             // 7. 注册内置观察者并启动心跳（L0 基础设施层）
             //    阶段4: 仅记录日志验证 Observer 工作
@@ -122,18 +172,10 @@ object AgentEngine {
                 // collectChanged() 已按 hasDelta=true 过滤，此处只需确认承诺快照在变化列表中
                 val commitmentSnapshot = changedSnapshots.find { it.observerId == "commitment" }
                 if (commitmentSnapshot != null) {
-                    val dueCommitments = ServiceLocator.commitmentDao.getDueCommitments(System.currentTimeMillis())
+                    val hbAgentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+                    val dueCommitments = ServiceLocator.commitmentDao.getDueCommitments(hbAgentId, System.currentTimeMillis())
                     dueCommitments.forEach { commitment ->
-                        // 标记为 triggered 避免重复触发
-                        ServiceLocator.commitmentDao.updateStatus(commitment.id, "triggered")
-                        // 构造 topicHint 并触发主动消息
-                        val topicHint = when (commitment.type) {
-                            "appointment" -> "到了和用户约定的时间：${commitment.content}。你可以说类似'时间到啦，你那边准备好了吗？'"
-                            "promise" -> "你之前答应了用户：${commitment.content}。现在该去做了"
-                            "reminder" -> "你之前答应了提醒用户：${commitment.content}。现在该提醒用户了"
-                            else -> "承诺时间到了：${commitment.content}"
-                        }
-                        ChatInteractor(appContext).agentInitiate(topicHint)
+                        triggerCommitment(appContext, commitment)
                     }
                 }
             }
@@ -142,7 +184,22 @@ object AgentEngine {
             // Phase 3 情感势能：启动整点定时协程（每小时触发一次情绪积累+衰减）
             // 独立于 Heartbeat（Heartbeat 按状态变化触发，不适合做整点定时）
             startEmotionalHourlyTicker()
+            lifecycleState.set(LifecycleState.RUNNING)
+            } catch (e: Exception) {
+                lifecycleState.set(LifecycleState.FAILED)
+                Log.e(TAG, "AgentEngine 启动失败，可在下次调用时重试", e)
+            }
         }
+    }
+
+    private fun triggerCommitment(context: Context, commitment: CommitmentEntity) {
+        context.sendBroadcast(
+            Intent(context, CommitmentTriggerReceiver::class.java).apply {
+                action = CommitmentTriggerReceiver.ACTION_COMMITMENT_TRIGGER
+                putExtra(CommitmentTriggerReceiver.EXTRA_COMMITMENT_ID, commitment.id)
+                putExtra(CommitmentTriggerReceiver.EXTRA_AGENT_ID, commitment.agentId)
+            }
+        )
     }
 
     /**
@@ -257,7 +314,8 @@ object AgentEngine {
      * 处理待回复消息队列
      */
     private suspend fun processPendingMessages(context: Context) {
-        val pendingMessages = ServiceLocator.chatMessageDao.getPendingMessages()
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        val pendingMessages = ServiceLocator.chatMessageDao.getPendingMessages(agentId)
         if (pendingMessages.isEmpty()) return
 
         val state = _currentState.value
@@ -330,33 +388,34 @@ object AgentEngine {
             // 此处位于 scheduleMutex.withLock 内，仅在跨天/首次启动时进入，不会重复执行
             try {
                 val now = System.currentTimeMillis()
+                val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
 
                 // Step 28: 承诺超时自动过期清理
-                // 清理过期承诺（超过 deadline 24 小时的 pending/triggered 自动标记为 expired）
+                // 清理过期承诺（超过 deadline 24 小时的未终态承诺自动标记为 expired）
                 val expireBefore = now - 24 * 60 * 60 * 1000L  // 超过 deadline 24 小时
-                val expired = ServiceLocator.commitmentDao.getExpiredCommitments(expireBefore)
+                val expired = ServiceLocator.commitmentDao.getExpiredCommitments(agentId, expireBefore)
                 expired.forEach { commitment ->
-                    ServiceLocator.commitmentDao.updateStatus(commitment.id, "expired")
-                    CommitmentScheduler(context).cancelCommitmentTrigger(commitment.id)
+                    ServiceLocator.commitmentDao.updateStatus(agentId, commitment.id, "expired")
+                    CommitmentScheduler(context).cancelCommitmentTrigger(agentId, commitment.id)
                 }
                 // 清理已完成的旧承诺（30 天前的 completed/cancelled/expired）
                 val oldCutoff = now - 30L * 24 * 60 * 60 * 1000
-                ServiceLocator.commitmentDao.deleteOldCompleted(oldCutoff)
+                ServiceLocator.commitmentDao.deleteOldCompleted(agentId, oldCutoff)
 
                 // Step 29: 历史记忆清理策略
                 // 清理 30 天前的 daily_plan 和 daily_recall（importance=2，价值递减）
                 val cutoff30Ts = now - 30L * 24 * 60 * 60 * 1000
-                ServiceLocator.memoryDao.deleteByCategoryBefore("daily_plan", cutoff30Ts)
-                ServiceLocator.memoryDao.deleteByCategoryBefore("daily_recall", cutoff30Ts)
+                ServiceLocator.memoryDao.deleteByCategoryBefore(agentId, "daily_plan", cutoff30Ts)
+                ServiceLocator.memoryDao.deleteByCategoryBefore(agentId, "daily_recall", cutoff30Ts)
 
                 // 清理 90 天前的 daily_summary、daily_schedule、daily_state
                 val cutoff90Ts = now - 90L * 24 * 60 * 60 * 1000
-                ServiceLocator.memoryDao.deleteByCategoryBefore("daily_summary", cutoff90Ts)
+                ServiceLocator.memoryDao.deleteByCategoryBefore(agentId, "daily_summary", cutoff90Ts)
                 // daily_schedule 和 daily_state 用日期字符串清理
                 val cutoff90Date = java.time.LocalDate.now(ZoneId.of("Asia/Shanghai")).minusDays(90)
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-                ServiceLocator.dailyScheduleDao.deleteBefore(cutoff90Date)
-                ServiceLocator.dailyStateDao.deleteBefore(cutoff90Date)
+                ServiceLocator.dailyScheduleDao.deleteBefore(agentId, cutoff90Date)
+                ServiceLocator.dailyStateDao.deleteBefore(agentId, cutoff90Date)
 
                 Log.d(TAG, "跨天清理完成：过期承诺 ${expired.size} 条")
 
@@ -420,7 +479,8 @@ object AgentEngine {
         return try {
             val today = java.time.LocalDate.now(ZoneId.of("Asia/Shanghai"))
                 .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
-            val entity = ServiceLocator.dailyScheduleDao.getByDate(today) ?: return null
+            val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+            val entity = ServiceLocator.dailyScheduleDao.getByDate(agentId, today) ?: return null
             if (!entity.isAdjusted || entity.originalSlotsJson.isBlank()) return null
             if (entity.originalSlotsJson == entity.slotsJson) return null  // 未实际变化
 
@@ -453,48 +513,18 @@ object AgentEngine {
     }
 
     /**
-     * 检查 Onboarding 状态
+     * 触发首次见面问候（Task 16：替代旧 Onboarding）
      *
-     * 启动时：
-     * - 若无 onboarding 记录且无聊天消息 → 标记 not_started，并启动 Onboarding（Agent 主动打招呼）
-     * - 若 onboarding 已完成 → 跳过
-     * - 若 onboarding 处于 in_progress → 不重启（等用户回复驱动推进）
+     * 启动时检查当前活动 Agent 的 FirstMeetingPhase：
+     * - NOT_STARTED → 触发 triggerFirstMeetingGreeting（内部 CAS 抢占，防并发）
+     * - 其他阶段（进行中/已完成）→ 静默跳过
+     *
+     * 旧用户升级时，v14→v15 迁移已将已有聊天记录的 Agent 标记为 COMPLETED_WITHOUT_NICKNAME，
+     * 因此不会重复问候。
      */
-    private suspend fun checkOnboarding(context: Context) {
-        val state = ServiceLocator.onboardingStateDao.get()
-        if (state == null) {
-            ServiceLocator.onboardingStateDao.upsert(
-                OnboardingStateEntity(
-                    phase = "not_started",
-                    currentStep = 0,
-                    totalSteps = 4
-                )
-            )
-        }
-        // 仅在全新用户（无任何聊天消息 + 未启动过 onboarding）时启动 Onboarding
-        val chatCount = ServiceLocator.chatMessageDao.getAll().size
-        if ((state == null || state.phase == "not_started") && chatCount == 0) {
-            startOnboarding(context)
-        }
-    }
-
-    /**
-     * 启动 Onboarding 对话流程
-     */
-    fun startOnboarding(context: Context) {
-        val manager = com.agent.ta.domain.OnboardingManager(context)
-        manager.start()
-    }
-
-    /**
-     * 用户发消息后驱动 Onboarding 推进（若处于 Onboarding 阶段）
-     * 由 ChatInteractor 在回复完成后调用
-     */
-    suspend fun onUserRepliedForOnboarding(context: Context) {
-        val state = ServiceLocator.onboardingStateDao.get() ?: return
-        if (state.phase != "in_progress") return
-        val manager = com.agent.ta.domain.OnboardingManager(context)
-        manager.onUserReplied()
+    private fun checkFirstMeeting(context: Context) {
+        val interactor = ChatInteractor(context)
+        interactor.triggerFirstMeetingGreeting()
     }
 
     /**
@@ -502,23 +532,31 @@ object AgentEngine {
      *
      * suspend 函数：调用方（AgentImportManager.import）会同步等待作息重新生成 + 调度完成，
      * 避免导入返回"成功"时新 Agent 的作息尚未落库、UI 仍显示旧作息。
+     *
+     * @param agentId 目标 Agent 实例 ID。导入事务完成后显式传入新 agentId，
+     *                确保状态机日志和作息写入正确的 Agent 数据空间。
+     *                默认 null 时使用当前 active agent（适用于同 Agent 内的作息刷新场景）。
      */
-    suspend fun reloadAfterConfigChanged(context: Context) {
+    suspend fun reloadAfterConfigChanged(context: Context, agentId: Long? = null) {
+        recoveryMutex.withLock {
         val config = com.agent.ta.di.ServiceLocator.agentConfigProvider.get()
+        val targetAgentId = agentId ?: ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         // 用新配置重新生成当天作息（LLM 失败也会写入 fallback，确保覆盖旧记录）
         // isAgentSwitch=true：不注入旧 Agent 的历史记忆/对话/作息历史，避免新 Agent 沿用旧风格
         val dailyPlanner = com.agent.ta.domain.DailyPlanner()
         val slots = dailyPlanner.regenerateTodaySchedule(config, isAgentSwitch = true)
         loadedScheduleDate = java.time.LocalDate.now(ZoneId.of("Asia/Shanghai"))
             .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
-        stateMachine.updateDailySlots(slots)
+        // 重新初始化状态机：更新 agentId + slots + delays，确保状态日志写入新 Agent 数据空间
+        stateMachine.init(slots, config.behavior.replyDelaySec, targetAgentId)
         _currentState.value = stateMachine.currentState.value
         scheduler?.cancelAll()
         val switches = stateMachine.getUpcomingSwitches(8)
         scheduler?.scheduleNextSwitches(switches)
         // Agent 切换后清除旧 anchor，从新作息派生
         ServiceLocator.activityAnchorManager.onSlotChanged(slots)
-        Log.d(TAG, "配置变更后已重新加载作息与调度（Agent 切换），slots=${slots.size}，当前活动：${getCurrentActivity()}")
+        Log.d(TAG, "配置变更后已重新加载作息与调度（Agent 切换，agentId=$targetAgentId），slots=${slots.size}，当前活动：${getCurrentActivity()}")
+        }
     }
 
     /**
@@ -532,6 +570,15 @@ object AgentEngine {
         // 取消所有协程，避免资源泄漏
         scope.coroutineContext.cancelChildren()
         // 重置启动标志，允许下次 start() 重新初始化
-        isStarted.set(false)
+        lifecycleState.set(LifecycleState.STOPPED)
     }
+
+    private enum class LifecycleState {
+        STOPPED,
+        STARTING,
+        RUNNING,
+        FAILED
+    }
+
+    private const val PROCESSING_STALE_MS = 15 * 60 * 1000L
 }

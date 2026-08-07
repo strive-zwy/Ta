@@ -51,31 +51,76 @@ class UserPreferences(context: Context) {
             val list = if (raw.isNullOrBlank()) emptyList()
                        else try { json.decodeFromString(ListSerializer(ModelEntry.serializer()), raw) }
                        catch (e: Exception) { emptyList() }
+            if (list.isNotEmpty()) {
+                val legacySecrets = ModelSecretPolicy.extractSecrets(list)
+                if (legacySecrets.isNotEmpty()) {
+                    persistModelSecrets(legacySecrets)
+                    prefs.edit().putString(
+                        KEY_LLM_MODELS_JSON,
+                        json.encodeToString(
+                            ListSerializer(ModelEntry.serializer()),
+                            ModelSecretPolicy.stripSecrets(list)
+                        )
+                    ).apply()
+                }
+                return ModelSecretPolicy.restoreSecrets(
+                    ModelSecretPolicy.stripSecrets(list),
+                    readModelSecrets(list.map { it.id })
+                )
+            }
             // 首次启动迁移：若列表为空但旧字段非空/非默认，则把旧配置迁移成默认 entry
             return if (list.isEmpty()) {
                 val migrated = migrateFromLegacyLlm()
                 if (migrated != null) {
                     llmModels = listOf(migrated)
                     llmActiveId = migrated.id
-                    listOf(migrated)
+                    ModelSecretPolicy.restoreSecrets(
+                        listOf(migrated),
+                        readModelSecrets(listOf(migrated.id))
+                    )
                 } else {
-                    val def = ModelEntry(
+                    // 首次启动：预置「日日新」和「DeepSeek」两个模型，默认激活日日新
+                    val senseNova = ModelEntry(
                         id = generateId(),
-                        name = "默认 LLM",
-                        baseUrl = DEFAULT_LLM_BASE_URL,
+                        name = PRESET_LLM_SENSENOVA_NAME,
+                        baseUrl = PRESET_LLM_SENSENOVA_URL,
                         apiKey = "",
                         model = DEFAULT_LLM_MODEL
                     )
-                    llmModels = listOf(def)
-                    llmActiveId = def.id
-                    listOf(def)
+                    val deepSeek = ModelEntry(
+                        id = generateId(),
+                        name = PRESET_LLM_DEEPSEEK_NAME,
+                        baseUrl = PRESET_LLM_DEEPSEEK_URL,
+                        apiKey = "",
+                        model = DEFAULT_LLM_MODEL
+                    )
+                    val defaults = listOf(senseNova, deepSeek)
+                    llmModels = defaults
+                    llmActiveId = senseNova.id
+                    ModelSecretPolicy.restoreSecrets(
+                        defaults,
+                        readModelSecrets(defaults.map { it.id })
+                    )
                 }
             } else list
         }
-        set(value) = prefs.edit().putString(
-            KEY_LLM_MODELS_JSON,
-            json.encodeToString(ListSerializer(ModelEntry.serializer()), value)
-        ).apply()
+        set(value) {
+            persistModelSecrets(ModelSecretPolicy.extractSecrets(value))
+            val ids = value.map { it.id }.toSet()
+            securePrefs.edit().apply {
+                securePrefs.all.keys
+                    .filter { it.startsWith(KEY_LLM_SECRET_PREFIX) }
+                    .filterNot { it.removePrefix(KEY_LLM_SECRET_PREFIX) in ids }
+                    .forEach(::remove)
+            }.apply()
+            prefs.edit().putString(
+                KEY_LLM_MODELS_JSON,
+                json.encodeToString(
+                    ListSerializer(ModelEntry.serializer()),
+                    ModelSecretPolicy.stripSecrets(value)
+                )
+            ).apply()
+        }
 
     /** 当前激活的 LLM 模型 id */
     var llmActiveId: String
@@ -99,7 +144,10 @@ class UserPreferences(context: Context) {
         set(value) = updateLlmActive { it.copy(model = value) }
 
     var llmApiKey: String
-        get() = llmActiveModel.apiKey
+        get() = securePrefs.getString(
+            KEY_LLM_SECRET_PREFIX + llmActiveModel.id,
+            ""
+        ) ?: ""
         set(value) = updateLlmActive { it.copy(apiKey = value) }
 
     // ===== TTS 配置（简化版：baseUrl + apiKey，模型固定为三个 MiMo 模型） =====
@@ -189,6 +237,16 @@ class UserPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_BORED_INITIATE, true)
         set(value) = prefs.edit().putBoolean(KEY_BORED_INITIATE, value).apply()
 
+    /** 开发者模式：开启后显示「今日作息」「定时任务管理」等后台调试模块 */
+    var developerMode: Boolean
+        get() = prefs.getBoolean(KEY_DEVELOPER_MODE, false)
+        set(value) = prefs.edit().putBoolean(KEY_DEVELOPER_MODE, value).apply()
+
+    /** 承诺定时提醒：开启后到点由系统主动发消息提醒；关闭后靠 LLM 在对话中自然提醒 */
+    var commitmentTimerEnabled: Boolean
+        get() = prefs.getBoolean(KEY_COMMITMENT_TIMER, true)
+        set(value) = prefs.edit().putBoolean(KEY_COMMITMENT_TIMER, value).apply()
+
     // ===== 状态查询 =====
     fun isConfigured(): Boolean = llmApiKey.isNotBlank() && ttsApiKey.isNotBlank()
 
@@ -200,14 +258,30 @@ class UserPreferences(context: Context) {
         val oldModel = prefs.getString(KEY_LLM_MODEL_LEGACY, null)
         // 只在旧字段有非空 apiKey 时迁移（避免空配置覆盖）
         if (oldKey.isNullOrBlank() && oldUrl.isNullOrBlank()) return null
-        return ModelEntry(
+        val entry = ModelEntry(
             id = generateId(),
             name = "默认 LLM",
             baseUrl = oldUrl ?: DEFAULT_LLM_BASE_URL,
             apiKey = oldKey ?: "",
             model = oldModel ?: DEFAULT_LLM_MODEL
         )
+        if (entry.apiKey.isNotBlank()) persistModelSecrets(mapOf(entry.id to entry.apiKey))
+        return entry.copy(apiKey = "")
     }
+
+    private fun persistModelSecrets(secrets: Map<String, String>) {
+        if (secrets.isEmpty()) return
+        securePrefs.edit().apply {
+            secrets.forEach { (id, key) -> putString(KEY_LLM_SECRET_PREFIX + id, key) }
+        }.apply()
+    }
+
+    private fun readModelSecrets(ids: List<String>): Map<String, String> =
+        ids.mapNotNull { id ->
+            securePrefs.getString(KEY_LLM_SECRET_PREFIX + id, null)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { id to it }
+        }.toMap()
 
     private fun generateId(): String = System.currentTimeMillis().toString(16) +
             (0..0xFFFF).random().toString(16)
@@ -222,6 +296,7 @@ class UserPreferences(context: Context) {
         // LLM 多模型字段
         private const val KEY_LLM_MODELS_JSON = "llm_models_json"
         private const val KEY_LLM_ACTIVE_ID = "llm_active_id"
+        private const val KEY_LLM_SECRET_PREFIX = "llm_api_key_"
 
         // TTS 简化字段（baseUrl + apiKey，模型固定）
         private const val KEY_TTS_BASE_URL = "tts_base_url"
@@ -239,10 +314,18 @@ class UserPreferences(context: Context) {
         private const val KEY_VOICE_ENABLED = "voice_enabled"
         private const val KEY_SHOW_TRANSCRIPT = "show_transcript"
         private const val KEY_BORED_INITIATE = "bored_initiate"
+        private const val KEY_DEVELOPER_MODE = "developer_mode"
+        private const val KEY_COMMITMENT_TIMER = "commitment_timer_enabled"
 
         const val DEFAULT_LLM_BASE_URL = "https://api.deepseek.com/v1"
         const val DEFAULT_LLM_MODEL = "deepseek-v4-flash"
         const val DEFAULT_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
+
+        // 预置 LLM 提供商（首次启动默认创建）
+        const val PRESET_LLM_SENSENOVA_NAME = "日日新"
+        const val PRESET_LLM_SENSENOVA_URL = "https://token.sensenova.cn/v1"
+        const val PRESET_LLM_DEEPSEEK_NAME = "DeepSeek"
+        const val PRESET_LLM_DEEPSEEK_URL = "https://api.deepseek.com/v1"
 
         // MiMo TTS 三个固定模型（由 TtsClient 根据场景自动选择）
         const val TTS_MODEL_VOICECLONE = "mimo-v2.5-tts-voiceclone"

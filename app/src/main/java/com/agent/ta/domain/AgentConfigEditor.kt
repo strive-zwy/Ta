@@ -77,6 +77,35 @@ class AgentConfigEditor {
         }
     }
 
+    /**
+     * 局部更新指定 Agent 实例的配置（不依赖 active 记录）
+     *
+     * 用于异步回调场景：请求开始时捕获 agentId，结果只写回该实例，
+     * 禁止完成时临时查询当前 active agent 替代。
+     *
+     * @param agentId 目标 Agent 实例 ID
+     * @param transform 接收该 Agent 当前配置，返回修改后的配置
+     */
+    suspend fun updateAgent(agentId: Long, transform: (AgentConfig) -> AgentConfig) {
+        updateMutex.withLock {
+            val dao = ServiceLocator.agentConfigDao
+            val entity = dao.getById(agentId) ?: run {
+                Log.w(TAG, "updateAgent: agentId=$agentId 不存在，忽略")
+                return@withLock
+            }
+            val current = json.decodeFromString(AgentConfig.serializer(), entity.configJson)
+            val updated = transform(current)
+            val configJson = json.encodeToString(AgentConfig.serializer(), updated)
+            val agentName = updated.agent.name.ifBlank { "未命名" }
+            dao.updateById(agentId, configJson, agentName)
+            // 若更新的是当前激活 Agent，刷新内存缓存
+            if (entity.isActive) {
+                ServiceLocator.agentConfigProvider.reload()
+            }
+            Log.d(TAG, "AgentConfig 已按 ID 更新：agentId=$agentId")
+        }
+    }
+
     companion object {
         private const val TAG = "AgentConfigEditor"
     }

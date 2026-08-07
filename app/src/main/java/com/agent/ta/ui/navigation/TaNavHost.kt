@@ -13,6 +13,7 @@ import androidx.navigation.compose.composable
 import com.agent.ta.di.ServiceLocator
 import com.agent.ta.ui.screens.main.MainScreen
 import androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection
+import com.agent.ta.ui.screens.profile.CommitmentScreen
 import com.agent.ta.ui.screens.profile.ModelConfigScreen
 import com.agent.ta.ui.screens.profile.PermissionGuideScreen
 import com.agent.ta.ui.screens.profile.ProfileScreen
@@ -97,7 +98,8 @@ fun TaNavHost(navController: NavHostController) {
                 onBack = { navController.popBackStack() },
                 onModelConfig = { navController.navigate(Routes.MODEL_CONFIG_EDIT) },
                 onAgentConfig = { navController.navigate(Routes.AGENT_CONFIG) },
-                onTodaySchedule = { navController.navigate(Routes.TODAY_SCHEDULE) }
+                onTodaySchedule = { navController.navigate(Routes.TODAY_SCHEDULE) },
+                onCommitmentTasks = { navController.navigate(Routes.COMMITMENT_TASKS) }
             )
         }
         composable(Routes.MODEL_CONFIG_EDIT) {
@@ -108,6 +110,11 @@ fun TaNavHost(navController: NavHostController) {
         }
         composable(Routes.TODAY_SCHEDULE) {
             TodayScheduleScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable(Routes.COMMITMENT_TASKS) {
+            CommitmentScreen(
                 onBack = { navController.popBackStack() }
             )
         }

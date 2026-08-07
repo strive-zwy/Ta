@@ -16,15 +16,18 @@ import androidx.room.PrimaryKey
  * - DailyPlanner 生成当天作息时，查询今天/近期的事件作为 prompt 参考
  * - 事件过期后自动清理
  *
- * 唯一索引 (date, description)：防止 LLM 多次提取同一事件导致重复记录
+ * 唯一索引 (agentId, date, description)：防止同一 Agent 下 LLM 多次提取同一事件导致重复记录；
+ * 不同 Agent 可有相同 (date, description) 的事件。
  */
 @Entity(
     tableName = "future_events",
-    indices = [Index(value = ["date", "description"], unique = true)]
+    indices = [Index(value = ["agentId", "date", "description"], unique = true)]
 )
 data class FutureEventEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    /** 所属 Agent 实例 ID（多 Agent 数据隔离） */
+    val agentId: Long,
     /** 事件日期 "yyyy-MM-dd" */
     val date: String,
     /** 事件描述（如"Taylor Swift 上海演唱会"） */

@@ -32,6 +32,8 @@ import com.agent.ta.data.remote.dto.MemoryUpdate
  * 与 MochiBot 的差异：
  * - MochiBot 的 core_memory 是独立数据结构，本项目复用 MemoryEntity 表按 importance 分级
  * - 不修改表结构，仅通过查询阈值分级，向后兼容
+ *
+ * 多 Agent 隔离：所有方法显式传入 agentId，确保 Agent A/B 记忆完全隔离。
  */
 class MemoryStore(private val memoryDao: MemoryDao) {
 
@@ -41,9 +43,9 @@ class MemoryStore(private val memoryDao: MemoryDao) {
      * 使用场景：每次 LLM 调用都注入，确保关键事实不丢失
      * 数据来源：importance >= CORE_THRESHOLD 的所有记忆
      */
-    suspend fun getCoreMemory(): List<MemoryEntity> {
+    suspend fun getCoreMemory(agentId: Long): List<MemoryEntity> {
         return try {
-            memoryDao.getByMinImportance(CORE_THRESHOLD)
+            memoryDao.getByMinImportance(agentId, CORE_THRESHOLD)
         } catch (e: Exception) {
             Log.e(TAG, "获取核心记忆失败: ${e.message}", e)
             emptyList()
@@ -58,9 +60,10 @@ class MemoryStore(private val memoryDao: MemoryDao) {
      *
      * @param limit 返回条数，默认 10
      */
-    suspend fun getRecentItems(limit: Int = DEFAULT_ITEMS_LIMIT): List<MemoryEntity> {
+    suspend fun getRecentItems(agentId: Long, limit: Int = DEFAULT_ITEMS_LIMIT): List<MemoryEntity> {
         return try {
             memoryDao.getByImportanceRange(
+                agentId = agentId,
                 min = ITEMS_RANGE_MIN,
                 max = ITEMS_RANGE_MAX,
                 limit = limit
@@ -80,15 +83,15 @@ class MemoryStore(private val memoryDao: MemoryDao) {
      * @param query 查询关键词
      * @param limit 返回条数，默认 5
      */
-    suspend fun recall(query: String, limit: Int = 5): List<MemoryEntity> {
+    suspend fun recall(agentId: Long, query: String, limit: Int = 5): List<MemoryEntity> {
         if (query.isBlank()) return emptyList()
         return try {
-            val results = memoryDao.searchByKeyword(query, limit)
+            val results = memoryDao.searchByKeyword(agentId, query, limit)
             // 命中后增加 accessCount，用于动态调整重要性
             results.forEach { memory ->
-                memoryDao.incrementAccessCount(memory.id, System.currentTimeMillis())
+                memoryDao.incrementAccessCount(agentId, memory.id, System.currentTimeMillis())
             }
-            Log.d(TAG, "召回记忆：query=\"$query\", 命中 ${results.size} 条")
+            Log.d(TAG, "召回记忆：agentId=$agentId, queryLength=${query.length}, 命中 ${results.size} 条")
             results
         } catch (e: Exception) {
             Log.e(TAG, "召回记忆失败: ${e.message}", e)
@@ -107,10 +110,11 @@ class MemoryStore(private val memoryDao: MemoryDao) {
      * @param update LLM 输出的记忆更新
      * @param source 来源（chat/event/onboarding）
      */
-    suspend fun addMemory(update: MemoryUpdate, source: String) {
+    suspend fun addMemory(agentId: Long, update: MemoryUpdate, source: String) {
         try {
             val now = System.currentTimeMillis()
             val entity = MemoryEntity(
+                agentId = agentId,
                 type = update.type,
                 category = update.category,
                 content = update.content,
@@ -125,7 +129,7 @@ class MemoryStore(private val memoryDao: MemoryDao) {
                 update.importance >= ITEMS_RANGE_MIN -> "items"
                 else -> "archive"
             }
-            Log.d(TAG, "新增记忆 #$id [$tier] importance=${update.importance} type=${update.type}: ${update.content.take(50)}")
+            Log.d(TAG, "新增记忆 #$id [$tier] agentId=$agentId importance=${update.importance} type=${update.type} contentLength=${update.content.length}")
         } catch (e: Exception) {
             Log.e(TAG, "新增记忆失败: ${e.message}", e)
         }
@@ -138,10 +142,10 @@ class MemoryStore(private val memoryDao: MemoryDao) {
      *
      * @param memoryId 记忆ID
      */
-    suspend fun promoteToCore(memoryId: Long) {
+    suspend fun promoteToCore(agentId: Long, memoryId: Long) {
         try {
-            memoryDao.updateImportance(memoryId, CORE_THRESHOLD, System.currentTimeMillis())
-            Log.d(TAG, "记忆 #$memoryId 已提升到核心层 (importance=$CORE_THRESHOLD)")
+            memoryDao.updateImportance(agentId, memoryId, CORE_THRESHOLD, System.currentTimeMillis())
+            Log.d(TAG, "记忆 #$memoryId 已提升到核心层 (agentId=$agentId, importance=$CORE_THRESHOLD)")
         } catch (e: Exception) {
             Log.e(TAG, "提升记忆重要度失败: ${e.message}", e)
         }
@@ -150,9 +154,9 @@ class MemoryStore(private val memoryDao: MemoryDao) {
     /**
      * 获取所有记忆（管理界面用）
      */
-    suspend fun getAllMemories(): List<MemoryEntity> {
+    suspend fun getAllMemories(agentId: Long): List<MemoryEntity> {
         return try {
-            memoryDao.getTopMemories(100)
+            memoryDao.getTopMemories(agentId, 100)
         } catch (e: Exception) {
             Log.e(TAG, "获取所有记忆失败: ${e.message}", e)
             emptyList()
@@ -162,10 +166,10 @@ class MemoryStore(private val memoryDao: MemoryDao) {
     /**
      * 清理低重要度记忆（容量管理）
      */
-    suspend fun cleanupLowImportance() {
+    suspend fun cleanupLowImportance(agentId: Long) {
         try {
-            val deleted = memoryDao.deleteLowImportance(1)
-            Log.d(TAG, "清理低重要度记忆完成")
+            val deleted = memoryDao.deleteLowImportance(agentId, 1)
+            Log.d(TAG, "清理低重要度记忆完成 (agentId=$agentId)")
         } catch (e: Exception) {
             Log.e(TAG, "清理低重要度记忆失败: ${e.message}", e)
         }

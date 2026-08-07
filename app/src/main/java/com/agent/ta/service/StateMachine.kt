@@ -52,15 +52,21 @@ class StateMachine {
     @Volatile
     private var lastSlot: DailySlot? = null
 
+    /** 当前 Agent 实例 ID（多 Agent 数据隔离） */
+    @Volatile
+    private var agentId: Long = 0L
+
     /**
      * 初始化状态机
      *
      * @param slots 当天作息（由 DailyPlanner 生成）
      * @param delays 各状态的回复延迟配置
+     * @param agentId 当前 Agent 实例 ID
      */
-    fun init(slots: List<DailySlot>, delays: Map<String, com.agent.ta.data.model.ReplyDelay>) {
+    fun init(slots: List<DailySlot>, delays: Map<String, com.agent.ta.data.model.ReplyDelay>, agentId: Long) {
         dailySlots = slots
         replyDelayMap = delays
+        this.agentId = agentId
         val newState = computeCurrentState()
         _currentState.value = newState
         lastSlot = computeCurrentSlot()
@@ -69,6 +75,7 @@ class StateMachine {
         scope.launch {
             stateLogDao.insert(
                 com.agent.ta.data.local.entity.StateLogEntity(
+                    agentId = agentId,
                     state = newState.id,
                     enteredAt = System.currentTimeMillis()
                 )
@@ -176,10 +183,11 @@ class StateMachine {
         lastSlot = computeCurrentSlot()
 
         scope.launch {
-            val latest = stateLogDao.getLatest()
-            latest?.let { stateLogDao.updateExit(it.id, now) }
+            val latest = stateLogDao.getLatest(agentId)
+            latest?.let { stateLogDao.updateExit(agentId, it.id, now) }
             stateLogDao.insert(
                 com.agent.ta.data.local.entity.StateLogEntity(
+                    agentId = agentId,
                     state = state.id,
                     enteredAt = now
                 )

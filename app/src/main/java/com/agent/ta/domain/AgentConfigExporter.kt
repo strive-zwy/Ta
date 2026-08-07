@@ -84,8 +84,9 @@ class AgentConfigExporter {
 
                 // Phase 2 关系系统：写入关系快照 relationship.json
                 try {
-                    val relationshipState = ServiceLocator.relationshipStateDao.get()
-                    val recentMilestones = ServiceLocator.milestoneEventDao.getRecent(50)
+                    val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+                    val relationshipState = ServiceLocator.relationshipStateDao.get(agentId)
+                    val recentMilestones = ServiceLocator.milestoneEventDao.getRecent(agentId, 50)
                     val relationshipSnapshot = buildJsonObject {
                         if (relationshipState != null) {
                             put("state", buildJsonObject {
@@ -116,7 +117,8 @@ class AgentConfigExporter {
 
                 // 写入 memory.json — 习得记忆 top 50（排除 source="seed" 的初始记忆）
                 try {
-                    val allMemories = ServiceLocator.memoryDao.getByMinImportance(0)
+                    val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+                    val allMemories = ServiceLocator.memoryDao.getByMinImportance(agentId, 0)
                     val topMemories = allMemories
                         .filter { it.source != "seed" }
                         .sortedWith(
@@ -146,7 +148,8 @@ class AgentConfigExporter {
 
                 // 写入 recent_chats.json — 近期对话 top 100（仅导出 text 非空的消息，不含 audio_path）
                 try {
-                    val allMessages = ServiceLocator.chatMessageDao.getAll()
+                    val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+                    val allMessages = ServiceLocator.chatMessageDao.getAll(agentId)
                     val recentChats = allMessages
                         .filter { !it.text.isNullOrBlank() }
                         .takeLast(100)

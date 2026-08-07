@@ -90,7 +90,9 @@ class CreateCommitmentTool : AgentTool {
             else -> "agent"
         }
 
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
         val commitment = CommitmentEntity(
+            agentId = agentId,
             type = type,
             content = content,
             participants = participants,

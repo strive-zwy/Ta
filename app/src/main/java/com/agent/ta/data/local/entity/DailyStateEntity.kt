@@ -1,17 +1,22 @@
 package com.agent.ta.data.local.entity
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
 
 /**
  * 结构化每日状态记录
  *
  * 记录每天的结构化状态参数，供 L2 昨日延续使用。
  * 由 DailySummaryGenerator 在生成每日摘要时同步生成。
+ *
+ * 复合主键 (agentId, date)：不同 Agent 同一天可有独立状态记录。
  */
-@Entity(tableName = "daily_state")
+@Entity(
+    tableName = "daily_state",
+    primaryKeys = ["agentId", "date"]
+)
 data class DailyStateEntity(
-    @PrimaryKey
+    /** 所属 Agent 实例 ID（多 Agent 数据隔离） */
+    val agentId: Long,
     val date: String,                  // "yyyy-MM-dd"
     val sleepTime: String?,            // "01:15" - 昨晚睡觉时间（从最后一个 unavailable slot 的 start 提取）
     val wakeTime: String?,             // "07:30" - 今早起床时间

@@ -6,20 +6,20 @@ import com.agent.ta.di.ServiceLocator
 /**
  * 关系状态初始化器
  *
- * 首次启动时插入初始记录（id=1, stage="stranger", scores=0）
+ * 首次启动时为指定 Agent 插入初始记录（stage="stranger", scores=0）
  */
 class RelationshipInitializer {
 
     /**
-     * 确保关系状态已初始化，若为 null 则插入初始记录
+     * 确保指定 Agent 的关系状态已初始化，若为 null 则插入初始记录
      */
-    suspend fun ensureInitialized(): RelationshipStateEntity {
-        val existing = ServiceLocator.relationshipStateDao.get()
+    suspend fun ensureInitialized(agentId: Long): RelationshipStateEntity {
+        val existing = ServiceLocator.relationshipStateDao.get(agentId)
         if (existing != null) return existing
 
         val now = System.currentTimeMillis()
         val initial = RelationshipStateEntity(
-            id = 1,
+            agentId = agentId,
             currentStage = "stranger",
             intimacyScore = 0,
             trustScore = 0,

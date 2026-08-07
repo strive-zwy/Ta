@@ -33,7 +33,8 @@ class RecentConversationObserver : Observer {
         val timestamp = timeContext.nowMillis()
 
         // 查询最近一条用户消息（使用专用查询，避免全表扫描）
-        val lastUserMessage = ServiceLocator.chatMessageDao.getLastInboundMessage()
+        val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
+        val lastUserMessage = ServiceLocator.chatMessageDao.getLastInboundMessage(agentId)
 
         val userMessageTime = lastUserMessage?.createdAt ?: 0L
         val userMessagePreview = lastUserMessage?.text?.take(50) ?: ""

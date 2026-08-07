@@ -13,6 +13,7 @@ object Routes {
     const val PERMISSION_GUIDE = "permission_guide"
     const val AGENT_DETAIL = "agent_detail"
     const val TODAY_SCHEDULE = "today_schedule" // 今日动态作息
+    const val COMMITMENT_TASKS = "commitment_tasks" // 定时任务管理
 
     // Agent 配置页（从设置页进入）
     const val AGENT_CONFIG = "agent_config"           // Agent 配置入口

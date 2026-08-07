@@ -129,7 +129,9 @@ class ScheduleAdjuster {
 
             // 持久化到 DB（只更新 slotsJson，保留 originalSlotsJson 不变）
             val today = LocalDate.now(zoneId).format(DATE_FORMAT)
+            val agentId = ServiceLocator.activeAgentManager.getRequiredActiveAgentId()
             dailyScheduleDao.updateActualSlots(
+                agentId = agentId,
                 date = today,
                 newSlotsJson = json.encodeToString(newSlots),
                 source = "adjust"

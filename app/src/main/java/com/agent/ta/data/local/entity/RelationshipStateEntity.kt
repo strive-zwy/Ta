@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 /**
- * Agent 与用户的关系状态（单条记录 per Agent，id 固定为 1）
+ * Agent 与用户的关系状态（每个 Agent 一条记录，主键为 agentId）
  *
  * 5 阶段（currentStage）：
  * - stranger（陌生，intimacy 0-15）
@@ -21,7 +21,7 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "relationship_state")
 data class RelationshipStateEntity(
     @PrimaryKey
-    val id: Long = 1,              // 固定为 1，单条记录
+    val agentId: Long,             // 所属 Agent 实例 ID（多 Agent 数据隔离，每个 Agent 一条）
     val currentStage: String,      // "stranger" / "acquaintance" / "familiar" / "intimate" / "confidant"
     val intimacyScore: Int,        // 0-100 亲密度
     val trustScore: Int,           // 0-100 信任度

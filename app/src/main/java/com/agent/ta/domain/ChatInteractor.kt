@@ -21,11 +21,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 import java.io.File
@@ -60,6 +63,7 @@ class ChatInteractor(private val context: Context) {
     private val futureEventDao = ServiceLocator.futureEventDao
     private val dailyStateDao = ServiceLocator.dailyStateDao
     private val commitmentDao = ServiceLocator.commitmentDao
+    private val agentConfigDao = ServiceLocator.agentConfigDao
     private val prefs = ServiceLocator.userPreferences
     private val configProvider = ServiceLocator.agentConfigProvider
     private val agentConfigEditor = ServiceLocator.agentConfigEditor
@@ -69,6 +73,21 @@ class ChatInteractor(private val context: Context) {
     private val consistencyValidator = ReplyConsistencyValidator()
     private val relationshipService = RelationshipService()
     private val emotionalService = EmotionalService()
+    private val activeAgentManager = ServiceLocator.activeAgentManager
+    private val firstMeetingCoordinator = ServiceLocator.firstMeetingCoordinator
+    private val nicknameResolver = com.agent.ta.domain.firstmeeting.NicknameResolver
+
+    /**
+     * 按消息所属 agentId 解析 Agent 名称，用于通知标题。
+     * 不使用当前 active Agent 覆盖，防止切换期间通知张冠李戴。
+     */
+    private suspend fun resolveAgentName(agentId: Long): String {
+        return ServiceLocator.agentConfigDao.getById(agentId)?.agentName?.ifBlank { "小雅" } ?: "小雅"
+    }
+
+    private fun ensureOperationCurrent(operationContext: AgentOperationContext) {
+        AgentGenerationRegistry.shared.requireCurrent(operationContext)
+    }
 
     /**
      * Phase 1 分级睡眠：深睡惊醒冷却机制
@@ -108,6 +127,11 @@ class ChatInteractor(private val context: Context) {
 
         // 2. 立即启动可取消的回复任务（包括入库、延迟、生成回复，都在同一个 Job 中）
         val job = scope.launch {
+            // === 多 Agent 隔离 ===
+            // 在请求开始时捕获 agentId，整个回复流程（含 LLM 异步调用）只写回该 Agent
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
+            val operationContext = AgentGenerationRegistry.shared.capture(agentId)
+
             // === 连续对话节奏优化 ===
             // 检测：Agent 回复后 90 秒内用户继续发消息 → 连续对话
             // 连续对话时：busy 状态也用短延迟（3-8 秒），消息标记已读，立即显示"正在输入中"
@@ -135,9 +159,11 @@ class ChatInteractor(private val context: Context) {
             val initialStatus = when {
                 state == AgentState.UNAVAILABLE -> "pending"
                 isActivityNonReplyable -> "pending"  // 打球/健身/洗澡等腾不出手的活动
+                isBusyLongDelay -> "pending"  // busy 非连续对话：延迟期间未读，延迟结束后才标记已读
                 else -> "received"
             }
             val userMsg = ChatMessageEntity(
+                agentId = agentId,
                 direction = "inbound",
                 text = text,
                 audioPath = null,
@@ -150,7 +176,7 @@ class ChatInteractor(private val context: Context) {
 
             // Phase 3 情感势能：用户发消息时重置静默计时
             try {
-                emotionalService.onUserMessageReceived()
+                emotionalService.onUserMessageReceived(agentId)
             } catch (e: Exception) {
                 Log.w(TAG, "重置静默计时失败（不影响主流程）", e)
             }
@@ -167,7 +193,7 @@ class ChatInteractor(private val context: Context) {
                     val inCooldown = now - lastWakeTime < 10 * 60 * 1000L
                     if (inCooldown) {
                         // 冷却期内：直接标记 pending，不触发惊醒
-                        chatDao.updateStatus(msgId, "pending", null)
+                        chatDao.updateStatus(agentId, msgId, "pending", null)
                         return@launch
                     }
                     val wakeChance = configProvider.get().behavior.wakeChancePerDeepSleepMessage
@@ -175,16 +201,16 @@ class ChatInteractor(private val context: Context) {
                         // 惊醒触发：切换到 LIGHT_SLEEP
                         lastWakeTime = now
                         com.agent.ta.service.AgentEngine.switchToLightSleep()
-                        chatDao.updateStatus(msgId, "received", null)
+                        chatDao.updateStatus(agentId, msgId, "received", null)
                         // 继续走回复路径（不 return）
                     } else {
                         // 未触发惊醒：标记 pending
-                        chatDao.updateStatus(msgId, "pending", null)
+                        chatDao.updateStatus(agentId, msgId, "pending", null)
                         return@launch
                     }
                 } else {
                     // 深睡（非 sleepDepth=deep）或洗澡等：不可回复，保持 pending
-                    chatDao.updateStatus(msgId, "pending", null)
+                    chatDao.updateStatus(agentId, msgId, "pending", null)
                     return@launch
                 }
             }
@@ -194,7 +220,7 @@ class ChatInteractor(private val context: Context) {
             // 等活动结束（时段切换/LLM anchor 过期）后由 processPendingMessages 处理
             if (isActivityNonReplyable) {
                 Log.d(TAG, "当前活动「${activityAnchor!!.activity}」无法回复消息，标记 pending 等活动结束处理")
-                chatDao.updateStatus(msgId, "pending", null)
+                chatDao.updateStatus(agentId, msgId, "pending", null)
                 return@launch
             }
 
@@ -210,7 +236,7 @@ class ChatInteractor(private val context: Context) {
                 // 6. 等待延迟后生成回复
                 // 连续对话用短延迟（3-8秒），非连续对话用状态配置的延迟
                 // Phase 2: 非连续对话延迟乘以关系系数（亲密高→延迟短，保留下限 1 秒）
-                val relationshipState = relationshipService.getCurrentState()
+                val relationshipState = relationshipService.getCurrentState(agentId)
                 val delaySec = if (isContinuousChat) {
                     CONTINUOUS_DELAY_RANGE.random().toLong()
                 } else {
@@ -218,15 +244,44 @@ class ChatInteractor(private val context: Context) {
                 }
                 delay(delaySec * 1000)
 
-                // busy 非连续对话：延迟结束后才显示"正在输入中"
+                // busy 非连续对话：延迟结束后才显示"正在输入中"，此时消息才算已读
                 if (isBusyLongDelay) {
                     _isReplying.value = true
+                    chatDao.updateStatus(agentId, msgId, "received", null)
+                }
+
+                // === 首次见面场景检测（Task 15）===
+                // NOT_STARTED → 尝试 beginGreeting，成功则用 FIRST_MEETING_REPLY（用户先发消息）
+                // GREETING_IN_PROGRESS → 问候被取消（用户发新消息），合并为 FIRST_MEETING_REPLY
+                // WAITING_NICKNAME / FOLLOW_UP_ASKED → NORMAL（awaitingNickname 在 generateAgentReply 内检测）
+                // 其他 → NORMAL
+                var sendScene = ConversationScene.NORMAL
+                try {
+                    val fmPhase = firstMeetingCoordinator.getPhase(agentId)
+                    when (fmPhase) {
+                        com.agent.ta.domain.firstmeeting.FirstMeetingPhase.NOT_STARTED -> {
+                            if (firstMeetingCoordinator.beginGreeting(agentId)) {
+                                sendScene = ConversationScene.FIRST_MEETING_REPLY
+                                Log.d(TAG, "用户先发消息 + 首次见面 NOT_STARTED → FIRST_MEETING_REPLY")
+                            }
+                        }
+                        com.agent.ta.domain.firstmeeting.FirstMeetingPhase.GREETING_IN_PROGRESS -> {
+                            sendScene = ConversationScene.FIRST_MEETING_REPLY
+                            Log.d(TAG, "问候生成中被用户消息打断 → 合并为 FIRST_MEETING_REPLY")
+                        }
+                        else -> {}
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "首次见面场景检测失败，走 NORMAL", e)
                 }
 
                 // 传入连续对话轮次，用于 prompt 提示
                 generateAgentReply(
+                    agentId = agentId,
+                    operationContext = operationContext,
                     isConfigMode = configMode.value,
-                    continuousRound = continuousRound
+                    continuousRound = continuousRound,
+                    scene = sendScene
                 )
             } finally {
                 _isReplying.value = false
@@ -245,8 +300,11 @@ class ChatInteractor(private val context: Context) {
         _configMode.value = true
         currentReplyJobRef.get()?.cancel()
         currentReplyJobRef.set(scope.launch {
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
+            val operationContext = AgentGenerationRegistry.shared.capture(agentId)
             val state = com.agent.ta.service.AgentEngine.currentState.value
             val msg = ChatMessageEntity(
+                agentId = agentId,
                 direction = "outbound",
                 text = "好的，进入配置模式啦 🛠️\n你可以直接用对话告诉我想调整什么（比如：名字、性格、说话风格、语音、头像、行为习惯），我会帮你修改。\n也可以去「设置 → Agent 配置」里可视化编辑。\n完成后输入 /done 退出配置模式。",
                 audioPath = null,
@@ -256,7 +314,7 @@ class ChatInteractor(private val context: Context) {
                 createdAt = System.currentTimeMillis()
             )
             chatDao.insert(msg)
-            notificationHelper.notifyAgentMessage(msg.text ?: "", null)
+            notificationHelper.notifyAgentMessage(msg.text ?: "", null, resolveAgentName(agentId))
         })
     }
 
@@ -267,8 +325,10 @@ class ChatInteractor(private val context: Context) {
         if (!_configMode.value) {
             // 不在配置模式，提示
             scope.launch {
+                val agentId = activeAgentManager.getRequiredActiveAgentId()
                 val state = com.agent.ta.service.AgentEngine.currentState.value
                 val msg = ChatMessageEntity(
+                    agentId = agentId,
                     direction = "outbound",
                     text = "现在不在配置模式哦～输入 /config 可以进入配置模式",
                     audioPath = null,
@@ -278,15 +338,17 @@ class ChatInteractor(private val context: Context) {
                     createdAt = System.currentTimeMillis()
                 )
                 chatDao.insert(msg)
-                notificationHelper.notifyAgentMessage(msg.text ?: "", null)
+                notificationHelper.notifyAgentMessage(msg.text ?: "", null, resolveAgentName(agentId))
             }
             return
         }
         _configMode.value = false
         currentReplyJobRef.get()?.cancel()
         currentReplyJobRef.set(scope.launch {
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
             val state = com.agent.ta.service.AgentEngine.currentState.value
             val msg = ChatMessageEntity(
+                agentId = agentId,
                 direction = "outbound",
                 text = "配置已保存 ✅ 继续聊天吧～",
                 audioPath = null,
@@ -296,7 +358,7 @@ class ChatInteractor(private val context: Context) {
                 createdAt = System.currentTimeMillis()
             )
             chatDao.insert(msg)
-            notificationHelper.notifyAgentMessage(msg.text ?: "", null)
+            notificationHelper.notifyAgentMessage(msg.text ?: "", null, resolveAgentName(agentId))
         })
     }
 
@@ -305,8 +367,10 @@ class ChatInteractor(private val context: Context) {
      */
     private fun showCommandHelp() {
         scope.launch {
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
             val state = com.agent.ta.service.AgentEngine.currentState.value
             val msg = ChatMessageEntity(
+                agentId = agentId,
                 direction = "outbound",
                 text = "可用命令：\n/config - 进入 Agent 配置模式\n/done - 退出配置模式\n/help - 显示命令帮助",
                 audioPath = null,
@@ -316,7 +380,7 @@ class ChatInteractor(private val context: Context) {
                 createdAt = System.currentTimeMillis()
             )
             chatDao.insert(msg)
-            notificationHelper.notifyAgentMessage(msg.text ?: "", null)
+            notificationHelper.notifyAgentMessage(msg.text ?: "", null, resolveAgentName(agentId))
         }
     }
 
@@ -357,11 +421,15 @@ class ChatInteractor(private val context: Context) {
      */
     fun processPendingReplies() {
         scope.launch {
-            val pending = chatDao.getPendingMessages()
-            if (pending.isEmpty()) return@launch
-
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
+            val operationContext = AgentGenerationRegistry.shared.capture(agentId)
             val state = com.agent.ta.service.AgentEngine.currentState.value
             if (state == AgentState.UNAVAILABLE) return@launch
+            val batchId = UUID.randomUUID().toString()
+            val claimedAt = System.currentTimeMillis()
+            if (chatDao.claimPending(agentId, batchId, claimedAt) == 0) return@launch
+            val pending = chatDao.getProcessingBatch(agentId, batchId)
+            if (pending.isEmpty()) return@launch
 
             // 把所有 pending 消息合并成一条"补充说明"用户消息入库
             // 让 LLM 知道用户之前说了什么，但不触发逐条对应回复
@@ -379,6 +447,7 @@ class ChatInteractor(private val context: Context) {
             }
 
             val mergedUserMsg = ChatMessageEntity(
+                agentId = agentId,
                 direction = "inbound",
                 text = "（之前发了这些你没来得及回：\n$pendingSummary\n现在简单回应一下就好）",
                 audioPath = null,
@@ -390,16 +459,22 @@ class ChatInteractor(private val context: Context) {
             chatDao.insert(mergedUserMsg)
 
             // 把原 pending 消息全部标记为 received（已读），避免下次状态切换重复触发
-            pending.forEach { msg ->
-                chatDao.updateStatus(msg.id, "received", System.currentTimeMillis())
-            }
-
             currentReplyJobRef.get()?.cancel()
             currentReplyJobRef.set(scope.launch {
+                var completed = false
                 try {
                     _isReplying.value = true
-                    generateAgentReply(isPendingCatchup = true)
+                    completed = generateAgentReply(
+                        agentId = agentId,
+                        operationContext = operationContext,
+                        isPendingCatchup = true
+                    )
                 } finally {
+                    if (completed) {
+                        chatDao.completeBatch(agentId, batchId, System.currentTimeMillis())
+                    } else {
+                        chatDao.releaseBatch(agentId, batchId)
+                    }
                     _isReplying.value = false
                     currentReplyJobRef.set(null)
                 }
@@ -408,7 +483,7 @@ class ChatInteractor(private val context: Context) {
     }
 
     /**
-     * Agent 主动发起对话（无聊时 / Onboarding）
+     * Agent 主动发起对话（无聊时 / 首次见面问候）
      *
      * v2 集成 ThinkActDecider：
      * - topicHint 由 ThinkActDecider.act() 生成，包含话题方向 + persona 引导
@@ -418,11 +493,17 @@ class ChatInteractor(private val context: Context) {
      * 用户发新消息时会取消正在进行的主动发起剩余条目。
      */
     fun agentInitiate(topicHint: String = "") {
+        val agentId = activeAgentManager.getRequiredActiveAgentId()
+        agentInitiate(agentId, topicHint)
+    }
+
+    fun agentInitiate(agentId: Long, topicHint: String = "") {
+        val operationContext = AgentGenerationRegistry.shared.capture(agentId)
         currentReplyJobRef.get()?.cancel()
         currentReplyJobRef.set(scope.launch {
             try {
                 _isReplying.value = true
-                generateAgentReply(isInitiate = true, initiateTopic = topicHint)
+                generateAgentReply(agentId = agentId, operationContext = operationContext, isInitiate = true, initiateTopic = topicHint)
             } finally {
                 _isReplying.value = false
                 currentReplyJobRef.set(null)
@@ -430,15 +511,69 @@ class ChatInteractor(private val context: Context) {
         })
     }
 
+    suspend fun agentInitiateAndWait(agentId: Long, topicHint: String = ""): Boolean {
+        val operationContext = AgentGenerationRegistry.shared.capture(agentId)
+        val startedAt = System.currentTimeMillis()
+        return commitmentReplyMutex.withLock {
+            ensureOperationCurrent(operationContext)
+            try {
+                generateAgentReply(
+                    agentId = agentId,
+                    operationContext = operationContext,
+                    isInitiate = true,
+                    initiateTopic = topicHint
+                )
+                ensureOperationCurrent(operationContext)
+                chatDao.countOutboundSince(agentId, startedAt) > 0
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "承诺主动消息生成失败", e)
+                false
+            }
+        }
+    }
+
     /**
-     * 触发 Onboarding 消息（Agent 主动提问了解用户）
+     * 触发首次见面问候（Task 12/15）
+     *
+     * 调用时机：
+     * - 默认 Agent 模型配置可用后
+     * - 导入 Agent 事务完成后
+     *
+     * 流程：
+     * 1. 检查 FirstMeetingPhase 是否为 NOT_STARTED
+     * 2. beginGreeting CAS 抢占（防止并发生成两次问候）
+     * 3. 抢占成功 → 以 FIRST_MEETING_GREETING 场景生成回复
+     * 4. 抢占失败 → 静默跳过（已有问候在生成或已完成）
+     *
+     * 用户先发消息时不会走此方法，而是在 sendUserMessage 中合并为 FIRST_MEETING_REPLY。
      */
-    fun triggerOnboardingMessage() {
+    fun triggerFirstMeetingGreeting() {
         currentReplyJobRef.get()?.cancel()
         currentReplyJobRef.set(scope.launch {
             try {
                 _isReplying.value = true
-                generateAgentReply(isInitiate = true, isOnboarding = true)
+                val agentId = activeAgentManager.getRequiredActiveAgentId()
+
+                val phase = firstMeetingCoordinator.getPhase(agentId)
+                if (phase != com.agent.ta.domain.firstmeeting.FirstMeetingPhase.NOT_STARTED) {
+                    Log.d(TAG, "triggerFirstMeetingGreeting: agentId=$agentId phase=$phase，非 NOT_STARTED，跳过")
+                    return@launch
+                }
+
+                // CAS 抢占：NOT_STARTED → GREETING_IN_PROGRESS
+                val grabbed = firstMeetingCoordinator.beginGreeting(agentId)
+                if (!grabbed) {
+                    Log.d(TAG, "triggerFirstMeetingGreeting: agentId=$agentId 抢占失败（并发竞争），跳过")
+                    return@launch
+                }
+
+                generateAgentReply(
+                    agentId = agentId,
+                    isInitiate = true,
+                    scene = ConversationScene.FIRST_MEETING_GREETING
+                )
             } finally {
                 _isReplying.value = false
                 currentReplyJobRef.set(null)
@@ -456,19 +591,21 @@ class ChatInteractor(private val context: Context) {
      *        true 时禁用"连发对应回复"路径，强制单条简短回复，避免一次性吐 N 条带序号的消息
      */
     private suspend fun generateAgentReply(
+        agentId: Long,
+        operationContext: AgentOperationContext = AgentGenerationRegistry.shared.capture(agentId),
         isInitiate: Boolean = false,
-        isOnboarding: Boolean = false,
         isPendingCatchup: Boolean = false,
         isConfigMode: Boolean = false,
         continuousRound: Int = 0,
-        initiateTopic: String = ""
-    ) {
+        initiateTopic: String = "",
+        scene: ConversationScene = ConversationScene.NORMAL
+    ): Boolean {
         try {
             // 跨天检测：确保作息是今天的（避免 App 跨天运行时基于前一天作息回复）
             com.agent.ta.service.AgentEngine.ensureTodayScheduleFresh(context)
 
             // 取最近 20 条消息作为上下文
-            val recentMessages = chatDao.getAll().takeLast(20)
+            val recentMessages = chatDao.getAll(agentId).takeLast(20)
             // 构造 ChatMessage：用「相对时间间隔」的自然语言标注，不使用 [MM-dd HH:mm] 时间戳
             // 原因：LLM 看到方括号时间戳格式后会模仿，把多条消息塞进一个 replyText 并用时间戳分隔
             // 改用「3分钟前」「昨天」等自然语言，LLM 不会在回复中模仿这种格式
@@ -487,13 +624,36 @@ class ChatInteractor(private val context: Context) {
                     role = if (msg.direction == "inbound") "user" else "assistant",
                     content = "（$timeGap）$rawContent"
                 )
+            }.let { base ->
+                // 主动发起场景：在对话历史末尾追加一条 system 锚定消息，
+                // 防止 LLM 把历史中最后一条 user 消息当成"刚收到的"而回复"刚看到你的消息"
+                // 即使 system prompt 顶部已声明"主动发起"，LLM 的"看到 user 就回复"训练倾向仍可能压不住，
+                // 必须在最近位置再锚定一次，并明确告知用户已沉默多久
+                if (isInitiate) {
+                    val lastInbound = recentMessages.lastOrNull { it.direction == "inbound" }
+                    val silenceMinutes = if (lastInbound != null) {
+                        ((now - lastInbound.createdAt) / 60_000).toInt().coerceAtLeast(0)
+                    } else -1  // -1 表示从未收到过用户消息（首次主动发起）
+                    val silenceDesc = when {
+                        silenceMinutes < 0 -> "用户从未给你发过消息"
+                        silenceMinutes < 60 -> "用户已沉默 ${silenceMinutes} 分钟"
+                        else -> "用户已沉默 ${silenceMinutes / 60} 小时 ${(silenceMinutes % 60)} 分钟"
+                    }
+                    base + ChatMessage(
+                        role = "system",
+                        content = "【重要·场景锚定】当前是 Agent 主动发起场景。" +
+                            "${silenceDesc}，用户没有刚发消息给你，上面的对话历史只是上下文参考。" +
+                            "不要回复用户消息，不要说「刚看到你的消息」「收到你的消息」之类，" +
+                            "你此刻是主动找话题/分享/碎碎念，不是在回复用户。"
+                    )
+                } else base
             }
 
             // 取记忆：v2 三层记忆系统（core_memory 永驻 + memory_items 按需召回）
-            val coreMemories = memoryStore.getCoreMemory()
-            val recentMemoryItems = memoryStore.getRecentItems(10)
+            val coreMemories = memoryStore.getCoreMemory(agentId)
+            val recentMemoryItems = memoryStore.getRecentItems(agentId, 10)
             val memories = (coreMemories + recentMemoryItems).distinctBy { it.id }
-            adjustMemoryImportance(memories)
+            adjustMemoryImportance(agentId, memories)
 
             // 获取当前活动锚点（应用侧权威状态，优先于 currentActivity）
             val activityAnchor = com.agent.ta.service.AgentEngine.getCurrentActivityAnchor()
@@ -503,19 +663,40 @@ class ChatInteractor(private val context: Context) {
             val observerSnapshots = observerRegistry.collectAll()
 
             // 获取历史对话摘要（v2 L2 认知层，注入 Zone B 节省 Token 保持上下文连贯）
-            val currentBucketId = conversationSummarizer.getCurrentBucketId()
-            val priorSummary = conversationSummarizer.getPriorSummaries(currentBucketId)
+            val currentBucketId = conversationSummarizer.getCurrentBucketId(agentId)
+            val priorSummary = conversationSummarizer.getPriorSummaries(agentId, currentBucketId)
+
+            // === 首次见面场景与 awaitingNickname 检测（Task 15）===
+            // scene 由调用方传入（sendUserMessage / triggerFirstMeetingGreeting）
+            // awaitingNickname 在此方法内根据 FirstMeetingPhase 检测：
+            // - WAITING_NICKNAME / FOLLOW_UP_ASKED → true，PromptBuilder 注入 nicknameResolution 引导
+            // - 其他 → false
+            val effectiveScene = scene
+            val awaitingNickname = try {
+                firstMeetingCoordinator.isAwaitingNickname(agentId)
+            } catch (e: Exception) {
+                Log.w(TAG, "检测 awaitingNickname 失败，默认 false", e)
+                false
+            }
+
+            // 读取 per-agent 称呼（优先 AgentConfig.agent.persona.nicknameForUser，兜底 prefs.userNickname）
+            val perAgentNickname = configProvider.get().agent.persona.nicknameForUser
+            val effectiveUserNickname = perAgentNickname.ifBlank { prefs.userNickname }
 
             // 构造 LLM 请求（Zone A/B/C 三段架构 + 双时间锚定 + ActivityAnchor + 观察者数据 + 对话摘要 + 计划 vs 实际对比 + 昨日状态延续 + 今日承诺）
             val planVsActualDiff = com.agent.ta.service.AgentEngine.getPlanVsActualDiff()
             // 查询昨日 DailyState 构造状态延续文本（Step 24）
-            val yesterdayCarryOver = buildYesterdayCarryOver()
+            val yesterdayCarryOver = buildYesterdayCarryOver(agentId)
             // 查询今日 pending/triggered 承诺（Step 25）
             val carryZone = java.time.ZoneId.of("Asia/Shanghai")
             val carryToday = java.time.LocalDate.now(carryZone)
             val carryStart = carryToday.atStartOfDay(carryZone).toInstant().toEpochMilli()
             val carryEnd = carryToday.plusDays(1).atStartOfDay(carryZone).toInstant().toEpochMilli()
-            val todayCommitments = (commitmentDao.getByStatus("pending") + commitmentDao.getByStatus("triggered"))
+            val todayCommitments = (
+                commitmentDao.getByStatus(agentId, "pending") +
+                    commitmentDao.getByStatus(agentId, "claimed") +
+                    commitmentDao.getByStatus(agentId, "delivered")
+                )
                 .filter { c ->
                     // 只保留今日相关的承诺：triggerAt 在今天，或 triggerAt 为 null 且今天创建
                     c.triggerAt?.let { it in carryStart until carryEnd }
@@ -524,10 +705,9 @@ class ChatInteractor(private val context: Context) {
             val llmMessages = promptBuilder.build(
                 config = configProvider.get(),
                 state = com.agent.ta.service.AgentEngine.currentState.value,
-                userNickname = prefs.userNickname,
+                userNickname = effectiveUserNickname,
                 memories = memories,
                 recentMessages = chatMessages,
-                isOnboarding = isOnboarding,
                 currentActivity = com.agent.ta.service.AgentEngine.getCurrentActivity(),
                 activityAnchor = activityAnchor,
                 isInitiate = isInitiate,
@@ -541,9 +721,12 @@ class ChatInteractor(private val context: Context) {
                 planVsActualDiff = planVsActualDiff,
                 yesterdayCarryOver = yesterdayCarryOver,
                 todayCommitments = todayCommitments,
-                relationshipState = relationshipService.getCurrentState(),
-                recentMilestones = relationshipService.getRecentMilestones(3),
-                emotionalState = emotionalService.getCurrentState()
+                relationshipState = relationshipService.getCurrentState(agentId),
+                recentMilestones = relationshipService.getRecentMilestones(agentId, 3),
+                emotionalState = emotionalService.getCurrentState(agentId),
+                scene = effectiveScene,
+                awaitingNickname = awaitingNickname,
+                commitmentTimerEnabled = prefs.commitmentTimerEnabled
             )
 
             // 调 LLM（支持工具调用）+ 一致性校验重试循环
@@ -553,6 +736,7 @@ class ChatInteractor(private val context: Context) {
                 isConfigMode = isConfigMode,
                 isPendingCatchup = isPendingCatchup
             )
+            ensureOperationCurrent(operationContext)
             var consistencyRetryCount = 0
             var currentMessages = llmMessages
             while (consistencyRetryCount < MAX_CONSISTENCY_RETRIES) {
@@ -581,16 +765,46 @@ class ChatInteractor(private val context: Context) {
                 Log.w(TAG, "一致性校验重试达上限($MAX_CONSISTENCY_RETRIES)，使用最后一次回复")
             }
 
+            // === 首次见面元数据校验（Task 12/15）===
+            // FIRST_MEETING_GREETING 场景：必须 introducedSelf && askedForNickname
+            // 第一次失败 → 追加纠正提示重试一次
+            // 第二次仍失败 → 使用最小兜底问句（不再调 LLM）
+            if (effectiveScene == ConversationScene.FIRST_MEETING_GREETING) {
+                val validator = com.agent.ta.domain.firstmeeting.FirstMeetingValidator
+                if (!validator.isMetaValid(reply, requireBothGoals = true)) {
+                    Log.w(TAG, "首次问候元数据校验失败，追加纠正提示重试一次")
+                    val correctionHint = validator.buildCorrectionHint(reply.firstMeetingMeta)
+                    val retryMessages = llmMessages + ChatMessage(role = "system", content = correctionHint)
+                    reply = callLlmWithToolSupport(
+                        messages = retryMessages,
+                        isConfigMode = isConfigMode,
+                        isPendingCatchup = isPendingCatchup
+                    )
+                    if (!validator.isMetaValid(reply, requireBothGoals = true)) {
+                        Log.w(TAG, "首次问候重试仍失败，使用最小兜底问句")
+                        reply = validator.buildFallbackReply(configProvider.get().agent.name.ifBlank { "小雅" })
+                    }
+                }
+            }
+
+            // === 处理称呼解析（Task 15）===
+            // 解析 LLM 输出的 nicknameResolution，写入 AgentConfig 并推进首次见面状态机
+            ensureOperationCurrent(operationContext)
+            processNicknameResolution(agentId, reply, awaitingNickname)
+
             // 存记忆（v2 通过 MemoryStore 统一管理，自动分级入库）
             reply.memoryUpdates.forEach { update ->
-                memoryStore.addMemory(update, if (isInitiate) "event" else "chat")
+                ensureOperationCurrent(operationContext)
+                memoryStore.addMemory(agentId, update, if (isInitiate) "event" else "chat")
             }
 
             // 存未来事件（LLM 从对话中提取的）
             if (reply.futureEvents.isNotEmpty()) {
                 reply.futureEvents.forEach { event ->
+                    ensureOperationCurrent(operationContext)
                     futureEventDao.insert(
                         FutureEventEntity(
+                            agentId = agentId,
                             date = event.date,
                             description = event.description,
                             source = "chat"
@@ -603,8 +817,10 @@ class ChatInteractor(private val context: Context) {
             // 存承诺/约定（LLM 从对话中提取的）
             if (reply.commitments.isNotEmpty()) {
                 reply.commitments.forEach { item ->
+                    ensureOperationCurrent(operationContext)
                     val triggerAtTs = item.triggerAt?.let { parseIso8601ToTimestamp(it) }
                     val commitment = CommitmentEntity(
+                        agentId = agentId,
                         type = item.type,
                         content = item.content,
                         participants = item.participants,
@@ -626,16 +842,19 @@ class ChatInteractor(private val context: Context) {
             // 处理承诺完成/取消（LLM 从对话中识别的）
             if (reply.commitmentUpdates.isNotEmpty()) {
                 reply.commitmentUpdates.forEach { update ->
+                    ensureOperationCurrent(operationContext)
                     // 按 content 关键词匹配 pending/triggered 状态的承诺
-                    val candidates = ServiceLocator.commitmentDao.getByStatus("pending") +
-                        ServiceLocator.commitmentDao.getByStatus("triggered")
+                    val candidates =
+                        ServiceLocator.commitmentDao.getByStatus(agentId, "pending") +
+                            ServiceLocator.commitmentDao.getByStatus(agentId, "claimed") +
+                            ServiceLocator.commitmentDao.getByStatus(agentId, "delivered")
                     val matched = candidates.find {
                         it.content.contains(update.content) || update.content.contains(it.content)
                     }
                     matched?.let {
-                        ServiceLocator.commitmentDao.updateStatus(it.id, update.status)
+                        ServiceLocator.commitmentDao.updateStatus(agentId, it.id, update.status)
                         if (update.status == "completed" || update.status == "cancelled") {
-                            CommitmentScheduler(context).cancelCommitmentTrigger(it.id)
+                            CommitmentScheduler(context).cancelCommitmentTrigger(agentId, it.id)
                         }
                         Log.d(TAG, "承诺状态更新：${it.content} → ${update.status}")
                     }
@@ -646,6 +865,7 @@ class ChatInteractor(private val context: Context) {
             // LLM 输出 scheduleAdjustment（含 adjustmentType 和参数），ScheduleAdjuster 局部修改 slots
             // 不再调 LLM 重新生成全天作息，省一次调用 + 保留已完成时段
             if (reply.scheduleAdjustment.shouldAdjust) {
+                ensureOperationCurrent(operationContext)
                 val config = configProvider.get()
                 val currentSlots = com.agent.ta.service.AgentEngine.getTodaySchedule()
                 Log.d(TAG, "Agent 决定调整作息（${reply.scheduleAdjustment.adjustmentType}）：${reply.scheduleAdjustment.reason}")
@@ -663,6 +883,7 @@ class ChatInteractor(private val context: Context) {
 
             // 处理配置变更（配置模式下 LLM 输出 configUpdate）
             if (isConfigMode && reply.configUpdate != null) {
+                ensureOperationCurrent(operationContext)
                 applyConfigUpdate(reply.configUpdate)
             }
 
@@ -680,7 +901,13 @@ class ChatInteractor(private val context: Context) {
 
             if (items.isEmpty()) {
                 Log.w(TAG, "LLM 未返回任何回复内容")
-                return
+                // 首次问候 LLM 无内容：回退状态机（Task 15）
+                if (effectiveScene == ConversationScene.FIRST_MEETING_GREETING) {
+                    try { firstMeetingCoordinator.onGreetingLlmFailure(agentId) } catch (e: Exception) {
+                        Log.w(TAG, "onGreetingLlmFailure 失败（空回复）", e)
+                    }
+                }
+                return false
             }
 
             Log.d(TAG, "本次回复 ${items.size} 条消息")
@@ -688,6 +915,7 @@ class ChatInteractor(private val context: Context) {
             // 防御性清理：从每条 replyText 中提取括号动作到 action
             // （防御 LLM 把动作写进 replyText 被读成语音）
             coroutineContext.ensureActive()  // 被取消时抛 CancellationException
+            ensureOperationCurrent(operationContext)
             val cleanedItems = items.map { item ->
                 val cleanedText = item.replyText.replace(BRACKET_REGEX, "").replace(Regex("\\s+"), " ").trim()
                 val extractedAction = BRACKET_REGEX.findAll(item.replyText)
@@ -699,41 +927,62 @@ class ChatInteractor(private val context: Context) {
                 item.copy(replyText = cleanedText, action = finalAction)
             }
 
+            // 防御性拆分：单条 replyText 含多个完整句子时按句末标点拆成多条消息
+            // （LLM 偶发把多句塞进一条，这里作为最后一道防线，每条都是完整句子）
+            // action/directorPrompt 只保留在拆分后的第一条，避免重复入库
+            val splitItems = cleanedItems.flatMap(TtsTextPolicy::splitLongReply)
+
             // 判断是否走"多消息独立入库"路径：
             // 条件：有意义的 replyText（长度 >= 2）至少有 2 条
             // 每条独立入库显示（像真人微信连发），只对合并文本做一次 TTS
             // 多条回复的连贯性和数量完全由 PromptBuilder 引导 LLM 生成（见 system prompt），
             // 代码层不做过滤，让 LLM 像真人一样自主决定发几条
-            val effectiveReplies = cleanedItems.filter { it.replyText.length >= 2 }
+            val deliveryItems = ReplyDeliveryPolicy.attachPureEmoji(splitItems)
+            val effectiveReplies = deliveryItems.filter { it.replyText.length >= 2 }
 
             val useMultiMessageMode = effectiveReplies.size >= 2
 
             if (useMultiMessageMode) {
-                Log.d(TAG, "多消息独立入库：${cleanedItems.size} 条（不合并，含纯 emoji）")
-                // 传入全部 cleanedItems（含纯 emoji 项），保留 LLM 输出的 emoji 消息
-                persistMultipleReplies(cleanedItems)
-                return
+                Log.d(TAG, "多消息逐条合成并入库：${deliveryItems.size} 条")
+                val persisted = persistMultipleReplies(agentId, operationContext, deliveryItems)
+                if (!persisted) return false
+                // 首次见面状态推进（Task 15）
+                advanceFirstMeetingState(agentId, effectiveScene)
+                lastReplyTime = System.currentTimeMillis()
+                return true
             }
 
             // 否则走原合并逻辑兜底（处理 LLM 异常输出、纯 emoji、单条 reply 等场景）
-            val mergedReplyText = cleanedItems.filter { it.replyText.isNotEmpty() }.joinToString("\n") { it.replyText }
-            val mergedAction = cleanedItems.firstOrNull { it.action.isNotBlank() }?.action ?: ""
-            val mergedEmoji = cleanedItems.lastOrNull { it.emoji.isNotBlank() }?.emoji ?: ""
-            val mergedDirectorPrompt = cleanedItems.firstOrNull { it.directorPrompt.isNotBlank() }?.directorPrompt ?: ""
+            val mergedReplyText = deliveryItems.joinToString("\n") { it.replyText }
+            val mergedAction = deliveryItems.firstOrNull { it.action.isNotBlank() }?.action ?: ""
+            val mergedEmoji = deliveryItems.joinToString("") { it.emoji }
+            val mergedDirectorPrompt = deliveryItems.firstOrNull { it.directorPrompt.isNotBlank() }?.directorPrompt ?: ""
 
             if (mergedReplyText.isBlank() && mergedEmoji.isBlank()) {
                 Log.w(TAG, "LLM 重试后仍未返回有效回复")
-                return
+                // 首次问候无有效内容：回退状态机（Task 15）
+                if (effectiveScene == ConversationScene.FIRST_MEETING_GREETING) {
+                    try { firstMeetingCoordinator.onGreetingLlmFailure(agentId) } catch (e: Exception) {
+                        Log.w(TAG, "onGreetingLlmFailure 失败（空合并回复）", e)
+                    }
+                }
+                return false
             }
-            if (items.size > 1) {
-                Log.d(TAG, "防御合并：${items.size} 条 → 1 条，replyText=${mergedReplyText.replace("\n", " / ")}, action=$mergedAction, emoji=$mergedEmoji")
+            if (splitItems.size > 1) {
+                Log.d(TAG, "防御合并：${splitItems.size} 条 → 1 条，replyText=${mergedReplyText.replace("\n", " / ")}, action=$mergedAction, emoji=$mergedEmoji")
             }
 
             // 纯 emoji（无文字）：不合成语音，直接入库
             if (mergedEmoji.isNotBlank() && mergedReplyText.isBlank()) {
                 // 校验 cancel 信号（虽无 TTS，但 LLM 调用阶段也可能被取消）
                 coroutineContext.ensureActive()
+                // 去重检查（防竞态导致重复入库）
+                if (isDuplicateReply(mergedEmoji)) {
+                    Log.w(TAG, "回复 emoji 与最近 10 秒内已入库的重复，跳过（防竞态去重）")
+                    return false
+                }
                 val emojiMsg = ChatMessageEntity(
+                    agentId = agentId,
                     direction = "outbound",
                     text = null,
                     audioPath = null,
@@ -744,14 +993,14 @@ class ChatInteractor(private val context: Context) {
                     emoji = mergedEmoji
                 )
                 chatDao.insert(emojiMsg)
-                notificationHelper.notifyAgentMessage(mergedEmoji, null)
+                notificationHelper.notifyAgentMessage(mergedEmoji, null, resolveAgentName(agentId))
             } else {
                 // 文字消息：合成语音只朗读 replyText
                 var audioPath: String? = null
                 var audioDurationSec: Int? = null
                 if (prefs.voiceEnabled && mergedReplyText.isNotBlank()) {
                     // 合并兜底路径：取第一条 reply 的 emotion（空则 fallback neutral）
-                    val mergedEmotion = cleanedItems.firstOrNull { it.emotion.isNotBlank() }?.emotion ?: ""
+                    val mergedEmotion = splitItems.firstOrNull { it.emotion.isNotBlank() }?.emotion ?: ""
                     val result = synthesizeVoice(mergedReplyText, mergedDirectorPrompt, mergedEmotion)
                     audioPath = result?.first
                     audioDurationSec = result?.second
@@ -761,8 +1010,15 @@ class ChatInteractor(private val context: Context) {
                 // （synthesizeVoice 是远程阻塞调用，cancel 信号要等其返回才能生效）
                 coroutineContext.ensureActive()
 
+                // 去重检查（防竞态导致重复入库）
+                if (isDuplicateReply(mergedReplyText)) {
+                    Log.w(TAG, "回复内容与最近 10 秒内已入库的重复，跳过（防竞态去重）")
+                    return false
+                }
+
                 // 同时有文字和 emoji 时忽略 emoji（语音消息只保留文字，避免 emoji 挤在语音气泡里）
                 val agentMsg = ChatMessageEntity(
+                    agentId = agentId,
                     direction = "outbound",
                     text = mergedReplyText,
                     audioPath = audioPath,
@@ -774,6 +1030,7 @@ class ChatInteractor(private val context: Context) {
                     audioDurationSec = audioDurationSec,
                     emoji = null  // 忽略 emoji
                 )
+                ensureOperationCurrent(operationContext)
                 chatDao.insert(agentMsg)
 
                 val notifyText = buildString {
@@ -783,13 +1040,11 @@ class ChatInteractor(private val context: Context) {
                         append(mergedEmoji)
                     }
                 }
-                notificationHelper.notifyAgentMessage(notifyText, audioPath)
+                notificationHelper.notifyAgentMessage(notifyText, audioPath, resolveAgentName(agentId))
             }
 
-            // 驱动 Onboarding 推进：用户发消息后 Agent 已回复，触发下一轮或完成
-            if (!isInitiate) {
-                com.agent.ta.service.AgentEngine.onUserRepliedForOnboarding(context)
-            }
+            // 首次见面状态推进（Task 15）
+            advanceFirstMeetingState(agentId, effectiveScene)
 
             // 记录回复完成时间，用于连续对话检测
             lastReplyTime = System.currentTimeMillis()
@@ -799,7 +1054,8 @@ class ChatInteractor(private val context: Context) {
                 val replyTextForRelationship = items.joinToString(" ") { it.replyText }.take(500)
                 val emotionForRelationship = items.firstOrNull()?.emotion?.ifBlank { "neutral" } ?: "neutral"
                 val totalLength = items.sumOf { it.replyText.length }
-                relationshipService.onTurnCompleted(
+                    relationshipService.onTurnCompleted(
+                    agentId = agentId,
                     emotion = emotionForRelationship,
                     isUserInitiated = true,
                     messageLength = totalLength
@@ -809,6 +1065,7 @@ class ChatInteractor(private val context: Context) {
                 if (!declaredMilestone.isNullOrBlank() && declaredMilestone != "null") {
                     val title = RelationshipService.MILESTONE_TITLE_MAP[declaredMilestone] ?: declaredMilestone
                     relationshipService.recordMilestone(
+                        agentId = agentId,
                         type = declaredMilestone,
                         title = title,
                         source = "llm_declared",
@@ -823,6 +1080,7 @@ class ChatInteractor(private val context: Context) {
             try {
                 val emotionForEmotional = items.firstOrNull()?.emotion?.ifBlank { "neutral" } ?: "neutral"
                 emotionalService.onTurnCompleted(
+                    agentId = agentId,
                     emotionIntensity = reply.emotionIntensity,
                     emotion = emotionForEmotional
                 )
@@ -835,6 +1093,7 @@ class ChatInteractor(private val context: Context) {
             val wantAvatarId = reply.wantAvatarId
             if (!wantAvatarId.isNullOrBlank() && wantAvatarId != "null") {
                 try {
+                    ensureOperationCurrent(operationContext)
                     val currentConfig = configProvider.get()
                     val matched = currentConfig.agent.avatars.firstOrNull { it.id == wantAvatarId }
                     if (matched != null) {
@@ -854,12 +1113,199 @@ class ChatInteractor(private val context: Context) {
                 }
             }
 
+            return true
+
         } catch (e: CancellationException) {
             // 用户发新消息，剩余条目被取消，属正常流程
             Log.d(TAG, "回复任务被取消（用户发了新消息或状态切换）")
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "生成回复失败", e)
+            // 首次问候 LLM 异常：回退状态机（Task 15）
+            if (scene == ConversationScene.FIRST_MEETING_GREETING) {
+                try { firstMeetingCoordinator.onGreetingLlmFailure(agentId) } catch (ex: Exception) {
+                    Log.w(TAG, "onGreetingLlmFailure 失败（异常回退）", ex)
+                }
+            }
+            return false
+        }
+    }
+
+    /**
+     * 处理称呼解析结果（Task 15）
+     *
+     * 解析 LLM 输出的 nicknameResolution，根据当前是否处于首次见面等待称呼阶段，
+     * 分别走不同处理路径：
+     *
+     * - awaitingNickname=true（首次见面 WAITING_NICKNAME / FOLLOW_UP_ASKED）：
+     *   EXPLICIT_NICKNAME/CORRECTION → 校验通过则保存 + onNicknameCaptured
+     *   DECLINED → onUserDeclined
+     *   其他 → onNicknameUnrecognized
+     *
+     * - awaitingNickname=false（首次见面已完成或普通对话）：
+     *   CORRECTION/EXPLICIT_NICKNAME → 校验通过则更新称呼
+     *   CLEAR → 清空称呼
+     *   其他 → 忽略
+     *
+     * 称呼只写入请求所属 agentId 的 AgentConfig，不污染其他 Agent。
+     * 不显示「配置保存成功」系统提示，保持人格化自然表达。
+     */
+    private suspend fun processNicknameResolution(
+        agentId: Long,
+        reply: com.agent.ta.data.remote.dto.AgentReply,
+        awaitingNickname: Boolean
+    ) {
+        val rawResolution = reply.nicknameResolution ?: return
+        val resolution = nicknameResolver.parse(rawResolution)
+
+        if (resolution.intent == "NONE") return
+
+        if (awaitingNickname) {
+            // 首次见面进行中：WAITING_NICKNAME / FOLLOW_UP_ASKED
+            when (resolution.intent) {
+                "EXPLICIT_NICKNAME", "CORRECTION" -> {
+                    val decision = nicknameResolver.decideSave(resolution)
+                    if (decision.shouldSave && decision.normalizedNickname != null) {
+                        saveNicknameToAgent(agentId, decision.normalizedNickname)
+                        try {
+                            firstMeetingCoordinator.onNicknameCaptured(agentId, decision.normalizedNickname)
+                            Log.d(TAG, "首次见面：称呼已捕获 '${decision.normalizedNickname}'")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onNicknameCaptured 失败", e)
+                        }
+                    } else {
+                        // 校验未通过，视为未识别
+                        try {
+                            firstMeetingCoordinator.onNicknameUnrecognized(agentId)
+                            Log.d(TAG, "首次见面：称呼校验未通过（${decision.reason}），视为未识别")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onNicknameUnrecognized 失败", e)
+                        }
+                    }
+                }
+                "CLEAR" -> {
+                    // 首次见面中要求清空：尚无称呼可清，视为未识别
+                    try {
+                        firstMeetingCoordinator.onNicknameUnrecognized(agentId)
+                        Log.d(TAG, "首次见面：用户要求清空但尚无称呼，视为未识别")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "onNicknameUnrecognized 失败(CLEAR)", e)
+                    }
+                }
+                "DECLINED" -> {
+                    try {
+                        firstMeetingCoordinator.onUserDeclined(agentId)
+                        Log.d(TAG, "首次见面：用户明确拒绝提供称呼")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "onUserDeclined 失败", e)
+                    }
+                }
+                "SELF_INTRODUCTION", "AMBIGUOUS" -> {
+                    try {
+                        firstMeetingCoordinator.onNicknameUnrecognized(agentId)
+                        Log.d(TAG, "首次见面：未识别到明确称呼（intent=${resolution.intent}）")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "onNicknameUnrecognized 失败(${resolution.intent})", e)
+                    }
+                }
+            }
+        } else {
+            // 首次见面已完成或普通对话：处理 CORRECTION / CLEAR / EXPLICIT_NICKNAME
+            when (resolution.intent) {
+                "EXPLICIT_NICKNAME", "CORRECTION" -> {
+                    val decision = nicknameResolver.decideSave(resolution)
+                    if (decision.shouldSave && decision.normalizedNickname != null) {
+                        saveNicknameToAgent(agentId, decision.normalizedNickname)
+                        Log.d(TAG, "称呼已更新：agentId=$agentId nickname='${decision.normalizedNickname}'")
+                    } else {
+                        Log.d(TAG, "称呼更新校验未通过：${decision.reason}")
+                    }
+                }
+                "CLEAR" -> {
+                    if (nicknameResolver.shouldClear(resolution)) {
+                        clearNicknameFromAgent(agentId)
+                        Log.d(TAG, "称呼已清空：agentId=$agentId")
+                    }
+                }
+                // SELF_INTRODUCTION / DECLINED / AMBIGUOUS / NONE：不处理
+            }
+        }
+    }
+
+    /**
+     * 保存称呼到指定 Agent 的配置（Task 15）
+     *
+     * 通过 AgentConfigEditor.updateAgent 按 agentId 写入，确保只更新目标 Agent。
+     * 同时同步全局 prefs.userNickname（向后兼容，PromptBuilder 兜底读取）。
+     */
+    private suspend fun saveNicknameToAgent(agentId: Long, nickname: String) {
+        try {
+            agentConfigEditor.updateAgent(agentId) { config ->
+                val persona = config.agent.persona
+                config.copy(
+                    agent = config.agent.copy(
+                        persona = persona.copy(nicknameForUser = nickname)
+                    )
+                )
+            }
+            // 同步全局 prefs（向后兼容）
+            prefs.userNickname = nickname
+        } catch (e: Exception) {
+            Log.e(TAG, "保存称呼失败：agentId=$agentId", e)
+        }
+    }
+
+    /**
+     * 清空指定 Agent 的称呼（Task 15）
+     */
+    private suspend fun clearNicknameFromAgent(agentId: Long) {
+        try {
+            agentConfigEditor.updateAgent(agentId) { config ->
+                val persona = config.agent.persona
+                config.copy(
+                    agent = config.agent.copy(
+                        persona = persona.copy(nicknameForUser = "")
+                    )
+                )
+            }
+            // 同步全局 prefs
+            prefs.userNickname = "你"
+        } catch (e: Exception) {
+            Log.e(TAG, "清空称呼失败：agentId=$agentId", e)
+        }
+    }
+
+    /**
+     * 推进首次见面状态机（Task 15）
+     *
+     * 在回复消息持久化后调用：
+     * - FIRST_MEETING_GREETING：问候消息已入库 → onGreetingSuccess → WAITING_NICKNAME
+     * - FIRST_MEETING_REPLY：用户先发消息的首次回复已入库 → markGreetingCompletedIfInProgress → WAITING_NICKNAME
+     *
+     * 查询最新的 outbound 消息 ID 作为 greetingMessageId（用于幂等防重复）。
+     * 失败不阻塞主流程。
+     */
+    private suspend fun advanceFirstMeetingState(agentId: Long, scene: ConversationScene) {
+        try {
+            when (scene) {
+                ConversationScene.FIRST_MEETING_GREETING -> {
+                    val now = System.currentTimeMillis()
+                    val recentMessages = chatDao.getAll(agentId)
+                    val greetingMsg = recentMessages.lastOrNull { it.direction == "outbound" }
+                    val msgId = greetingMsg?.id ?: 0L
+                    firstMeetingCoordinator.onGreetingSuccess(agentId, msgId, now)
+                }
+                ConversationScene.FIRST_MEETING_REPLY -> {
+                    val now = System.currentTimeMillis()
+                    val recentMessages = chatDao.getAll(agentId)
+                    val greetingMsg = recentMessages.lastOrNull { it.direction == "outbound" }
+                    val msgId = greetingMsg?.id ?: 0L
+                    firstMeetingCoordinator.markGreetingCompletedIfInProgress(agentId, msgId, now)
+                }
+                else -> {}
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "推进首次见面状态失败（不影响主流程）", e)
         }
     }
 
@@ -868,7 +1314,7 @@ class ChatInteractor(private val context: Context) {
      *
      * 工具调用启用场景：
      * - 正常用户消息回复
-     * - Agent 主动发起 / Onboarding
+     * - Agent 主动发起 / 首次见面问候
      *
      * 跳过工具调用的场景：
      * - 配置模式（专注配置变更，不需要外部工具）
@@ -1031,70 +1477,64 @@ class ChatInteractor(private val context: Context) {
      * - 每条独立 TTS 合成，避免合并成一条长语音
      * - 短句独立语音更自然，且每条都能单独播放
      */
-    private suspend fun persistMultipleReplies(replies: List<ReplyItem>) {
-        if (replies.isEmpty()) return
+    private suspend fun persistMultipleReplies(
+        agentId: Long,
+        operationContext: AgentOperationContext,
+        replies: List<ReplyItem>
+    ): Boolean {
+        if (replies.isEmpty()) return false
 
-        val state = com.agent.ta.service.AgentEngine.currentState.value
-        val now = System.currentTimeMillis()
-
-        // 每条独立 TTS，避免合并成长语音
-        val audioResults = mutableListOf<Pair<String, Int>?>()
-        if (prefs.voiceEnabled) {
-            replies.forEach { reply ->
-                val isPureEmoji = reply.replyText.isBlank() && reply.emoji.isNotBlank()
-                if (!isPureEmoji && reply.replyText.isNotBlank()) {
-                    val result = synthesizeVoice(reply.replyText, reply.directorPrompt, reply.emotion)
-                    audioResults.add(result)
-                } else {
-                    audioResults.add(null)
-                }
-            }
-        } else {
-            replies.forEach { _ -> audioResults.add(null) }
+        // 去重检查：拼接所有 replyText 作为整体指纹
+        // 防止竞态导致相同内容被两次 generateAgentReply 重复入库
+        val fingerprint = replies.joinToString(" | ") { it.replyText.ifBlank { it.emoji } }
+        if (isDuplicateReply(fingerprint)) {
+            Log.w(TAG, "回复内容与最近 10 秒内已入库的重复，跳过（防竞态去重）")
+            return false
         }
 
-        // TTS 期间用户可能发了新消息触发 cancel，此处检查避免被取消的旧回复仍入库
-        // （多消息场景 TTS 耗时更长，cancel 信号在 TTS 完成后才能被检查到）
-        coroutineContext.ensureActive()
+        val state = com.agent.ta.service.AgentEngine.currentState.value
+        var lastSent: ChatMessageEntity? = null
 
-        // 每条独立入库
         replies.forEachIndexed { index, reply ->
-            // 纯 emoji 消息：不合成语音
-            val isPureEmoji = reply.replyText.isBlank() && reply.emoji.isNotBlank()
-            // 同时有文字和 emoji：忽略 emoji（语音消息只保留文字，避免 emoji 挤在语音气泡里）
-            val effectiveEmoji = if (reply.replyText.isNotBlank()) null
-                                 else reply.emoji.takeIf { it.isNotBlank() }
-
-            val audioResult = audioResults.getOrNull(index)
+            coroutineContext.ensureActive()
+            ensureOperationCurrent(operationContext)
+            val audioResult = if (prefs.voiceEnabled) {
+                synthesizeVoice(reply.replyText, reply.directorPrompt, reply.emotion)
+            } else {
+                null
+            }
+            coroutineContext.ensureActive()
+            ensureOperationCurrent(operationContext)
             val audioPath = audioResult?.first
             val audioDuration = audioResult?.second
 
             val msg = ChatMessageEntity(
+                agentId = agentId,
                 direction = "outbound",
                 text = reply.replyText.takeIf { it.isNotBlank() },
                 audioPath = audioPath,
                 directorPrompt = reply.directorPrompt.takeIf { it.isNotBlank() },
                 state = state.id,
                 status = "sent",
-                createdAt = now + index,  // 保证时间顺序
+                createdAt = System.currentTimeMillis() + index,
                 action = reply.action.takeIf { it.isNotBlank() },
                 audioDurationSec = audioDuration,
-                emoji = effectiveEmoji
+                emoji = reply.emoji.takeIf { it.isNotBlank() }
             )
             chatDao.insert(msg)
+            lastSent = msg
         }
 
-        // 通知文案：最后一条的 replyText（最新到达视野最显眼）
-        val lastReply = replies.last()
+        val sent = lastSent ?: return false
         val notifyText = buildString {
-            append(lastReply.replyText)
-            if (lastReply.emoji.isNotBlank()) {
+            append(sent.text.orEmpty())
+            if (!sent.emoji.isNullOrBlank()) {
                 if (isNotEmpty()) append(" ")
-                append(lastReply.emoji)
+                append(sent.emoji)
             }
         }
-        val firstAudioPath = audioResults.firstOrNull()?.first
-        notificationHelper.notifyAgentMessage(notifyText, firstAudioPath)
+        notificationHelper.notifyAgentMessage(notifyText, sent.audioPath, resolveAgentName(agentId))
+        return true
     }
 
     /**
@@ -1117,22 +1557,22 @@ class ChatInteractor(private val context: Context) {
         // 是否配置了克隆样本（任何情绪有样本都算）
         val hasCloneSample = voiceConfig.sampleFileFor(emotion)?.isNotBlank() == true
 
-        Log.d(TAG, "合成语音：emotion=$emotion, samplePath=$samplePath, hasCloneSample=$hasCloneSample, directorMode=${voiceConfig.directorMode}, ttsBaseUrl=${prefs.ttsBaseUrl}, ttsApiKey配置=${prefs.ttsApiKey.isNotBlank()}")
+        Log.d(TAG, "合成语音：emotion=$emotion, samplePath=$samplePath, hasCloneSample=$hasCloneSample, directorMode=${voiceConfig.directorMode}, ttsBaseUrl=${prefs.ttsBaseUrl}, ttsApiKey配置=${prefs.ttsApiKey.isNotBlank()}, textLen=${text.length}")
 
-        // 第一次尝试
-        var audioBytes = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotion)
-        if (audioBytes == null) {
-            // 等待后重试一次（给限流更多恢复时间）
+        // 每条 reply 整体一次 TTS 请求，生成一条完整连贯的语音
+        // 消息拆分已由 splitLongReply 在更上层完成（按句末标点拆成多条独立 reply）
+        var audioResult = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotion)
+        if (audioResult == null) {
             Log.w(TAG, "远程 TTS 第一次失败，1500ms 后重试")
             delay(1500)
-            audioBytes = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotion)
+            audioResult = tryRemoteTts(text, directorPrompt, samplePath, voiceConfig, emotion)
         }
 
-        if (audioBytes != null) {
-            val audioFile = File(context.cacheDir, "voice_${UUID.randomUUID()}.wav")
-            audioFile.writeBytes(audioBytes)
+        if (audioResult != null) {
+            val audioFile = File(context.cacheDir, "voice_${UUID.randomUUID()}.${audioResult.format}")
+            audioFile.writeBytes(audioResult.bytes)
             val durationSec = getAudioDurationSec(audioFile.absolutePath)
-            Log.d(TAG, "远程 TTS 合成成功：${audioFile.absolutePath}，${audioBytes.size} bytes，${durationSec}s")
+            Log.d(TAG, "远程 TTS 合成成功：${audioFile.absolutePath}，${audioResult.bytes.size} bytes，${durationSec}s")
             return Pair(audioFile.absolutePath, durationSec)
         }
 
@@ -1164,7 +1604,7 @@ class ChatInteractor(private val context: Context) {
         samplePath: String?,
         voiceConfig: com.agent.ta.data.model.VoiceConfig? = null,
         emotionHint: String? = null
-    ): ByteArray? {
+    ): com.agent.ta.data.remote.TtsAudioResult? {
         return try {
             ttsClient.synthesize(text, directorPrompt, samplePath, voiceConfig, emotionHint)
         } catch (e: CancellationException) {
@@ -1205,11 +1645,11 @@ class ChatInteractor(private val context: Context) {
      * 2. 根据 accessCount 和时间衰减重新计算 importance
      * 3. importance = min(5, baseImportance + accessCount/5 - daysSinceUpdate/30)
      */
-    private suspend fun adjustMemoryImportance(memories: List<MemoryEntity>) {
+    private suspend fun adjustMemoryImportance(agentId: Long, memories: List<MemoryEntity>) {
         val now = System.currentTimeMillis()
         memories.forEach { memory ->
             // 增加访问计数
-            memoryDao.incrementAccessCount(memory.id, now)
+            memoryDao.incrementAccessCount(agentId, memory.id, now)
             
             // 计算新的 importance
             val daysSinceUpdate = (now - memory.updatedAt) / (1000 * 60 * 60 * 24)
@@ -1219,7 +1659,7 @@ class ChatInteractor(private val context: Context) {
             
             // 如果 importance 变化超过 1，更新数据库
             if (kotlin.math.abs(newImportance - memory.importance) > 1) {
-                memoryDao.updateImportance(memory.id, newImportance, now)
+                memoryDao.updateImportance(agentId, memory.id, newImportance, now)
             }
         }
     }
@@ -1250,12 +1690,12 @@ class ChatInteractor(private val context: Context) {
      * - 起床时间可以晚 30 分钟
      * - 多安排休息时段（疲劳未恢复）
      */
-    private suspend fun buildYesterdayCarryOver(): String? {
+    private suspend fun buildYesterdayCarryOver(agentId: Long): String? {
         return try {
             val zone = java.time.ZoneId.of("Asia/Shanghai")
             val yesterday = java.time.LocalDate.now(zone).minusDays(1)
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-            val state = dailyStateDao.getByDate(yesterday) ?: return null
+            val state = dailyStateDao.getByDate(agentId, yesterday) ?: return null
 
             val sb = StringBuilder()
 
@@ -1362,6 +1802,13 @@ class ChatInteractor(private val context: Context) {
         // 使用 AtomicReference 避免竞态条件
         private val currentReplyJobRef = AtomicReference<Job?>(null)
 
+        private val commitmentReplyMutex = Mutex()
+
+        suspend fun cancelAndJoinForAgentSwitch() {
+            currentReplyJobRef.getAndSet(null)?.cancelAndJoin()
+            _isReplying.value = false
+        }
+
         // Agent 是否正在输入/生成回复（供 UI 显示"正在输入中"指示器）
         // 跨实例共享：ChatViewModel 的 ChatInteractor 和 AgentEngine 创建的实例共享同一状态
         private val _isReplying = MutableStateFlow(false)
@@ -1395,6 +1842,32 @@ class ChatInteractor(private val context: Context) {
         /** 当前连续对话轮次（每轮 = 用户发 + Agent 回），跨实例共享 */
         @Volatile
         private var continuousRound: Int = 0
+
+        // === 回复去重缓存（防竞态导致重复入库）===
+        // 场景：sendUserMessage 的回复任务和 Heartbeat/Initiator 触发的 agentInitiate 可能竞态，
+        // 两次 generateAgentReply 几乎同时执行，LLM 上下文相似导致返回相同内容。
+        // 这里记录最近入库的 replyText，短时间内重复则跳过。
+        private val recentReplyTexts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        private const val DEDUP_WINDOW_MS = 10_000L  // 10 秒去重窗口
+
+        /**
+         * 检查并标记回复内容是否为重复
+         * - 如果在 [DEDUP_WINDOW_MS] 窗口内已有相同内容入库，返回 true（重复，跳过）
+         * - 否则记录当前时间戳，返回 false（非重复，继续入库）
+         */
+        private fun isDuplicateReply(text: String): Boolean {
+            val now = System.currentTimeMillis()
+            // 清理过期记录
+            recentReplyTexts.entries.removeAll { (_, ts) -> now - ts > DEDUP_WINDOW_MS }
+            val key = text.trim()
+            if (key.isBlank()) return false
+            val existing = recentReplyTexts[key]
+            if (existing != null && now - existing < DEDUP_WINDOW_MS) {
+                return true
+            }
+            recentReplyTexts[key] = now
+            return false
+        }
     }
 }
 

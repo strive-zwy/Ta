@@ -23,7 +23,7 @@ class EmotionalEngineTest {
         potentialEnergy: Int = 0,
         lastUserInteractionAt: Long = System.currentTimeMillis()
     ) = EmotionalStateEntity(
-        id = 1,
+        agentId = 1L,
         valence = valence,
         arousal = arousal,
         potentialEnergy = potentialEnergy,
@@ -149,6 +149,7 @@ class EmotionalEngineTest {
     fun applySleepBaseline_short_sleep_makes_agent_irritable() {
         val current = baseState(valence = 0f, arousal = 0.3f)
         val yesterday = DailyStateEntity(
+            agentId = 1L,
             date = "2026-07-29",
             sleepTime = "02:00",
             wakeTime = "07:00",
@@ -173,6 +174,7 @@ class EmotionalEngineTest {
     fun applySleepBaseline_normal_sleep_starts_neutral() {
         val current = baseState(valence = 0.8f, arousal = 0.9f)  // 故意非中性
         val yesterday = DailyStateEntity(
+            agentId = 1L,
             date = "2026-07-29",
             sleepTime = "23:00",
             wakeTime = "07:00",
