@@ -24,6 +24,7 @@ jobs:
   release:
     name: Build & Release APK
     runs-on: ubuntu-latest
+    environment: keystore
 
     steps:
       - name: Checkout
@@ -69,7 +70,7 @@ jobs:
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           cat > keystore.properties <<EOF
-          storeFile=release.keystore
+          storeFile=${{ github.workspace }}/release.keystore
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
