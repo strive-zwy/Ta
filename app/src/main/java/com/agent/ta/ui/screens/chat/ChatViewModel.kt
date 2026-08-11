@@ -63,6 +63,8 @@ class ChatViewModel : ViewModel() {
                 newMessageObserver = null
                 currentAgentId = agentId
                 if (agentId != null) {
+                    interactor.restoreConfigMode(agentId)
+                    interactor.sendInitialConfigGuideIfNeeded(agentId)
                     loadInitial(agentId)
                     startObservingNewMessages(agentId)
                 } else {
@@ -148,6 +150,11 @@ class ChatViewModel : ViewModel() {
         if (text.isBlank()) return
         interactor.sendUserMessage(text)
         _inputText.value = ""
+    }
+
+    fun sendQuickReply(text: String) {
+        if (text.isBlank()) return
+        interactor.sendUserMessage(text)
     }
 
     /**

@@ -86,12 +86,12 @@ class AgentConfigEditor {
      * @param agentId 目标 Agent 实例 ID
      * @param transform 接收该 Agent 当前配置，返回修改后的配置
      */
-    suspend fun updateAgent(agentId: Long, transform: (AgentConfig) -> AgentConfig) {
-        updateMutex.withLock {
+    suspend fun updateAgent(agentId: Long, transform: (AgentConfig) -> AgentConfig): Boolean {
+        return updateMutex.withLock {
             val dao = ServiceLocator.agentConfigDao
             val entity = dao.getById(agentId) ?: run {
                 Log.w(TAG, "updateAgent: agentId=$agentId 不存在，忽略")
-                return@withLock
+                return@withLock false
             }
             val current = json.decodeFromString(AgentConfig.serializer(), entity.configJson)
             val updated = transform(current)
@@ -103,6 +103,7 @@ class AgentConfigEditor {
                 ServiceLocator.agentConfigProvider.reload()
             }
             Log.d(TAG, "AgentConfig 已按 ID 更新：agentId=$agentId")
+            true
         }
     }
 

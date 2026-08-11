@@ -247,6 +247,10 @@ class UserPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_COMMITMENT_TIMER, true)
         set(value) = prefs.edit().putBoolean(KEY_COMMITMENT_TIMER, value).apply()
 
+    var configGuideSent: Boolean
+        get() = prefs.getBoolean(KEY_CONFIG_GUIDE_SENT, false)
+        set(value) = prefs.edit().putBoolean(KEY_CONFIG_GUIDE_SENT, value).apply()
+
     // ===== 状态查询 =====
     fun isConfigured(): Boolean = llmApiKey.isNotBlank() && ttsApiKey.isNotBlank()
 
@@ -316,6 +320,7 @@ class UserPreferences(context: Context) {
         private const val KEY_BORED_INITIATE = "bored_initiate"
         private const val KEY_DEVELOPER_MODE = "developer_mode"
         private const val KEY_COMMITMENT_TIMER = "commitment_timer_enabled"
+        private const val KEY_CONFIG_GUIDE_SENT = "config_guide_sent"
 
         const val DEFAULT_LLM_BASE_URL = "https://api.deepseek.com/v1"
         const val DEFAULT_LLM_MODEL = "deepseek-v4-flash"

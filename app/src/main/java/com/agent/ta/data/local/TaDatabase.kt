@@ -6,6 +6,7 @@ import com.agent.ta.data.local.dao.AgentConfigDao
 import com.agent.ta.data.local.dao.ChatMessageDao
 import com.agent.ta.data.local.dao.CommitmentDao
 import com.agent.ta.data.local.dao.ConversationSummaryDao
+import com.agent.ta.data.local.dao.ConfigSessionDao
 import com.agent.ta.data.local.dao.DailyScheduleDao
 import com.agent.ta.data.local.dao.DailyStateDao
 import com.agent.ta.data.local.dao.EmotionalStateDao
@@ -20,6 +21,7 @@ import com.agent.ta.data.local.entity.AgentConfigEntity
 import com.agent.ta.data.local.entity.ChatMessageEntity
 import com.agent.ta.data.local.entity.CommitmentEntity
 import com.agent.ta.data.local.entity.ConversationSummaryEntity
+import com.agent.ta.data.local.entity.ConfigSessionEntity
 import com.agent.ta.data.local.entity.DailyScheduleEntity
 import com.agent.ta.data.local.entity.DailyStateEntity
 import com.agent.ta.data.local.entity.EmotionalStateEntity
@@ -46,9 +48,10 @@ import com.agent.ta.data.local.entity.StateLogEntity
         RelationshipStateEntity::class,
         MilestoneEventEntity::class,
         EmotionalStateEntity::class,
-        FirstMeetingStateEntity::class
+        FirstMeetingStateEntity::class,
+        ConfigSessionEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 abstract class TaDatabase : RoomDatabase() {
@@ -66,6 +69,7 @@ abstract class TaDatabase : RoomDatabase() {
     abstract fun milestoneEventDao(): MilestoneEventDao
     abstract fun emotionalStateDao(): EmotionalStateDao
     abstract fun firstMeetingStateDao(): FirstMeetingStateDao
+    abstract fun configSessionDao(): ConfigSessionDao
 
     companion object {
         const val DATABASE_NAME = "ta_database.db"

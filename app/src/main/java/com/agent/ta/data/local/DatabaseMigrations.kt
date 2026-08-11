@@ -535,6 +535,24 @@ object DatabaseMigrations {
         }
     }
 
+    val MIGRATION_16_17 = object : Migration(16, 17) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS config_sessions (" +
+                    "agentId INTEGER NOT NULL, " +
+                    "mode TEXT NOT NULL, " +
+                    "stage TEXT NOT NULL, " +
+                    "draftConfigJson TEXT NOT NULL, " +
+                    "researchJson TEXT NOT NULL, " +
+                    "referenceName TEXT NOT NULL, " +
+                    "referenceWork TEXT NOT NULL, " +
+                    "createdAt INTEGER NOT NULL, " +
+                    "updatedAt INTEGER NOT NULL, " +
+                    "PRIMARY KEY(agentId))"
+            )
+        }
+    }
+
     // ───────────────────────────────────────────────────────────────────────────
     // 全部已注册迁移（按版本顺序）
     // 必须放在所有 MIGRATION_x_y 声明之后，因为 Kotlin object 属性按声明顺序初始化
@@ -551,6 +569,7 @@ object DatabaseMigrations {
         MIGRATION_12_13,
         MIGRATION_13_14,
         MIGRATION_14_15,
-        MIGRATION_15_16
+        MIGRATION_15_16,
+        MIGRATION_16_17
     )
 }

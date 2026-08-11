@@ -112,13 +112,21 @@ class ChatInteractor(private val context: Context) {
                 return
             }
             trimmed == "/done" || trimmed == "/完成" -> {
-                exitConfigMode()
+                finishConfigCollection()
                 return
             }
             trimmed == "/help" || trimmed == "/帮助" -> {
                 showCommandHelp()
                 return
             }
+        }
+
+        if (_configMode.value && handleConfigModeSelection(trimmed, true)) {
+            return
+        }
+        if (_configMode.value) {
+            handleConfigConversationMessage(trimmed)
+            return
         }
 
         // 1. 取消上一个进行中的回复任务（包括延迟阶段，防止快速连发产生多个并行任务）
@@ -310,11 +318,12 @@ class ChatInteractor(private val context: Context) {
         currentReplyJobRef.set(scope.launch {
             val agentId = activeAgentManager.getRequiredActiveAgentId()
             val operationContext = AgentGenerationRegistry.shared.capture(agentId)
+            ServiceLocator.configSessionManager.start(agentId, configProvider.get())
             val state = com.agent.ta.service.AgentEngine.currentState.value
             val msg = ChatMessageEntity(
                 agentId = agentId,
                 direction = "outbound",
-                text = "好的，进入配置模式啦 🛠️\n你可以直接用对话告诉我想调整什么（比如：名字、性格、说话风格、语音、头像、行为习惯），我会帮你修改。\n也可以去「设置 → Agent 配置」里可视化编辑。\n完成后输入 /done 退出配置模式。",
+                text = com.agent.ta.ui.screens.chat.ConfigQuickReplyPolicy.ENTRY_MESSAGE,
                 audioPath = null,
                 directorPrompt = null,
                 state = state.id,
@@ -326,48 +335,252 @@ class ChatInteractor(private val context: Context) {
         })
     }
 
-    /**
-     * 退出配置模式（用户输入 /done 触发）
-     */
-    private fun exitConfigMode() {
-        if (!_configMode.value) {
-            // 不在配置模式，提示
-            scope.launch {
-                val agentId = activeAgentManager.getRequiredActiveAgentId()
-                val state = com.agent.ta.service.AgentEngine.currentState.value
-                val msg = ChatMessageEntity(
-                    agentId = agentId,
-                    direction = "outbound",
-                    text = "现在不在配置模式哦～输入 /config 可以进入配置模式",
-                    audioPath = null,
-                    directorPrompt = null,
-                    state = state.id,
-                    status = "sent",
-                    createdAt = System.currentTimeMillis()
-                )
-                chatDao.insert(msg)
-                notificationHelper.notifyAgentMessage(msg.text ?: "", null, resolveAgentName(agentId))
-            }
-            return
+    private fun handleConfigModeSelection(text: String, allowAliases: Boolean = false): Boolean {
+        val action = if (allowAliases) com.agent.ta.ui.screens.chat.ConfigQuickReplyPolicy.matchAction(text) else null
+        val mode = when {
+            text == "对话式沟通自定义" || action == com.agent.ta.ui.screens.chat.ConfigQuickReplyAction.CUSTOM -> com.agent.ta.domain.config.ConfigSessionMode.CUSTOM_CONVERSATION
+            text == "偶像参考（偶像克隆）" || action == com.agent.ta.ui.screens.chat.ConfigQuickReplyAction.CELEBRITY -> com.agent.ta.domain.config.ConfigSessionMode.CELEBRITY_REFERENCE
+            text == "动画或动漫人物参考" || action == com.agent.ta.ui.screens.chat.ConfigQuickReplyAction.FICTIONAL -> com.agent.ta.domain.config.ConfigSessionMode.FICTIONAL_CHARACTER_REFERENCE
+            else -> return false
         }
-        _configMode.value = false
         currentReplyJobRef.get()?.cancel()
         currentReplyJobRef.set(scope.launch {
             val agentId = activeAgentManager.getRequiredActiveAgentId()
             val state = com.agent.ta.service.AgentEngine.currentState.value
-            val msg = ChatMessageEntity(
+            chatDao.insert(
+                ChatMessageEntity(
+                    agentId = agentId,
+                    direction = "inbound",
+                    text = text,
+                    audioPath = null,
+                    directorPrompt = null,
+                    state = state.id,
+                    status = "received",
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            ServiceLocator.configSessionManager.selectMode(agentId, mode)
+            val prompt = when (mode) {
+                com.agent.ta.domain.config.ConfigSessionMode.CUSTOM_CONVERSATION ->
+                    "好，我们通过聊天一步步创建。先告诉我，你希望这个 Agent 是什么样的人，以及你希望你们是什么关系？"
+                com.agent.ta.domain.config.ConfigSessionMode.CELEBRITY_REFERENCE ->
+                    "好，请告诉我你想参考哪位偶像。可以同时补充职业或代表作品，方便我确认人物并搜索公开资料。"
+                com.agent.ta.domain.config.ConfigSessionMode.FICTIONAL_CHARACTER_REFERENCE ->
+                    "好，请告诉我角色名称和作品名称，比如“砂金，《崩坏：星穹铁道》”。我会先搜索并整理角色资料。"
+                else -> return@launch
+            }
+            val assistantMessage = ChatMessageEntity(
                 agentId = agentId,
                 direction = "outbound",
-                text = "配置已保存 ✅ 继续聊天吧～",
+                text = prompt,
                 audioPath = null,
                 directorPrompt = null,
                 state = state.id,
                 status = "sent",
                 createdAt = System.currentTimeMillis()
             )
-            chatDao.insert(msg)
-            notificationHelper.notifyAgentMessage(msg.text ?: "", null, resolveAgentName(agentId))
+            chatDao.insert(assistantMessage)
+            notificationHelper.notifyAgentMessage(prompt, null, resolveAgentName(agentId))
         })
+        return true
+    }
+
+    private fun finishConfigCollection() {
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(scope.launch {
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
+            val session = ServiceLocator.configSessionManager.get(agentId)
+            if (session == null) {
+                insertConfigAssistantMessage(agentId, "现在不在配置模式。输入 /config 可以开始配置。")
+                return@launch
+            }
+            ServiceLocator.configSessionManager.setStage(agentId, com.agent.ta.domain.config.ConfigSessionStage.REVIEWING)
+            insertConfigAssistantMessage(
+                agentId,
+                buildConfigPreview(session.draftConfig, session.referenceName, session.referenceWork)
+            )
+        })
+    }
+
+    private fun handleConfigConversationMessage(text: String) {
+        currentReplyJobRef.get()?.cancel()
+        currentReplyJobRef.set(scope.launch {
+            val agentId = activeAgentManager.getRequiredActiveAgentId()
+            val state = com.agent.ta.service.AgentEngine.currentState.value
+            chatDao.insert(
+                ChatMessageEntity(
+                    agentId = agentId,
+                    direction = "inbound",
+                    text = text,
+                    audioPath = null,
+                    directorPrompt = null,
+                    state = state.id,
+                    status = "received",
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            val session = ServiceLocator.configSessionManager.get(agentId) ?: return@launch
+            when (text) {
+                "确认应用" -> applyConfigDraft(agentId)
+                "继续修改" -> {
+                    ServiceLocator.configSessionManager.setStage(
+                        agentId,
+                        if (session.mode == com.agent.ta.domain.config.ConfigSessionMode.CUSTOM_CONVERSATION) {
+                            com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_CUSTOM
+                        } else {
+                            com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_REFERENCE
+                        }
+                    )
+                    insertConfigAssistantMessage(agentId, "好，告诉我你想修改哪一项，我会更新草稿。")
+                }
+                "查看资料来源" -> insertConfigAssistantMessage(
+                    agentId,
+                    session.researchJson.ifBlank { "当前草稿没有使用联网资料，主要根据你的描述整理。" }
+                )
+                "重新生成" -> regenerateReferenceDraft(agentId, session)
+                else -> when (session.stage) {
+                    com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_REFERENCE -> generateReferenceDraft(agentId, session, text)
+                    com.agent.ta.domain.config.ConfigSessionStage.REVIEWING -> {
+                        ServiceLocator.configSessionManager.setStage(agentId, com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_CUSTOM)
+                        generateCustomConfigReply(agentId, text)
+                    }
+                    else -> generateCustomConfigReply(agentId, text)
+                }
+            }
+        })
+    }
+
+    suspend fun restoreConfigMode(agentId: Long) {
+        _configMode.value = ServiceLocator.configSessionManager.get(agentId) != null
+    }
+
+    suspend fun sendInitialConfigGuideIfNeeded(agentId: Long) {
+        if (prefs.configGuideSent) return
+        val text = "欢迎来到TA。\n输入/config可以进入配置模式，我会通过对话帮你创建Agent；\n配置完成后输入/done 查看草稿，确认后才会正式保存。\n输入/help可以查看命令。"
+        insertConfigAssistantMessage(agentId, text)
+        prefs.configGuideSent = true
+    }
+
+    private suspend fun generateCustomConfigReply(agentId: Long, userText: String) {
+        val session = ServiceLocator.configSessionManager.get(agentId) ?: return
+        val draftJson = kotlinx.serialization.json.Json { encodeDefaults = true }
+            .encodeToString(com.agent.ta.data.model.AgentConfig.serializer(), session.draftConfig)
+        val reply = llmClient.chat(
+            listOf(
+                ChatMessage(
+                    role = "system",
+                    content = """你是中立的 Agent 配置助手。根据用户当前这句话更新配置草稿，一次只追问一个最重要的缺失信息。
+只输出 JSON，格式为：
+{"replies":[{"replyText":"自然简短的引导或确认","action":"","directorPrompt":"","emoji":"","emotion":"neutral"}],"configUpdate":{"name":null,"gender":null,"age":null,"background":null,"personality":null,"speakingStyle":null,"selfNickname":null,"nicknameForUser":null,"relationshipToUser":null,"catchphrases":null,"interests":null,"taboos":null,"summary":"本轮变更摘要"}}
+仅填写用户明确表达或可可靠推断的字段，未涉及字段保持 null。不要声称已经正式保存。用户随时可以输入 /done 查看草稿。
+当前草稿：$draftJson"""
+                ),
+                ChatMessage(role = "user", content = userText)
+            )
+        )
+        reply.configUpdate?.let { ServiceLocator.configSessionManager.applyUpdate(agentId, it) }
+        val responseText = reply.replies.firstOrNull()?.replyText
+            ?: reply.replyText.takeIf { it.isNotBlank() }
+            ?: "我已经记下了。你还希望调整她的性格、关系或说话方式吗？"
+        insertConfigAssistantMessage(agentId, responseText)
+    }
+
+    private suspend fun generateReferenceDraft(
+        agentId: Long,
+        session: com.agent.ta.domain.config.ConfigSession,
+        input: String
+    ) {
+        val fictional = session.mode == com.agent.ta.domain.config.ConfigSessionMode.FICTIONAL_CHARACTER_REFERENCE
+        val parts = input.split('，', ',', '《', '》').map { it.trim() }.filter { it.isNotBlank() }
+        val referenceName = parts.firstOrNull().orEmpty()
+        val referenceWork = if (fictional) parts.drop(1).firstOrNull().orEmpty() else ""
+        if (referenceName.isBlank()) {
+            insertConfigAssistantMessage(agentId, if (fictional) "请告诉我角色名称和作品名称。" else "请告诉我偶像姓名。")
+            return
+        }
+        ServiceLocator.configSessionManager.setStage(agentId, com.agent.ta.domain.config.ConfigSessionStage.RESEARCHING)
+        insertConfigAssistantMessage(agentId, "正在搜索并整理${if (fictional) "角色" else "人物"}资料，请稍候…")
+        try {
+            val cloner = CelebrityCloner()
+            val result = cloner.generateReference(
+                referenceName = referenceName,
+                customNickname = referenceName,
+                appContext = context,
+                fictional = fictional,
+                referenceWork = referenceWork
+            )
+            val draft = cloner.applyToConfig(session.draftConfig, result, referenceName)
+            val researchSummary = buildString {
+                append("参考对象：").append(referenceName)
+                if (referenceWork.isNotBlank()) append("\n来源作品：").append(referenceWork)
+                append("\n资料类型：公开搜索资料与模型整理")
+            }
+            ServiceLocator.configSessionManager.updateReference(
+                agentId,
+                referenceName,
+                referenceWork,
+                researchSummary,
+                draft
+            )
+            insertConfigAssistantMessage(agentId, buildConfigPreview(draft, referenceName, referenceWork))
+        } catch (e: Exception) {
+            ServiceLocator.configSessionManager.setStage(agentId, com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_REFERENCE)
+            insertConfigAssistantMessage(agentId, "资料搜索或配置生成失败：${e.message ?: "未知错误"}。你可以补充人物信息后重试。")
+        }
+    }
+
+    private suspend fun regenerateReferenceDraft(agentId: Long, session: com.agent.ta.domain.config.ConfigSession) {
+        if (session.referenceName.isBlank()) {
+            insertConfigAssistantMessage(agentId, "还没有参考人物，请先告诉我人物或角色名称。")
+            return
+        }
+        val input = if (session.referenceWork.isBlank()) session.referenceName else "${session.referenceName}，${session.referenceWork}"
+        generateReferenceDraft(agentId, session, input)
+    }
+
+    private fun buildConfigPreview(config: com.agent.ta.data.model.AgentConfig, referenceName: String = "", referenceWork: String = ""): String {
+        val persona = config.agent.persona
+        return buildString {
+            append("Agent 配置草稿\n")
+            append("名称：").append(config.agent.name.ifBlank { "未命名" }).append('\n')
+            if (referenceName.isNotBlank()) append("参考对象：").append(referenceName).append('\n')
+            if (referenceWork.isNotBlank()) append("来源作品：").append(referenceWork).append('\n')
+            append("性格：").append(persona.personality.joinToString(" / ").ifBlank { "待补充" }).append('\n')
+            append("表达：").append(persona.speakingStyle.ifBlank { "待补充" }).append('\n')
+            append("关系：").append(persona.relationshipToUser.ifBlank { config.identity.relationshipStance.ifBlank { "待补充" } }).append('\n')
+            append("兴趣：").append(persona.interests.joinToString(" / ").ifBlank { "待补充" }).append('\n')
+            append("状态：尚未应用，请确认或继续修改")
+        }
+    }
+
+    private suspend fun insertConfigAssistantMessage(agentId: Long, text: String) {
+        val state = com.agent.ta.service.AgentEngine.currentState.value
+        chatDao.insert(
+            ChatMessageEntity(
+                agentId = agentId,
+                direction = "outbound",
+                text = text,
+                audioPath = null,
+                directorPrompt = null,
+                state = state.id,
+                status = "sent",
+                createdAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    private suspend fun applyConfigDraft(agentId: Long) {
+        val session = ServiceLocator.configSessionManager.get(agentId) ?: return
+        try {
+            val saved = agentConfigEditor.updateAgent(agentId) { session.draftConfig }
+            if (!saved) error("目标 Agent 不存在")
+            com.agent.ta.service.AgentEngine.reloadAfterConfigChanged(context, agentId)
+            ServiceLocator.configSessionManager.complete(agentId)
+            _configMode.value = false
+            insertConfigAssistantMessage(agentId, "配置已经应用，现在可以继续聊天了。")
+        } catch (e: Exception) {
+            insertConfigAssistantMessage(agentId, "配置暂时没有保存成功，可以重试，草稿不会丢失。")
+        }
     }
 
     /**
@@ -983,7 +1196,7 @@ class ChatInteractor(private val context: Context) {
             // 处理配置变更（配置模式下 LLM 输出 configUpdate）
             if (isConfigMode && reply.configUpdate != null) {
                 ensureOperationCurrent(operationContext)
-                applyConfigUpdate(reply.configUpdate)
+                applyConfigUpdate(agentId, reply.configUpdate)
             }
 
             // 展开回复列表：优先 replies，否则 fallback 到单条 replyText
@@ -1503,7 +1716,7 @@ class ChatInteractor(private val context: Context) {
      * 只更新非 null 字段，其他字段保持原值。
      * 通过 AgentConfigEditor.update 原子性地写入数据库。
      */
-    private suspend fun applyConfigUpdate(update: com.agent.ta.data.remote.dto.ConfigUpdate) {
+    private suspend fun applyConfigUpdate(agentId: Long, update: com.agent.ta.data.remote.dto.ConfigUpdate) {
         val hasChange = update.name != null ||
             update.gender != null ||
             update.age != null ||
@@ -1523,29 +1736,8 @@ class ChatInteractor(private val context: Context) {
         }
 
         try {
-            ServiceLocator.agentConfigEditor.update { config ->
-                val agent = config.agent
-                val persona = agent.persona
-                config.copy(
-                    agent = agent.copy(
-                        name = update.name ?: agent.name,
-                        gender = update.gender ?: agent.gender,
-                        age = update.age ?: agent.age,
-                        persona = persona.copy(
-                            background = update.background ?: persona.background,
-                            personality = update.personality ?: persona.personality,
-                            speakingStyle = update.speakingStyle ?: persona.speakingStyle,
-                            selfNickname = update.selfNickname ?: persona.selfNickname,
-                            nicknameForUser = update.nicknameForUser ?: persona.nicknameForUser,
-                            relationshipToUser = update.relationshipToUser ?: persona.relationshipToUser,
-                            catchphrases = update.catchphrases ?: persona.catchphrases,
-                            interests = update.interests ?: persona.interests,
-                            taboos = update.taboos ?: persona.taboos
-                        )
-                    )
-                )
-            }
-            Log.d(TAG, "配置已更新：${update.summary}")
+            ServiceLocator.configSessionManager.applyUpdate(agentId, update)
+            Log.d(TAG, "配置草稿已更新：${update.summary}")
         } catch (e: Exception) {
             Log.e(TAG, "应用配置变更失败", e)
         }

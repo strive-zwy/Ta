@@ -255,6 +255,8 @@ fun ChatScreen(
                             message = msg,
                             isPlaying = playingPath == msg.audioPath && isPlaying,
                             onTogglePlay = { msg.audioPath?.let { viewModel.toggleVoicePlay(it) } },
+                            quickOptions = ConfigQuickReplyPolicy.resolve(msg.text),
+                            onQuickReply = viewModel::sendQuickReply,
                             enterDelayMs = TaMotion.staggerDelayMs(index)
                         )
                     }
@@ -497,6 +499,8 @@ private fun MessageBubble(
     message: ChatMessageEntity,
     isPlaying: Boolean,
     onTogglePlay: () -> Unit,
+    quickOptions: List<ConfigQuickReplyOption>,
+    onQuickReply: (String) -> Unit,
     enterDelayMs: Int
 ) {
     val isUser = message.direction == "inbound"
@@ -618,6 +622,32 @@ private fun MessageBubble(
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
                     MessageContent(message, isUser, isPlaying, onTogglePlay)
+                }
+            }
+
+            if (!isUser && quickOptions.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.padding(top = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    quickOptions.forEach { option ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onQuickReply(option.message) },
+                            shape = RoundedCornerShape(16.dp),
+                            color = AiPrimary.copy(alpha = 0.08f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, AiPrimary.copy(alpha = 0.22f))
+                        ) {
+                            Text(
+                                text = option.label,
+                                color = AiPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            )
+                        }
+                    }
                 }
             }
 

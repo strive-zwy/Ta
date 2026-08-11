@@ -58,7 +58,17 @@ class CelebrityCloner(
      * @throws CloneException 当搜索+生成失败或 JSON 无法解析时抛出
      */
     suspend fun generate(starName: String, customNickname: String, appContext: Context): CloneResult {
-        val trimmedStar = starName.trim()
+        return generateReference(starName, customNickname, appContext, false, "")
+    }
+
+    suspend fun generateReference(
+        referenceName: String,
+        customNickname: String,
+        appContext: Context,
+        fictional: Boolean,
+        referenceWork: String
+    ): CloneResult {
+        val trimmedStar = referenceName.trim()
         val trimmedNick = customNickname.trim()
         require(trimmedStar.isNotBlank()) { "启发人物名不能为空" }
         require(trimmedNick.isNotBlank()) { "自定义昵称不能为空" }
@@ -66,12 +76,12 @@ class CelebrityCloner(
         Log.d(TAG, "开始克隆：starName=$trimmedStar, nickname=$trimmedNick")
 
         // Step 1: 搜索公开资料
-        val searchResults = runCatching { searchPublicInfo(trimmedStar, appContext) }
+        val searchResults = runCatching { searchPublicInfo(trimmedStar, appContext, fictional, referenceWork) }
             .getOrNull().orEmpty()
         Log.d(TAG, "搜索结果长度：${searchResults.length}")
 
         // Step 2: 构造 prompt 调 LLM
-        val prompt = buildPrompt(trimmedStar, trimmedNick, searchResults)
+        val prompt = buildPrompt(trimmedStar, trimmedNick, searchResults, fictional, referenceWork)
         val rawResponse = runCatching { llmClient.chatRaw(prompt) }
             .getOrElse {
                 Log.e(TAG, "LLM 调用失败", it)
@@ -123,8 +133,12 @@ class CelebrityCloner(
      *
      * 构造最小 ToolContext：WebSearchTool 实际只使用 params（query），不依赖 context 字段
      */
-    private suspend fun searchPublicInfo(starName: String, appContext: Context): String {
-        val query = "$starName 简介 履历 代表作品"
+    private suspend fun searchPublicInfo(starName: String, appContext: Context, fictional: Boolean, referenceWork: String): String {
+        val query = if (fictional) {
+            "$starName $referenceWork 官方角色介绍 人物设定 性格 剧情经历 人物关系 说话风格"
+        } else {
+            "$starName 官方简介 公开履历 代表作品 采访 性格 说话风格 兴趣爱好"
+        }
         val params = """{"query":"$query"}"""
         val toolContext = ToolContext(
             agentConfig = ServiceLocator.agentConfigProvider.get(),
@@ -144,11 +158,23 @@ class CelebrityCloner(
 
     // ===== 内部：LLM Prompt =====
 
-    private fun buildPrompt(starName: String, customNickname: String, searchResults: String): List<ChatMessage> {
+    private fun buildPrompt(
+        starName: String,
+        customNickname: String,
+        searchResults: String,
+        fictional: Boolean,
+        referenceWork: String
+    ): List<ChatMessage> {
+        val sourceDescription = if (fictional) "$referenceWork 中的虚构角色" else "现实公众人物"
+        val relationshipRule = if (fictional) {
+            "根据角色设定自然确定与用户的初始关系，不强制偶像-粉丝关系"
+        } else {
+            "和用户是偶像-粉丝关系，有距离感但有温度"
+        }
         val systemPrompt = """你是一位 Agent 人格设计师。请基于搜索资料，为虚拟陪伴 Agent 生成完整的身份设定。
 
 【生成要求】
-基于 ${starName}（用户自定义昵称：${customNickname}）的公开形象，生成以下字段（严格 JSON 格式）：
+基于 ${starName}（来源类型：${sourceDescription}，用户自定义昵称：${customNickname}）的公开形象，生成以下字段（严格 JSON 格式）：
 
 {
   "identity": {
@@ -157,7 +183,7 @@ class CelebrityCloner(
     "personalityCore": "性格核心（第一人称，如'我性格温柔但有主见，不是讨好型人格'）",
     "speakingHabit": "说话习惯（第一人称，如'我说话偏口语化，喜欢用呀呢啦结尾但不是每句都用'）",
     "emotionalPattern": "情绪反应模式（第一人称，如'被夸时会害羞但嘴硬，被怼时会反击但不记仇'）",
-    "relationshipStance": "和用户是偶像-粉丝关系，有距离感但有温度（可第一人称扩展）",
+    "relationshipStance": "${relationshipRule}（可第一人称扩展）",
     "boundaryAwareness": "作为公众人物不能随意承诺见面，但不会冷漠拒绝...（第一人称）",
     "publicProfile": {
       "careerField": "娱乐圈/音乐/影视 等具体领域",
@@ -184,6 +210,7 @@ class CelebrityCloner(
 6. gender 必须为 "male" 或 "female"（基于启发人物真实性别）
 7. age 为启发人物真实年龄（整数），无法判断时填 0
 8. 直接输出 JSON，不要 Markdown 代码块（不要 ```json 包裹），不要任何解释性文字
+9. 性格标签描述人格底色和决策倾向，不要强制演绎成字面动作；职业、兴趣、作品和标志性比喻只在话题相关时偶尔出现
 
 【时态区分（重要）】
 - knownWorks 里列举的是该人物的过往作品，本身是【过去式】，用于体现成名履历

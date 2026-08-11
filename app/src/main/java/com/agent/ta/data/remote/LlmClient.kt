@@ -3,6 +3,7 @@ package com.agent.ta.data.remote
 import android.util.Log
 import com.agent.ta.data.remote.dto.ChatCompletionRequest
 import com.agent.ta.data.remote.dto.ChatMessage
+import com.agent.ta.data.remote.dto.ConfigUpdate
 import com.agent.ta.data.remote.dto.AgentReply
 import com.agent.ta.data.remote.dto.ReplyItem
 import com.agent.ta.data.remote.dto.ToolCall
@@ -393,7 +394,8 @@ class LlmClient {
                     emotionIntensity = parseEmotionIntensity(obj),
                     wantAvatarId = parseWantAvatarId(obj),
                     firstMeetingMeta = parseFirstMeetingMeta(obj),
-                    nicknameResolution = parseNicknameResolution(obj)
+                    nicknameResolution = parseNicknameResolution(obj),
+                    configUpdate = parseConfigUpdate(obj)
                 )
             } else {
                 // 旧格式 fallback：单条 replyText + action
@@ -410,7 +412,8 @@ class LlmClient {
                     emotionIntensity = parseEmotionIntensity(obj),
                     wantAvatarId = parseWantAvatarId(obj),
                     firstMeetingMeta = parseFirstMeetingMeta(obj),
-                    nicknameResolution = parseNicknameResolution(obj)
+                    nicknameResolution = parseNicknameResolution(obj),
+                    configUpdate = parseConfigUpdate(obj)
                 )
             }
         } catch (e: Exception) {
@@ -426,6 +429,11 @@ class LlmClient {
                 AgentReply()
             }
         }
+    }
+
+    private fun parseConfigUpdate(obj: JsonObject): ConfigUpdate? {
+        val element = obj["configUpdate"] ?: return null
+        return runCatching { json.decodeFromJsonElement(ConfigUpdate.serializer(), element) }.getOrNull()
     }
 
     /**

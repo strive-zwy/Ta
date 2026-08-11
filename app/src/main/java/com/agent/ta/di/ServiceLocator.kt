@@ -105,6 +105,9 @@ object ServiceLocator {
     val firstMeetingStateDao: com.agent.ta.data.local.dao.FirstMeetingStateDao
         get() = database.firstMeetingStateDao()
 
+    val configSessionDao: com.agent.ta.data.local.dao.ConfigSessionDao
+        get() = database.configSessionDao()
+
     val userPreferences: UserPreferences by lazy {
         UserPreferences(app)
     }
@@ -116,6 +119,10 @@ object ServiceLocator {
     val agentConfigProvider: AgentConfigProvider by lazy { AgentConfigProvider() }
 
     val agentConfigEditor: AgentConfigEditor by lazy { AgentConfigEditor() }
+
+    val configSessionManager: com.agent.ta.domain.config.ConfigSessionManager by lazy {
+        com.agent.ta.domain.config.ConfigSessionManager(configSessionDao)
+    }
 
     /**
      * 活跃 Agent 实例管理器（应用级唯一权威 agentId 状态）
