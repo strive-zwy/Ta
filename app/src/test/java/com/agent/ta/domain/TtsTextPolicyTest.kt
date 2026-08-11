@@ -2,6 +2,7 @@ package com.agent.ta.domain
 
 import com.agent.ta.data.remote.dto.ReplyItem
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class TtsTextPolicyTest {
@@ -61,5 +62,24 @@ class TtsTextPolicyTest {
         val result = TtsTextPolicy.splitLongReply(item)
 
         assertEquals(listOf(item), result)
+    }
+
+    @Test
+    fun `sanitizes emoji actions and standalone laughter for speech`() {
+        val result = TtsTextPolicy.sanitizeForSpeech("😊 哈哈，（轻轻笑）今天挺开心的！")
+
+        assertEquals("今天挺开心的！", result)
+    }
+
+    @Test
+    fun `splits long clause near punctuation without fragmenting short reply`() {
+        val item = ReplyItem(
+            replyText = "我刚刚把手头的事情处理完了，现在打算稍微休息一会儿，然后再去整理明天需要用到的东西。"
+        )
+
+        val result = TtsTextPolicy.splitLongReply(item)
+
+        assertEquals(2, result.size)
+        assertFalse(result.any { it.replyText.length > 30 })
     }
 }

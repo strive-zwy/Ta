@@ -93,7 +93,9 @@ class PromptBuilder {
         emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null,
         scene: ConversationScene = ConversationScene.NORMAL,
         awaitingNickname: Boolean = false,
-        commitmentTimerEnabled: Boolean = true
+        commitmentTimerEnabled: Boolean = true,
+        personaModel: com.agent.ta.domain.persona.PersonaModel? = null,
+        contextAnalysis: com.agent.ta.domain.persona.ContextAnalysis? = null
     ): List<ChatMessage> {
         // 主动发起时不算连发：末尾的 user 消息是历史（已回复过），不是"待回复的连发"
         val consecutiveInboundCount = if (isPendingCatchup || isInitiate) 1 else countTrailingInbound(recentMessages)
@@ -102,7 +104,7 @@ class PromptBuilder {
             currentActivity, activityAnchor, isInitiate, initiateTopic, todaySchedule, consecutiveInboundCount,
             isPendingCatchup, isConfigMode, continuousRound, observerSnapshots, conversationSummary, planVsActualDiff,
             yesterdayCarryOver, todayCommitments, relationshipState, recentMilestones, emotionalState, scene, awaitingNickname,
-            commitmentTimerEnabled
+            commitmentTimerEnabled, personaModel, contextAnalysis
         )
         return listOf(ChatMessage("system", systemPrompt)) + recentMessages
     }
@@ -148,7 +150,9 @@ class PromptBuilder {
         emotionalState: com.agent.ta.data.local.entity.EmotionalStateEntity? = null,
         scene: ConversationScene = ConversationScene.NORMAL,
         awaitingNickname: Boolean = false,
-        commitmentTimerEnabled: Boolean = true
+        commitmentTimerEnabled: Boolean = true,
+        personaModel: com.agent.ta.domain.persona.PersonaModel? = null,
+        contextAnalysis: com.agent.ta.domain.persona.ContextAnalysis? = null
     ): String {
         val sb = StringBuilder()
 
@@ -173,6 +177,12 @@ class PromptBuilder {
             isInitiate, initiateTopic, isPendingCatchup, isConfigMode,
             consecutiveInboundCount, continuousRound, todaySchedule, scene, awaitingNickname
         )
+
+        // Persona Engine 激活规则（Zone C 末尾注入，生成前最后看到）
+        // 动态注入本轮激活/抑制的特征与标志词预算，抑制主题过度聚焦
+        if (personaModel != null && contextAnalysis != null) {
+            buildPersonaActivationRules(sb, personaModel, contextAnalysis)
+        }
 
         return sb.toString()
     }
@@ -214,12 +224,12 @@ class PromptBuilder {
             if (!activityAnchor.replyable) {
                 sb.appendLine("注意：此活动需要双手/全神贯注，你无法同时看手机回消息。如果用户在这期间发了消息，你之后回复时要自然表达「刚在${activityAnchor.activity}没看到消息」的感觉。")
             }
-            sb.appendLine("重要：本次回复所有内容必须围绕「${activityAnchor.activity}」这一活动展开，禁止提到其他活动。")
+            sb.appendLine("此活动只用于保持事实一致，不是每轮必须提起的话题。用户没问、当前话题不相关时，不要主动复述自己在做什么。")
         } else if (!currentActivity.isNullOrBlank()) {
             // 兼容：无 anchor 时用 currentActivity
             sb.appendLine("活动：$currentActivity")
             sb.appendLine("状态：${state.displayName}")
-            sb.appendLine("重要：本次回复所有内容必须围绕「$currentActivity」这一活动展开，禁止提到其他活动。")
+            sb.appendLine("此活动只用于保持事实一致，不是每轮必须提起的话题。用户没问、当前话题不相关时，不要主动复述自己在做什么。")
         } else {
             sb.appendLine("（无法确定当前活动，请基于对话上下文判断）")
         }
@@ -414,7 +424,7 @@ class PromptBuilder {
 
         // 兴趣话题
         if (persona.interests.isNotEmpty()) {
-            sb.appendLine("你感兴趣的话题（对话中可以自然引入）：${persona.interests.joinToString("、")}")
+            sb.appendLine("你感兴趣的话题（用于点缀话题多样性，不要强行引入，用户话题无关时不要扯到）：${persona.interests.joinToString("、")}")
             sb.appendLine()
         }
 
@@ -501,8 +511,8 @@ class PromptBuilder {
             }
             sb.appendLine("重要：对话中提到接下来要做什么时，必须参考上面的作息表，不要编造作息表里没有的活动。")
             sb.appendLine("如果用户问你在干嘛，回复当前时段的 activity；问接下来呢，按作息表里下一个时段回答。")
-            sb.appendLine("回复原则：只说现在在干嘛就行，不要画蛇添足地报进度（不说「刚开始/进行中/快结束了/快完成了」这类）。")
-            sb.appendLine("最多在自然的时候顺便带一句接下来的事，如「在XX呢，一会儿准备去YY」。")
+            sb.appendLine("只有用户询问、活动刚变化或话题自然相关时才提当前活动；同一活动在短时间内主动提过一次后，不要反复提。")
+            sb.appendLine("用户没问时直接承接对话主题，不要为了交代状态而加一句自己在做什么，也不要主动报告活动进度。")
             sb.appendLine()
         }
 
@@ -883,7 +893,8 @@ class PromptBuilder {
 
         sb.appendLine("1. 当前活动一致性")
         if (!effectiveActivity.isNullOrBlank()) {
-            sb.appendLine("   - 当前活动是「$effectiveActivity」，本次回复所有内容必须围绕这一个活动展开")
+            sb.appendLine("   - 当前活动是「$effectiveActivity」，它只用于避免事实冲突，不要求在回复中主动提及")
+            sb.appendLine("   - 用户没问且话题不相关时，不要提当前活动；同一活动在短时间内已经说过，就不要再次复述")
         }
         sb.appendLine("   - 禁止在同一次回复中提到不同的活动状态")
         sb.appendLine()
@@ -1217,6 +1228,67 @@ class PromptBuilder {
         sb.appendLine("  \"futureEvents\": []")
         sb.appendLine("}")
         sb.appendLine("注意：configUpdate 中只填用户明确要改的字段，不需要改的字段填 null 或不输出。configUpdate 整体在用户没决定改什么时可以输出 null 或不输出。")
+    }
+
+    /**
+     * Persona Engine 激活规则（注入 Zone C 末尾）
+     *
+     * 根据当前用户消息的上下文分析，动态指导 LLM：
+     * - 本轮重点表现哪些人格特征（activatedTraits）
+     * - 本轮不宜表现哪些（suppressedTraits，尤其含大量标志性词汇的）
+     * - 标志性词汇的表达预算（最多出现次数），防止主题过度聚焦
+     * - 人格表现分级 L0-L3
+     */
+    private fun buildPersonaActivationRules(
+        sb: StringBuilder,
+        personaModel: com.agent.ta.domain.persona.PersonaModel,
+        contextAnalysis: com.agent.ta.domain.persona.ContextAnalysis
+    ) {
+        val activationResult = com.agent.ta.domain.persona.PersonaActivator.activate(
+            model = personaModel,
+            analysis = contextAnalysis
+        )
+
+        sb.appendLine("【人格表达引导（本轮动态规则，必须遵守）】")
+
+        // 本轮激活的特征
+        if (activationResult.activatedTraits.isNotEmpty()) {
+            val activeLabels = activationResult.activatedTraits.filter { it.name != "neutral" }
+            if (activeLabels.isNotEmpty()) {
+                sb.appendLine("本轮用户话题相关，可自然体现的性格：${activeLabels.joinToString("、") { it.label }}")
+                // 注入表现方式（引导 LLM 如何自然表达，而非触发字面动作）
+                activeLabels.take(2).forEach { trait ->
+                    trait.expression.take(2).forEach { expr ->
+                        sb.appendLine("  - $expr")
+                    }
+                }
+            }
+        }
+
+        // 本轮抑制的特征（重点：防止无关话题带出标志词）
+        if (activationResult.suppressedTraits.isNotEmpty()) {
+            val suppressedLabels = activationResult.suppressedTraits.map { it.label }
+            sb.appendLine("本轮用户话题与以下性格无关，不要主动表现（尤其不要使用相关标志性词汇）：${suppressedLabels.joinToString("、")}")
+        }
+
+        // 标志性词汇预算
+        val restrictedMarkers = activationResult.markerBudgetMultipliers
+            .filter { it.value <= 0f }
+            .keys
+        if (restrictedMarkers.isNotEmpty()) {
+            sb.appendLine("本轮对话中【完全禁止】使用以下标志性词汇：${restrictedMarkers.joinToString("、")}")
+        }
+        val limitedMarkers = activationResult.markerBudgetMultipliers
+            .filterValues { it > 0f }
+            .keys
+        if (limitedMarkers.isNotEmpty()) {
+            sb.appendLine("本轮对话中，以下标志性词汇最多只能使用 1 次（只在话题自然相关时点缀，不要反复用）：${limitedMarkers.joinToString("、")}")
+        }
+
+        // 表达等级
+        sb.appendLine("人格表现分级（L0-L3）：默认 L1。仅当用户话题与你的核心性格高度相关时才到 L2-L3，其余情况保持自然随和即可，不要刻意演绎单一性格标签。")
+
+        sb.appendLine()
     }
 
     /**

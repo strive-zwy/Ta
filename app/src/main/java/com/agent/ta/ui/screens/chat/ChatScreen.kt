@@ -655,11 +655,11 @@ private fun MessageBubble(
                         // - received: 已读（Agent 已看到，正在回复）
                         // - sent: 已发送（理论上用户消息不会是 sent，兜底按已读显示）
                         val readStatus = when (message.status) {
-                            "pending" -> "未读"
+                            "pending", "processing" -> "未读"
                             "received" -> "已读"
                             else -> "已读"
                         }
-                        val readColor = if (message.status == "pending") {
+                        val readColor = if (message.status == "pending" || message.status == "processing") {
                             // 未读用更淡的颜色，降低视觉权重
                             AiTimeText.copy(alpha = 0.6f)
                         } else {

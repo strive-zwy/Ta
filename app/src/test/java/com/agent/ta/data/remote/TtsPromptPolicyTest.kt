@@ -20,14 +20,14 @@ class TtsPromptPolicyTest {
     }
 
     @Test
-    fun `director mode on keeps concise per reply direction`() {
+    fun `director mode ignores unstable per reply direction`() {
         val config = VoiceConfig(directorMode = true)
 
         val result = TtsPromptPolicy.build("  带着笑意，语速轻快。\n不要夸张表演  ", config, "happy")
 
         assertTrue(result.startsWith(TtsPromptPolicy.NATURAL_CHAT_BASELINE))
-        assertTrue(result.contains("带着笑意，语速轻快。不要夸张表演"))
-        assertFalse(result.contains("【自然度要求】"))
+        assertFalse(result.contains("带着笑意"))
+        assertFalse(result.contains("语速轻快"))
     }
 
     @Test
@@ -49,7 +49,7 @@ class TtsPromptPolicyTest {
     }
 
     @Test
-    fun `style enabled appends one compact acoustic direction`() {
+    fun `style enabled appends stable gentle direction`() {
         val config = VoiceConfig(
             directorMode = true,
             styleEnabled = true,
@@ -67,7 +67,8 @@ class TtsPromptPolicyTest {
 
         val result = TtsPromptPolicy.build("语气放松", config, "neutral")
 
-        assertTrue(result.contains("声音保持适中偏慢、自然、音量自然、语调柔和"))
-        assertEquals(1, result.lines().count { it.startsWith("声音保持") })
+        assertTrue(result.contains("保持自然、平稳的语速和语调"))
+        assertFalse(result.contains("偏慢"))
+        assertFalse(result.contains("音量自然"))
     }
 }

@@ -60,6 +60,10 @@ object ServiceLocator {
     val appScope: kotlinx.coroutines.CoroutineScope
         get() = app.appScope
 
+    /** 应用 filesDir，供需要解析相对文件路径的模块使用 */
+    val filesDir: java.io.File
+        get() = app.filesDir
+
     val database by lazy { app.database }
 
     val agentConfigDao: AgentConfigDao

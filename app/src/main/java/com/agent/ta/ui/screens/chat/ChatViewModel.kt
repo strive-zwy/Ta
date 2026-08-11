@@ -12,6 +12,28 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+internal object ChatMessageMergePolicy {
+    fun visibleUpdates(
+        current: List<ChatMessageEntity>,
+        allMessages: List<ChatMessageEntity>,
+        newestLoadedCreatedAt: Long
+    ): List<ChatMessageEntity> {
+        val loadedIds = current.mapTo(mutableSetOf()) { it.id }
+        return allMessages.filter { it.id in loadedIds || it.createdAt > newestLoadedCreatedAt }
+    }
+
+    fun merge(
+        current: List<ChatMessageEntity>,
+        updates: List<ChatMessageEntity>
+    ): List<ChatMessageEntity> {
+        if (updates.isEmpty()) return current
+        return (current + updates)
+            .associateBy { it.id }
+            .values
+            .sortedWith(compareBy<ChatMessageEntity> { it.createdAt }.thenBy { it.id })
+    }
+}
+
 class ChatViewModel : ViewModel() {
 
     private val appContext = com.agent.ta.TaApplication.instance!!
@@ -70,17 +92,17 @@ class ChatViewModel : ViewModel() {
 
     private fun startObservingNewMessages(agentId: Long) {
         newMessageObserver = viewModelScope.launch {
-            chatDao.observeMessagesAfter(agentId, newestLoadedCreatedAt)
-                .collect { newMessages ->
-                    if (newMessages.isNotEmpty()) {
-                        val current = _messages.value.toMutableList()
-                        val existingIds = current.map { it.id }.toSet()
-                        val toAdd = newMessages.filter { it.id !in existingIds }
-                        if (toAdd.isNotEmpty()) {
-                            current.addAll(toAdd)
-                            _messages.value = current
-                            newestLoadedCreatedAt = current.last().createdAt
-                        }
+            chatDao.observeAll(agentId)
+                .collect { allMessages ->
+                    val updates = ChatMessageMergePolicy.visibleUpdates(
+                        current = _messages.value,
+                        allMessages = allMessages,
+                        newestLoadedCreatedAt = newestLoadedCreatedAt
+                    )
+                    if (updates.isNotEmpty()) {
+                        val merged = ChatMessageMergePolicy.merge(_messages.value, updates)
+                        _messages.value = merged
+                        newestLoadedCreatedAt = merged.lastOrNull()?.createdAt ?: newestLoadedCreatedAt
                     }
                 }
         }

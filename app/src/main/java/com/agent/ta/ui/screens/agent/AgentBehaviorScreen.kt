@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
@@ -105,6 +106,45 @@ private fun stateSubtitle(stateKey: String): String = when (stateKey) {
     else -> ""
 }
 
+/**
+ * 各状态的 3 档延迟范围（快 / 适中 / 慢）
+ */
+private fun delayLevels(stateKey: String): List<Triple<String, Int, Int>> = when (stateKey) {
+    "idle" -> listOf(
+        Triple("快", 1, 2),
+        Triple("适中", 2, 5),
+        Triple("慢", 5, 10)
+    )
+    "normal" -> listOf(
+        Triple("快", 2, 5),
+        Triple("适中", 5, 10),
+        Triple("慢", 10, 20)
+    )
+    "busy" -> listOf(
+        Triple("快", 10, 30),
+        Triple("适中", 30, 60),
+        Triple("慢", 60, 120)
+    )
+    else -> listOf(
+        Triple("快", 1, 3),
+        Triple("适中", 3, 8),
+        Triple("慢", 8, 15)
+    )
+}
+
+/**
+ * 根据当前延迟范围计算档位标签（用于头部行显示）
+ */
+private fun delayLevelLabel(stateKey: String, range: Pair<Float, Float>?): String {
+    if (range == null) return ""
+    val min = range.first.toInt()
+    val max = range.second.toInt()
+    val matched = delayLevels(stateKey).firstOrNull { (_, lmin, lmax) ->
+        lmin == min && lmax == max
+    }
+    return if (matched != null) "${matched.first} ${min}-${max}秒" else "自定义 ${min}-${max}秒"
+}
+
 private fun defaultStateHint(stateKey: String): String = when (stateKey) {
     "normal" -> "日常状态，语气平和自然，回复长度适中，积极参与对话。像平时和朋友聊天一样随意。"
     "busy" -> "正在忙碌，语速偏快，回复简短直接，可能会提及正在处理的事务。不闲聊，结束时可能说'先去忙了'。"
@@ -164,7 +204,7 @@ fun AgentBehaviorScreen(onBack: () -> Unit) {
 
     Column(modifier = Modifier.fillMaxSize().background(AiBg)) {
         VibeTopBar(title = "行为配置", subtitle = "回复延迟 · 状态导演 · 主动发起", onBack = onBack)
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize().imePadding()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -266,7 +306,9 @@ private fun StateBehaviorRow(
 ) {
     var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
     val accent = stateColor(stateKey)
-    val subtitle = stateSubtitle(stateKey)
+    val baseSubtitle = stateSubtitle(stateKey)
+    val delayLabel = delayLevelLabel(stateKey, replyDelay)
+    val subtitle = if (delayLabel.isNotBlank()) "$baseSubtitle · $delayLabel" else baseSubtitle
 
     Column(modifier = Modifier.fillMaxWidth()) {
         if (showTopDivider) {
@@ -370,29 +412,8 @@ private fun ReplyDelaySection(
     onRangeChange: (Pair<Float, Float>) -> Unit,
     accent: Color
 ) {
-    // 各状态的 3 档延迟范围（min..max 秒）
-    val delayLevels: List<Triple<String, Int, Int>> = when (stateKey) {
-        "idle" -> listOf(
-            Triple("快", 1, 2),
-            Triple("适中", 2, 5),
-            Triple("慢", 5, 10)
-        )
-        "normal" -> listOf(
-            Triple("快", 2, 5),
-            Triple("适中", 5, 10),
-            Triple("慢", 10, 20)
-        )
-        "busy" -> listOf(
-            Triple("快", 10, 30),
-            Triple("适中", 30, 60),
-            Triple("慢", 60, 120)
-        )
-        else -> listOf(
-            Triple("快", 1, 3),
-            Triple("适中", 3, 8),
-            Triple("慢", 8, 15)
-        )
-    }
+    // 各状态的 3 档延迟范围（复用共享定义）
+    val delayLevels = delayLevels(stateKey)
 
     // 当前值匹配哪个档位
     val currentMin = currentRange.first.toInt()

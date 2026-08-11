@@ -112,10 +112,15 @@ object AgentEngine {
             lifeEventInitiator = LifeEventInitiator(appContext)
 
             // 5. 处理被杀期间的待回复消息
-            ServiceLocator.chatMessageDao.releaseStaleProcessing(
-                System.currentTimeMillis() - PROCESSING_STALE_MS
-            )
-            processPendingMessages(appContext)
+            ServiceLocator.chatMessageDao.releaseProcessing(agentId)
+            // BUSY 状态启动时跳过 pending 处理：忙碌期间不回复是预期行为，
+            // 等 BUSY 时段结束（切换到 NORMAL/IDLE）后由 onStateSwitched 触发处理。
+            // UNAVAILABLE 状态由 processPendingMessages 内部跳过。
+            if (_currentState.value != AgentState.BUSY) {
+                processPendingMessages(appContext)
+            } else {
+                Log.d(TAG, "BUSY 状态启动，跳过 pending 处理（等状态切换）")
+            }
 
             // 5.5 承诺闹钟恢复 + 已到期承诺立即触发
             // AlarmManager 在设备重启或 App 被杀后会丢失所有闹钟，需要从 DB 恢复
@@ -580,5 +585,4 @@ object AgentEngine {
         FAILED
     }
 
-    private const val PROCESSING_STALE_MS = 15 * 60 * 1000L
 }

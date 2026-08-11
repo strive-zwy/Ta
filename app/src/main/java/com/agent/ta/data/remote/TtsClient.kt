@@ -237,12 +237,19 @@ class TtsClient {
 
     /**
      * 加载样本音频为 base64
+     *
+     * 路径可能是绝对路径或相对路径（相对于 filesDir，如 voice_samples/sample_xxx.wav）。
+     * Android 工作目录不是 filesDir，所以相对路径必须从 filesDir 解析。
      */
     private fun loadVoiceSample(path: String?): String? {
         val actualPath = path?.takeIf { it.isNotBlank() } ?: return null
-        val file = File(actualPath)
+        var file = File(actualPath)
+        // 相对路径兜底：从 filesDir 解析
+        if (!file.isAbsolute && !file.isFile) {
+            file = File(ServiceLocator.filesDir, actualPath)
+        }
         if (!file.isFile) {
-            Log.w(TAG, "音频样本文件不存在：$actualPath")
+            Log.w(TAG, "音频样本文件不存在：$actualPath（也尝试了 ${file.absolutePath}）")
             return null
         }
         return Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)

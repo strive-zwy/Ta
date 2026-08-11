@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
@@ -154,7 +155,7 @@ fun AgentVoiceScreen(onBack: () -> Unit) {
             .background(AiBg)
     ) {
         VibeTopBar(title = "语音配置", onBack = onBack, subtitle = "Voice Identity")
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize().imePadding()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()

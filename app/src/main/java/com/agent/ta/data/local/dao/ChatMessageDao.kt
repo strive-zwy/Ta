@@ -59,7 +59,7 @@ interface ChatMessageDao {
     @Query("SELECT * FROM chat_messages WHERE agentId = :agentId AND status = 'processing' AND batchId = :batchId ORDER BY createdAt ASC")
     suspend fun getProcessingBatch(agentId: Long, batchId: String): List<ChatMessageEntity>
 
-    @Query("UPDATE chat_messages SET status = 'replied', repliedAt = :repliedAt, batchId = NULL, claimedAt = NULL WHERE agentId = :agentId AND status = 'processing' AND batchId = :batchId")
+    @Query("UPDATE chat_messages SET status = 'received', repliedAt = :repliedAt, batchId = NULL, claimedAt = NULL WHERE agentId = :agentId AND status = 'processing' AND batchId = :batchId")
     suspend fun completeBatch(agentId: Long, batchId: String, repliedAt: Long): Int
 
     @Query("UPDATE chat_messages SET status = 'pending', batchId = NULL, claimedAt = NULL WHERE agentId = :agentId AND status = 'processing' AND batchId = :batchId")

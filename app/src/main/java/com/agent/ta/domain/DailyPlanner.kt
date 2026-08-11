@@ -58,6 +58,11 @@ class DailyPlanner {
         val today = LocalDate.now(zoneId).format(DATE_FORMAT)
         val existing = dailyScheduleDao.getByDate(agentId, today)
         if (existing != null) {
+            // 兜底作息自愈：如果之前因 LLM 未配置写了兜底作息，现在 LLM 已配置则重新生成
+            if (existing.source == "fallback" && ServiceLocator.userPreferences.llmApiKey.isNotBlank()) {
+                Log.d(TAG, "检测到兜底作息且 LLM 已配置，重新生成")
+                return@withContext generateTodaySchedule(agentId, config, zoneId, today)
+            }
             return@withContext parseSlots(existing.slotsJson)
         }
 
@@ -96,6 +101,11 @@ class DailyPlanner {
         adjustReason: String = "",
         isAgentSwitch: Boolean = false
     ): List<DailySlot> {
+        // LLM 未配置时直接使用兜底作息，避免 HTTP 400
+        if (ServiceLocator.userPreferences.llmApiKey.isBlank()) {
+            Log.w(TAG, "LLM API Key 未配置，使用兜底作息")
+            return saveFallbackSchedule(agentId, dateStr, adjustReason)
+        }
         try {
             val now = LocalDateTime.now(zoneId)
             // 切换 Agent 时不注入旧 Agent 的历史记忆/对话/作息，只用新 persona 生成
@@ -220,7 +230,7 @@ class DailyPlanner {
      * 确保即使 LLM 失败，DB 中的作息也会更新（而非保留旧记录）
      */
     private suspend fun saveFallbackSchedule(agentId: Long, dateStr: String, adjustReason: String): List<DailySlot> {
-        val slots = fallbackSchedule()
+        val slots = normalizeSlots(fallbackSchedule())
         val slotsJsonStr = json.encodeToString(slots)
         // 兜底作息同样需要写入 originalSlotsJson 快照（首次生成时）
         val existing = dailyScheduleDao.getByDate(agentId, dateStr)

@@ -2,6 +2,8 @@ package com.agent.ta.domain
 
 import com.agent.ta.data.default.DefaultAgent
 import com.agent.ta.data.model.AgentState
+import com.agent.ta.domain.anchor.ActivityAnchor
+import com.agent.ta.domain.anchor.AnchorSource
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -116,6 +118,32 @@ class FirstMeetingPromptTest {
             "GREETING 场景应禁止假装认识用户",
             prompt.contains("不得假装认识") || prompt.contains("不得提到之前的对话")
         )
+    }
+
+    @Test
+    fun continuous_chat_uses_activity_as_fact_without_requiring_repetition() {
+        val prompt = promptBuilder.build(
+            config = config,
+            state = AgentState.NORMAL,
+            userNickname = "",
+            memories = emptyList(),
+            recentMessages = emptyList(),
+            activityAnchor = ActivityAnchor(
+                activity = "休息",
+                state = AgentState.NORMAL,
+                startedAt = System.currentTimeMillis() - 10_000L,
+                expectedEnd = System.currentTimeMillis() + 60_000L,
+                slotStart = "12:00",
+                slotEnd = "13:00",
+                source = AnchorSource.SCHEDULE,
+                replyable = true
+            ),
+            continuousRound = 2
+        ).first { it.role == "system" }.content
+
+        assertTrue(prompt.contains("不是每轮必须提起的话题"))
+        assertTrue(prompt.contains("不要再次复述"))
+        assertFalse(prompt.contains("本次回复所有内容必须围绕「休息」"))
     }
 
     // ===== FIRST_MEETING_REPLY 场景 =====
