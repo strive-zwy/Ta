@@ -352,9 +352,16 @@ Ta 采用 MIT License 开源。你可以自由使用、复制、修改、合并�
 - GitHub 仓库：[github.com/strive-zwy/Ta](https://github.com/strive-zwy/Ta)
 - 第三方依赖和服务仍遵循各自适用的许可证、使用条款与隐私政策。
 
+## 联系方式
+
+- QQ：1228304424
+- GitHub：[strive-zwy](https://github.com/strive-zwy)
+
+欢迎通过 Issue、PR 或上述方式交流反馈。
+
 ## 当前状态
 
-- 当前源码版本标签：`v1.2.0`
+- 当前源码版本标签：`v1.3.0`
 - 当前为持续开发阶段，交互与数据结构仍可能调整。
 - 当前以单 Agent 体验为主，不提供多个 Agent 在界面中同时保留并自由切换。
 - 语音输入权限已预留，完整的按住说话链路尚未开放。
