@@ -1,16 +1,16 @@
 # Ta
 
-> 按照你的想法，创造属于你的「他、她、它」。
+> 创造属于你的「他、她、它」—— 自定义人格 · 克隆声音 · 有状态的 AI 陪伴
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Android](https://img.shields.io/badge/Platform-Android-green.svg)](https://github.com/strive-zwy/Ta)
+[![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-purple.svg)](https://kotlinlang.org)
 
-Ta 是一个开源项目，采用 [MIT License](LICENSE) 发布。欢迎阅读源码、提出 Issue、提交 Pull Request，或基于本项目进行学习、修改和再发布。
-
-GitHub 仓库：[github.com/strive-zwy/Ta](https://github.com/strive-zwy/Ta)
-
-Ta 是一款运行在 Android 设备上的自定义 AI Agent 应用。
+Ta 是一款开源的 Android AI Agent 应用，让你通过对话式配置创建拥有独立人格、专属声音和真实作息的 AI 陪伴角色。支持音色克隆、情绪化语音、多模型切换，数据本地加密存储。
 
 项目名 **Ta** 来自中文里对不同对象的称呼：**他、她、它**。它可以是陪伴者、朋友、偶像的数字化参考，也可以是动画、动漫、游戏或小说中的角色。Ta 不预设 Agent 应该是谁，而是让用户通过自己的描述、关系期待和表达偏好，逐步定义一个真正属于自己的 Agent。
+
+GitHub 仓库：[github.com/strive-zwy/Ta](https://github.com/strive-zwy/Ta) · 开源协议：[MIT License](LICENSE)，欢迎 Issue、PR 和二次开发。
 
 ## 项目理念
 
