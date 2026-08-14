@@ -141,6 +141,9 @@ class ChatViewModel : ViewModel() {
     /** Agent 是否正在生成回复（驱动 UI 显示"正在输入中"指示器） */
     val isReplying: StateFlow<Boolean> = ChatInteractor.isReplying
 
+    /** 是否处于自定义对话收集阶段（驱动 UI 显示"完成并预览"按钮） */
+    val configCollectingCustom: StateFlow<Boolean> = ChatInteractor.configCollectingCustom
+
     fun updateInput(text: String) {
         _inputText.value = text
     }

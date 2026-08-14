@@ -139,6 +139,7 @@ fun ChatScreen(
     val playingPath by viewModel.playingPath.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val isReplying by viewModel.isReplying.collectAsState()
+    val configCollectingCustom by viewModel.configCollectingCustom.collectAsState()
     val hasMoreOlder by viewModel.hasMoreOlder.collectAsState()
     val isLoadingMore by viewModel.isLoadingMore.collectAsState()
     val listState = rememberLazyListState()
@@ -255,7 +256,7 @@ fun ChatScreen(
                             message = msg,
                             isPlaying = playingPath == msg.audioPath && isPlaying,
                             onTogglePlay = { msg.audioPath?.let { viewModel.toggleVoicePlay(it) } },
-                            quickOptions = ConfigQuickReplyPolicy.resolve(msg.text),
+                            quickOptions = ConfigQuickReplyPolicy.resolve(msg.text, configMode = configCollectingCustom && msg.direction == "outbound"),
                             onQuickReply = viewModel::sendQuickReply,
                             enterDelayMs = TaMotion.staggerDelayMs(index)
                         )

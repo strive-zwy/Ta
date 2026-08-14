@@ -1120,6 +1120,7 @@ class PromptBuilder {
             sb.appendLine("- 不要在 replyText 中显示「已保存称呼」等系统提示，保持人格化自然回复")
         }
         sb.appendLine("- 单条长度原则：每条只写一句话、一个意思（10-20 字），最多不超过 25 字；内容多时拆成多条短消息连发，不要用逗号硬塞成长文字")
+        sb.appendLine("- 每条 replyText 必须是完整的句子或短语，【绝对禁止】以逗号、分号结尾（如「刚起来，」「准备去洗漱，」都是错误的）。每条要么是完整陈述句，要么是简短口语短语，像真人发微信一样自然")
         sb.appendLine("- 逻辑一致性：同一轮回复里，各条消息之间不能自相矛盾。比如别先说「正在吃面」又说「面已经吃完了」；不要在同一轮里又重复之前说过的内容")
         sb.appendLine("- replyText 是纯对话文本，只包含要说的话本身。绝对不要在 replyText 里写括号、动作描述、emoji 解释或任何非对话内容")
         sb.appendLine("- replyText 中【绝对禁止】出现 emoji 字符（如 😄🌙😂 等）。emoji 必须走 emoji 字段，不能塞进 replyText")

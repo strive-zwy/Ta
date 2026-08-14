@@ -45,6 +45,8 @@ class TtsClient {
         ignoreUnknownKeys = true
         isLenient = true
         encodeDefaults = true
+        // 序列化时省略 null 字段：voicedesign 模型不支持 audio.voice，必须剔除该字段
+        explicitNulls = false
     }
 
     // 复用 OkHttpClient 实例，避免每次调用都创建新的连接池和线程池
@@ -194,13 +196,15 @@ class TtsClient {
             }
         }
         Log.d(TAG, "voicedesign：voiceDescription=${config.voiceDescription.take(60)}")
+        // 注意：mimo-v2.5-tts-voicedesign 不支持 audio.voice 字段（含空字符串），
+        // 传入 voice=null 让序列化时省略该字段，否则 API 会拒绝或忽略音色描述 → 回退默认音色。
         return VoiceCloneRequest(
             model = UserPreferences.TTS_MODEL_VOICEDESIGN,
             messages = listOf(
                 TtsMessage(role = "user", content = userContent),
                 TtsMessage(role = "assistant", content = text)
             ),
-            audio = VoiceCloneAudioInput(format = "wav", voice = "")
+            audio = VoiceCloneAudioInput(format = "wav", voice = null)
         )
     }
 

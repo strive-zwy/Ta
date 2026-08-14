@@ -18,6 +18,15 @@ keystore.properties
 # 临时调试脚本
 check_schedule.py
 del_schedule.py
+# 测试截图与素材
+/test_screen/
+/screenshot_*.png
+/app_icon_design_*.jpg
+/app_icon_final.jpg
+# 导出的 Agent 配置包
+/exported_agents/
+# 计划文档
+/docs/plans/
 # 调试/临时截图
 today_sleep.png
 today_*.png

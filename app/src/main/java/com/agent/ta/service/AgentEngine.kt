@@ -340,6 +340,13 @@ object AgentEngine {
     fun getReplyDelaySec(): Long? = stateMachine.getReplyDelaySec()
 
     /**
+     * 轻量级更新回复延迟配置（不重新生成作息）
+     */
+    fun updateReplyDelays(delays: Map<String, com.agent.ta.data.model.ReplyDelay>) {
+        stateMachine.updateReplyDelays(delays)
+    }
+
+    /**
      * Phase 1 分级睡眠：深睡惊醒切换到浅睡
      *
      * 轻量切换，只更新状态，不触发 onStateSwitched 的完整流程（避免触发 LifeEventInitiator/闹钟重排等）

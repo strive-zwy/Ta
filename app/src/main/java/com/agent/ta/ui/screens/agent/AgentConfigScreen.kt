@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material.icons.filled.AutoAwesome
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.fillMaxSize
@@ -108,8 +107,7 @@ fun AgentConfigScreen(
     onVoice: () -> Unit,
     onBehavior: () -> Unit,
     onImport: () -> Unit = {},
-    onExport: () -> Unit = {},
-    onClone: () -> Unit = {}
+    onExport: () -> Unit = {}
 ) {
     // 监听配置 Flow：导入后 provider 刷新 → config 更新 → UI 自动重组显示新数据
     val config by ServiceLocator.agentConfigProvider.config.collectAsState()
@@ -374,68 +372,6 @@ fun AgentConfigScreen(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = exportPurple
-                )
-            }
-        }
-
-        // ===== AI 辅助偶像克隆引导卡片（Phase 4 新增）=====
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-                .shadow(
-                    elevation = 4.dp,
-                    shape = RoundedCornerShape(20.dp),
-                    ambientColor = AiAccentPurple.copy(alpha = 0.18f),
-                    spotColor = AiAccentPurple.copy(alpha = 0.18f)
-                )
-                .clip(RoundedCornerShape(20.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(AiAccentPurple.copy(alpha = 0.10f), AiAccentPink.copy(alpha = 0.06f))
-                    )
-                )
-                .clickable { onClone() }
-                .padding(horizontal = 18.dp, vertical = 16.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 图标圆角块
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(AiAccentPurple.copy(alpha = 0.16f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = AiAccentPurple,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "AI辅助偶像克隆",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AiTextPrimary
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "输入明星名字，AI 自动生成身份设定",
-                        fontSize = 12.sp,
-                        color = AiTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = AiAccentPurple,
-                    modifier = Modifier.size(20.dp)
                 )
             }
         }

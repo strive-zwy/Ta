@@ -13,10 +13,14 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.net.HttpURLConnection
-import java.net.URL
+import okhttp3.Dns
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.URLEncoder
 import java.time.LocalDate
+import java.util.concurrent.TimeUnit
 
 /**
  * 联网搜索工具（内置）
@@ -127,22 +131,37 @@ class WebSearchTool : AgentTool {
      * 不引入 Jsoup 依赖，用正则解析。DuckDuckGo HTML 页面结构相对稳定，
      * 关键字段都有明确的 class 标识，正则解析可行。
      */
+    /**
+     * OkHttp 客户端：DNS 仅解析 IPv4 地址，避免模拟器 IPv6 网络不通导致连接超时
+     */
+    private val httpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .dns(object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> {
+                    // 仅保留 IPv4 地址，过滤掉 IPv6
+                    return InetAddress.getAllByName(hostname).filterIsInstance<Inet4Address>()
+                }
+            })
+            .build()
+    }
+
     private fun searchDuckDuckGo(query: String): List<SearchResult> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val urlStr = "https://html.duckduckgo.com/html/?q=$encodedQuery"
 
         return try {
-            val connection = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
-                connectTimeout = 15000
-                readTimeout = 15000
+            val request = Request.Builder()
+                .url(urlStr)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+                .get()
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                val html = response.body?.string().orEmpty()
+                parseDuckDuckGoHtml(html)
             }
-
-            val html = connection.inputStream.bufferedReader().use { it.readText() }
-            connection.disconnect()
-
-            parseDuckDuckGoHtml(html)
         } catch (e: Exception) {
             Log.e(TAG, "DuckDuckGo 搜索失败", e)
             emptyList()

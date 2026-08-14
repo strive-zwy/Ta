@@ -114,15 +114,21 @@ fun AgentVoiceScreen(onBack: () -> Unit) {
     // （否则导入后 UI 仍显示旧值 → "未配置" bug）
     // v1 兼容：如果 neutral 的 v3 sampleFile 为空但 v1 voice.sampleFile 有值，用 v1 兜底
     // （导入旧格式配置时，样本路径可能只存在 v1 字段里，TTS 有 fallback 但 UI 没有）
+    // 仅当 v1 sampleFile 对应的文件真实存在时才兜底，避免把不存在的占位路径（如历史默认
+    // "voice/sample.wav"）反填进配置，那会导致 hasCloneSample 误判并污染保存结果。
+    val v1SampleRealPath = remember(agentConfig) {
+        currentConfig.sampleFile.takeIf { it.isNotBlank() }
+            ?.let { resolveAbsoluteSamplePath(context, it) }
+    }
     val emotionStates = remember(agentConfig) {
         mutableStateOf(
             VoiceEmotionConfig.SUPPORTED.associateWith { emotion ->
                 val emotionCfg = currentConfig.emotions[emotion] ?: VoiceEmotionConfig()
                 if (emotion == VoiceEmotionConfig.NEUTRAL &&
                     emotionCfg.sampleFile.isBlank() &&
-                    currentConfig.sampleFile.isNotBlank()
+                    v1SampleRealPath != null
                 ) {
-                    emotionCfg.copy(sampleFile = currentConfig.sampleFile)
+                    emotionCfg.copy(sampleFile = v1SampleRealPath)
                 } else {
                     emotionCfg
                 }

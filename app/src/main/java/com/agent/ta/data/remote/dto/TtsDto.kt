@@ -296,5 +296,11 @@ data class VoiceCloneRequest(
 @Serializable
 data class VoiceCloneAudioInput(
     val format: String = "wav",
-    val voice: String = ""                // base64 编码的样本音频
+    /**
+     * 音色来源：
+     * - voiceclone：base64 编码的样本音频（Data URL）
+     * - preset：预置音色 ID（如 mimo_default）
+     * - voicedesign：不支持此字段，必须为 null 以在序列化时省略
+     */
+    val voice: String? = null
 )

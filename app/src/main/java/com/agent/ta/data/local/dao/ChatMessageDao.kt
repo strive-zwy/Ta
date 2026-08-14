@@ -53,6 +53,14 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET status = :status, repliedAt = :repliedAt WHERE agentId = :agentId AND id = :id")
     suspend fun updateStatus(agentId: Long, id: Long, status: String, repliedAt: Long?)
 
+    /**
+     * 条件更新：仅当消息当前状态为 "pending" 时才更新为 "received"。
+     * 返回受影响行数（1=成功，0=已被其他流程 claiming）。
+     * 用于延迟回复场景：延迟期间消息保持 pending（未读），延迟结束后原子抢占为 received。
+     */
+    @Query("UPDATE chat_messages SET status = 'received', repliedAt = :repliedAt WHERE agentId = :agentId AND id = :id AND status = 'pending'")
+    suspend fun claimFromPending(agentId: Long, id: Long, repliedAt: Long): Int
+
     @Query("UPDATE chat_messages SET status = 'processing', batchId = :batchId, claimedAt = :claimedAt WHERE agentId = :agentId AND status = 'pending'")
     suspend fun claimPending(agentId: Long, batchId: String, claimedAt: Long): Int
 

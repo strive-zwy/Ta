@@ -303,8 +303,16 @@ object ExampleDialogueSerializer : KSerializer<ExampleDialogue> {
 
 @Serializable
 data class VoiceConfig(
-    /** v1 兼容字段：默认样本路径（neutral 情绪样本的兜底） */
-    @SerialName("sample_file") val sampleFile: String = "voice/sample.wav",
+    /**
+     * v1 兼容字段：默认样本路径（neutral 情绪样本的兜底）
+     *
+     * 默认必须为空字符串。历史版本曾用 "voice/sample.wav" 作为默认值，
+     * 但该文件在 App 中并不存在，会被当成「存在样本」导致：
+     * - hasCloneSample 误判为 true，VOICEDESIGN/克隆失败时关闭系统 TTS 降级；
+     * - 语音配置页 v1 兼容逻辑把它反填进 neutral 情绪，污染配置。
+     * 因此这里保持空，样本路径仅在用户真正上传/导入时写入。
+     */
+    @SerialName("sample_file") val sampleFile: String = "",
     @SerialName("director_mode") val directorMode: Boolean = true,
     /**
      * 声音风格开关（v4）：

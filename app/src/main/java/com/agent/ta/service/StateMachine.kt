@@ -97,6 +97,15 @@ class StateMachine {
     }
 
     /**
+     * 轻量级更新回复延迟配置（不重新生成作息）
+     * 用于行为配置页保存后立即生效，避免调 LLM 重新生成作息的开销。
+     */
+    fun updateReplyDelays(delays: Map<String, com.agent.ta.data.model.ReplyDelay>) {
+        replyDelayMap = delays
+        Log.d(TAG, "回复延迟已更新：${delays.mapValues { it.value }}")
+    }
+
+    /**
      * 根据当前时间计算应该处于的状态
      *
      * Phase 1 分级睡眠：

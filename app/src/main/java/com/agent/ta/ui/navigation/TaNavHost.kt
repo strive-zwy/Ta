@@ -24,7 +24,6 @@ import com.agent.ta.ui.screens.agent.AgentPersonaScreen
 import com.agent.ta.ui.screens.agent.AgentAvatarScreen
 import com.agent.ta.ui.screens.agent.AgentVoiceScreen
 import com.agent.ta.ui.screens.agent.AgentBehaviorScreen
-import com.agent.ta.ui.screens.agent.CelebrityClonerScreen
 
 /**
  * TaNavHost — M3 Expressive 风格升级
@@ -126,8 +125,7 @@ fun TaNavHost(navController: NavHostController) {
                 onPersona = { navController.navigate(Routes.AGENT_PERSONA) },
                 onAvatar = { navController.navigate(Routes.AGENT_AVATAR) },
                 onVoice = { navController.navigate(Routes.AGENT_VOICE) },
-                onBehavior = { navController.navigate(Routes.AGENT_BEHAVIOR) },
-                onClone = { navController.navigate(Routes.AGENT_CLONE) }
+                onBehavior = { navController.navigate(Routes.AGENT_BEHAVIOR) }
             )
         }
         composable(Routes.AGENT_BASIC) {
@@ -144,9 +142,6 @@ fun TaNavHost(navController: NavHostController) {
         }
         composable(Routes.AGENT_BEHAVIOR) {
             AgentBehaviorScreen(onBack = { navController.popBackStack() })
-        }
-        composable(Routes.AGENT_CLONE) {
-            CelebrityClonerScreen(onBack = { navController.popBackStack() })
         }
     }
 }

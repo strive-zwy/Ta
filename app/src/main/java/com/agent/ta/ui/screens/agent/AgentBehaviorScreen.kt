@@ -277,6 +277,8 @@ fun AgentBehaviorScreen(onBack: () -> Unit) {
                     )
                     scope.launch {
                         editor.update { config -> config.copy(behavior = newBehavior) }
+                        // 轻量级更新状态机的延迟配置，避免调 LLM 重新生成作息
+                        com.agent.ta.service.AgentEngine.updateReplyDelays(newReplyDelay)
                         justSaved = true
                         delay(1000)
                         justSaved = false

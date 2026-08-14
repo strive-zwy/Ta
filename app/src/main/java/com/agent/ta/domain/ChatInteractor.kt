@@ -104,19 +104,45 @@ class ChatInteractor(private val context: Context) {
      * 直接按用户新消息生成回复（不再继续发旧上下文的剩余条目）。
      */
     fun sendUserMessage(text: String) {
-        // 0. 拦截斜杠命令（/config /done /help）
+        // 0. 拦截斜杠命令（/config /help）
         val trimmed = text.trim()
         when {
             trimmed == "/config" || trimmed == "/配置" -> {
-                enterConfigMode()
-                return
-            }
-            trimmed == "/done" || trimmed == "/完成" -> {
-                finishConfigCollection()
+                scope.launch {
+                    val agentId = activeAgentManager.getRequiredActiveAgentId()
+                    chatDao.insert(
+                        ChatMessageEntity(
+                            agentId = agentId,
+                            direction = "inbound",
+                            text = text,
+                            audioPath = null,
+                            directorPrompt = null,
+                            state = AgentState.NORMAL.id,
+                            status = "received",
+                            createdAt = System.currentTimeMillis()
+                        )
+                    )
+                    enterConfigMode()
+                }
                 return
             }
             trimmed == "/help" || trimmed == "/帮助" -> {
-                showCommandHelp()
+                scope.launch {
+                    val agentId = activeAgentManager.getRequiredActiveAgentId()
+                    chatDao.insert(
+                        ChatMessageEntity(
+                            agentId = agentId,
+                            direction = "inbound",
+                            text = text,
+                            audioPath = null,
+                            directorPrompt = null,
+                            state = AgentState.NORMAL.id,
+                            status = "received",
+                            createdAt = System.currentTimeMillis()
+                        )
+                    )
+                    showCommandHelp()
+                }
                 return
             }
         }
@@ -142,8 +168,7 @@ class ChatInteractor(private val context: Context) {
 
             // === 连续对话节奏优化 ===
             // 检测：Agent 回复后 90 秒内用户继续发消息 → 连续对话
-            // 连续对话时：busy 状态也用短延迟（3-8 秒），消息标记已读，立即显示"正在输入中"
-            // 非连续对话：busy 状态用完整延迟，消息标记 pending（未读），延迟期间不显示"正在输入中"
+            // 连续对话时用短延迟（3-8 秒），非连续对话用状态配置的延迟
             val now = System.currentTimeMillis()
             val isContinuousChat = lastReplyTime > 0 && (now - lastReplyTime) < CONTINUOUS_CHAT_THRESHOLD_MS
             if (isContinuousChat) {
@@ -155,20 +180,18 @@ class ChatInteractor(private val context: Context) {
 
             // 3. 用户消息入库
             val state = com.agent.ta.service.AgentEngine.currentState.value
-            // busy 长延迟场景：非连续对话的 busy 状态
-            val isBusyLongDelay = state == AgentState.BUSY && !isContinuousChat
             // 获取当前活动锚点，判断是否腾得出手回复
             val activityAnchor = com.agent.ta.service.AgentEngine.getCurrentActivityAnchor()
             val isActivityNonReplyable = activityAnchor != null && !activityAnchor.replyable
             // 消息状态语义：
-            // - "pending" 用于 Agent 无法立即回复的场景（UNAVAILABLE 或 活动不可回复如打球/洗澡）
-            //   等状态切换或活动结束后由 processPendingReplies 处理
-            // - "received" 表示 Agent 已读（即使延迟回复，消息也算已读）
+            // - "pending" 仅用于 Agent 无法主动回复的场景（UNAVAILABLE / 活动不可回复）
+            //   等状态切换后由 processPendingReplies 处理
+            // - "received" 表示 Agent 会回复此消息（即使有延迟）
+            //   非连续对话也用 received，避免 processPendingReplies 抢占造成竞态
             val initialStatus = when {
                 state == AgentState.UNAVAILABLE -> "pending"
                 state == AgentState.LIGHT_SLEEP -> "pending"
                 isActivityNonReplyable -> "pending"  // 打球/健身/洗澡等腾不出手的活动
-                isBusyLongDelay -> "pending"  // busy 非连续对话：延迟期间未读，延迟结束后才标记已读
                 else -> "received"
             }
             val userMsg = ChatMessageEntity(
@@ -238,11 +261,9 @@ class ChatInteractor(private val context: Context) {
                 return@launch
             }
 
-            // 5. 是否立即显示"正在输入中"
-            // - 连续对话：立即显示（Agent 正在和用户快速聊）
-            // - normal/idle：立即显示
-            // - busy 非连续对话：延迟期间不显示，延迟结束后才显示
-            if (!isBusyLongDelay) {
+            // 5. 连续对话：立即显示"正在输入中"
+            //    非连续对话：延迟期间不显示（模拟 Agent 还没看到消息），延迟结束后才显示
+            if (isContinuousChat) {
                 _isReplying.value = true
             }
 
@@ -256,10 +277,11 @@ class ChatInteractor(private val context: Context) {
                 } else {
                     resolveTypingDelaySec(state, relationshipState.intimacyScore)
                 }
+                Log.d(TAG, "回复延迟：${delaySec}秒（连续对话=$isContinuousChat, 状态=${state.id}）")
                 delay(delaySec * 1000)
 
-                // busy 非连续对话：延迟结束后才显示"正在输入中"
-                if (isBusyLongDelay) {
+                // 非连续对话：延迟结束后显示"正在输入中"
+                if (!isContinuousChat) {
                     _isReplying.value = true
                 }
 
@@ -296,9 +318,6 @@ class ChatInteractor(private val context: Context) {
                     continuousRound = continuousRound,
                     scene = sendScene
                 )
-                if (replied && isBusyLongDelay) {
-                    chatDao.updateStatus(agentId, msgId, "received", System.currentTimeMillis())
-                }
             } finally {
                 _isReplying.value = false
             }
@@ -360,6 +379,8 @@ class ChatInteractor(private val context: Context) {
                 )
             )
             ServiceLocator.configSessionManager.selectMode(agentId, mode)
+            // 自定义模式要等用户至少发一条描述后才显示「完成并预览」
+            _configCollectingCustom.value = false
             val prompt = when (mode) {
                 com.agent.ta.domain.config.ConfigSessionMode.CUSTOM_CONVERSATION ->
                     "好，我们通过聊天一步步创建。先告诉我，你希望这个 Agent 是什么样的人，以及你希望你们是什么关系？"
@@ -421,11 +442,21 @@ class ChatInteractor(private val context: Context) {
             )
             val session = ServiceLocator.configSessionManager.get(agentId) ?: return@launch
             when (text) {
+                "完成并预览" -> {
+                    _configCollectingCustom.value = false
+                    ServiceLocator.configSessionManager.setStage(agentId, com.agent.ta.domain.config.ConfigSessionStage.REVIEWING)
+                    insertConfigAssistantMessage(
+                        agentId,
+                        buildConfigPreview(session.draftConfig, session.referenceName, session.referenceWork)
+                    )
+                }
                 "确认应用" -> applyConfigDraft(agentId)
                 "继续修改" -> {
+                    val isCustom = session.mode == com.agent.ta.domain.config.ConfigSessionMode.CUSTOM_CONVERSATION
+                    _configCollectingCustom.value = isCustom
                     ServiceLocator.configSessionManager.setStage(
                         agentId,
-                        if (session.mode == com.agent.ta.domain.config.ConfigSessionMode.CUSTOM_CONVERSATION) {
+                        if (isCustom) {
                             com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_CUSTOM
                         } else {
                             com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_REFERENCE
@@ -451,12 +482,14 @@ class ChatInteractor(private val context: Context) {
     }
 
     suspend fun restoreConfigMode(agentId: Long) {
-        _configMode.value = ServiceLocator.configSessionManager.get(agentId) != null
+        val session = ServiceLocator.configSessionManager.get(agentId)
+        _configMode.value = session != null
+        _configCollectingCustom.value = session?.stage == com.agent.ta.domain.config.ConfigSessionStage.COLLECTING_CUSTOM
     }
 
     suspend fun sendInitialConfigGuideIfNeeded(agentId: Long) {
         if (prefs.configGuideSent) return
-        val text = "欢迎来到TA。\n输入/config可以进入配置模式，我会通过对话帮你创建Agent；\n配置完成后输入/done 查看草稿，确认后才会正式保存。\n输入/help可以查看命令。"
+        val text = "欢迎来到TA。\n输入/config可以进入配置模式，我会通过对话帮你创建Agent；\n配置过程中随时可以点「完成并预览」查看草稿，确认后才会正式保存。\n输入/help可以查看命令。"
         insertConfigAssistantMessage(agentId, text)
         prefs.configGuideSent = true
     }
@@ -472,13 +505,15 @@ class ChatInteractor(private val context: Context) {
                     content = """你是中立的 Agent 配置助手。根据用户当前这句话更新配置草稿，一次只追问一个最重要的缺失信息。
 只输出 JSON，格式为：
 {"replies":[{"replyText":"自然简短的引导或确认","action":"","directorPrompt":"","emoji":"","emotion":"neutral"}],"configUpdate":{"name":null,"gender":null,"age":null,"background":null,"personality":null,"speakingStyle":null,"selfNickname":null,"nicknameForUser":null,"relationshipToUser":null,"catchphrases":null,"interests":null,"taboos":null,"summary":"本轮变更摘要"}}
-仅填写用户明确表达或可可靠推断的字段，未涉及字段保持 null。不要声称已经正式保存。用户随时可以输入 /done 查看草稿。
+仅填写用户明确表达或可可靠推断的字段，未涉及字段保持 null。不要声称已经正式保存。
 当前草稿：$draftJson"""
                 ),
                 ChatMessage(role = "user", content = userText)
             )
         )
         reply.configUpdate?.let { ServiceLocator.configSessionManager.applyUpdate(agentId, it) }
+        // 用户已发过描述消息，后续回复都显示「完成并预览」
+        _configCollectingCustom.value = true
         val responseText = reply.replies.firstOrNull()?.replyText
             ?: reply.replyText.takeIf { it.isNotBlank() }
             ?: "我已经记下了。你还希望调整她的性格、关系或说话方式吗？"
@@ -491,9 +526,9 @@ class ChatInteractor(private val context: Context) {
         input: String
     ) {
         val fictional = session.mode == com.agent.ta.domain.config.ConfigSessionMode.FICTIONAL_CHARACTER_REFERENCE
-        val parts = input.split('，', ',', '《', '》').map { it.trim() }.filter { it.isNotBlank() }
-        val referenceName = parts.firstOrNull().orEmpty()
-        val referenceWork = if (fictional) parts.drop(1).firstOrNull().orEmpty() else ""
+        // 解析输入，支持多种自然语言格式：
+        // "砂金，《崩坏：星穹铁道》" / "砂金, 崩坏星穹铁道" / "崩坏：星穹铁道 中的 砂金" / "崩坏星穹铁道里的砂金"
+        val (referenceName, referenceWork) = parseReferenceInput(input, fictional)
         if (referenceName.isBlank()) {
             insertConfigAssistantMessage(agentId, if (fictional) "请告诉我角色名称和作品名称。" else "请告诉我偶像姓名。")
             return
@@ -538,6 +573,32 @@ class ChatInteractor(private val context: Context) {
         generateReferenceDraft(agentId, session, input)
     }
 
+    /**
+     * 解析参考人物输入，支持多种自然语言格式：
+     * - "砂金，《崩坏：星穹铁道》" → name=砂金, work=崩坏：星穹铁道
+     * - "砂金, 崩坏星穹铁道" → name=砂金, work=崩坏星穹铁道
+     * - "崩坏：星穹铁道 中的 砂金" → name=砂金, work=崩坏：星穹铁道
+     * - "崩坏星穹铁道里的砂金" → name=砂金, work=崩坏星穹铁道
+     * - "砂金" → name=砂金, work=""
+     */
+    private fun parseReferenceInput(input: String, fictional: Boolean): Pair<String, String> {
+        val trimmed = input.trim()
+
+        // 优先匹配 "X中的Y" / "X里的Y" 格式（作品在前，角色名在后）
+        val inPattern = Regex("""(.+?)\s*(?:中的|里的)\s*(.+)""")
+        inPattern.matchEntire(trimmed)?.let { match ->
+            val work = match.groupValues[1].trim()
+            val name = match.groupValues[2].trim()
+            if (name.isNotBlank() && work.isNotBlank()) return name to work
+        }
+
+        // 逗号/书名号分隔（角色名在前，作品名在后）
+        val parts = trimmed.split('，', ',', '《', '》').map { it.trim() }.filter { it.isNotBlank() }
+        val name = parts.firstOrNull().orEmpty()
+        val work = if (fictional) parts.drop(1).firstOrNull().orEmpty() else ""
+        return name to work
+    }
+
     private fun buildConfigPreview(config: com.agent.ta.data.model.AgentConfig, referenceName: String = "", referenceWork: String = ""): String {
         val persona = config.agent.persona
         return buildString {
@@ -577,7 +638,15 @@ class ChatInteractor(private val context: Context) {
             com.agent.ta.service.AgentEngine.reloadAfterConfigChanged(context, agentId)
             ServiceLocator.configSessionManager.complete(agentId)
             _configMode.value = false
-            insertConfigAssistantMessage(agentId, "配置已经应用，现在可以继续聊天了。")
+            _configCollectingCustom.value = false
+
+            // 首次配置（NOT_STARTED）→ Agent 主动打招呼；重新配置 → 静态提示
+            val phase = firstMeetingCoordinator.getPhase(agentId)
+            if (phase == com.agent.ta.domain.firstmeeting.FirstMeetingPhase.NOT_STARTED) {
+                triggerFirstMeetingGreeting()
+            } else {
+                insertConfigAssistantMessage(agentId, "配置已经应用，现在可以继续聊天了。")
+            }
         } catch (e: Exception) {
             insertConfigAssistantMessage(agentId, "配置暂时没有保存成功，可以重试，草稿不会丢失。")
         }
@@ -593,7 +662,7 @@ class ChatInteractor(private val context: Context) {
             val msg = ChatMessageEntity(
                 agentId = agentId,
                 direction = "outbound",
-                text = "可用命令：\n/config - 进入 Agent 配置模式\n/done - 退出配置模式\n/help - 显示命令帮助",
+                text = "可用命令：\n/config - 进入 Agent 配置模式\n/help - 显示命令帮助",
                 audioPath = null,
                 directorPrompt = null,
                 state = state.id,
@@ -1230,13 +1299,15 @@ class ChatInteractor(private val context: Context) {
             ensureOperationCurrent(operationContext)
             val cleanedItems = items.map { item ->
                 val cleanedText = item.replyText.replace(BRACKET_REGEX, "").replace(Regex("\\s+"), " ").trim()
+                // 清理尾部逗号/分号/冒号（LLM 按逗号拆条时残留的尾标点，聊天中看起来不自然）
+                val trimmedText = cleanedText.replace(Regex("[，,；;：:\\s]+$"), "")
                 val extractedAction = BRACKET_REGEX.findAll(item.replyText)
                     .map { it.groupValues[1].trim() }
                     .filter { it.isNotBlank() }
                     .joinToString("、")
                     .ifBlank { null }
                 val finalAction = item.action.ifBlank { extractedAction ?: "" }
-                item.copy(replyText = cleanedText, action = finalAction)
+                item.copy(replyText = trimmedText, action = finalAction)
             }
 
             // 防御性拆分：单条 replyText 含多个完整句子时按句末标点拆成多条消息
@@ -1847,8 +1918,11 @@ class ChatInteractor(private val context: Context) {
         val config = configProvider.get()
         val voiceConfig = config.voice
         val samplePath = voiceConfig.sampleFile.takeIf { it.isNotBlank() }
-        // 是否配置了克隆样本（任何情绪有样本都算）
-        val hasCloneSample = voiceConfig.sampleFileFor(emotion)?.isNotBlank() == true
+        // 是否配置了克隆样本（任何情绪有样本都算）。
+        // 必须校验样本文件真实存在；仅路径非空（如历史默认 "voice/sample.wav"）不算，
+        // 否则 VOICEDESIGN/克隆失败时会误判为「有克隆样本」而关闭系统 TTS 降级 → 直接无声。
+        val hasCloneSample = voiceConfig.sampleFileFor(emotion)
+            ?.let { resolveExistingSamplePath(it) } != null
 
         Log.d(TAG, "合成语音：emotion=$emotion, samplePath=$samplePath, hasCloneSample=$hasCloneSample, directorMode=${voiceConfig.directorMode}, ttsBaseUrl=${prefs.ttsBaseUrl}, ttsApiKey配置=${prefs.ttsApiKey.isNotBlank()}, textLen=${speechText.length}")
 
@@ -1886,6 +1960,20 @@ class ChatInteractor(private val context: Context) {
             Log.e(TAG, "系统 TTS 合成失败", e)
             null
         }
+    }
+
+    /**
+     * 校验样本路径是否指向真实存在的文件
+     * - 绝对路径不存在 → null
+     * - 相对路径 → 尝试 filesDir/<relative> 解析
+     * 用于判断「是否真的配置了克隆样本」，避免把不存在的占位路径当成有样本。
+     */
+    private fun resolveExistingSamplePath(path: String): String? {
+        if (path.isBlank()) return null
+        val abs = File(path)
+        if (abs.isAbsolute && abs.isFile) return abs.absolutePath
+        val relative = File(context.filesDir, path)
+        return if (relative.isFile) relative.absolutePath else null
     }
 
     /**
@@ -2110,10 +2198,14 @@ class ChatInteractor(private val context: Context) {
         private val _isReplying = MutableStateFlow(false)
         val isReplying: StateFlow<Boolean> = _isReplying.asStateFlow()
 
-        // 配置模式状态（用户输入 /config 进入，/done 退出）
+        // 配置模式状态（用户输入 /config 进入，点「完成并预览」或「确认应用」退出）
         // 跨实例共享：确保 ChatViewModel 和 AgentEngine 创建的实例共享同一配置模式状态
         private val _configMode = MutableStateFlow(false)
         val configMode: StateFlow<Boolean> = _configMode.asStateFlow()
+
+        // 是否处于自定义对话收集阶段（仅此阶段显示「完成并预览」按钮）
+        private val _configCollectingCustom = MutableStateFlow(false)
+        val configCollectingCustom: StateFlow<Boolean> = _configCollectingCustom.asStateFlow()
 
         // 括号动作提取正则（编译一次复用）
         private val BRACKET_REGEX = Regex("[（(]([^）)]*)[）)]")

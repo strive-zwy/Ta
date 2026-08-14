@@ -13,7 +13,7 @@ enum class ConfigQuickReplyAction {
 }
 
 object ConfigQuickReplyPolicy {
-    const val ENTRY_MESSAGE = "已进入配置模式。请选择创建方式，也可以直接输入你的想法。\n配置会先整理成草稿，等你确认后才会正式保存。\n完成配置时输入 /done。"
+    const val ENTRY_MESSAGE = "已进入配置模式。请选择创建方式，也可以直接输入你的想法。\n配置会先整理成草稿，等你确认后才会正式保存。"
 
     private val entryOptions = listOf(
         ConfigQuickReplyOption("custom", "对话式沟通自定义", "对话式沟通自定义"),
@@ -28,9 +28,14 @@ object ConfigQuickReplyPolicy {
         ConfigQuickReplyOption("regenerate", "重新生成", "重新生成")
     )
 
-    fun resolve(text: String?): List<ConfigQuickReplyOption> = when {
+    private val customCollectingOptions = listOf(
+        ConfigQuickReplyOption("finish", "完成并预览", "完成并预览")
+    )
+
+    fun resolve(text: String?, configMode: Boolean = false): List<ConfigQuickReplyOption> = when {
         text == ENTRY_MESSAGE -> entryOptions
         text?.startsWith("Agent 配置草稿\n") == true -> reviewOptions
+        configMode -> customCollectingOptions
         else -> emptyList()
     }
 
