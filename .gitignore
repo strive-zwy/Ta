@@ -23,6 +23,8 @@ del_schedule.py
 /screenshot_*.png
 /app_icon_design_*.jpg
 /app_icon_final.jpg
+# 早期 UI 设计稿（已被 docs/screenshots/ 取代）
+/screenshots/
 # 导出的 Agent 配置包
 /exported_agents/
 # 计划文档
