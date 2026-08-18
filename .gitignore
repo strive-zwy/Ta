@@ -31,6 +31,11 @@ del_schedule.py
 /exported_agents/
 # 计划文档
 /docs/plans/
+# 内部设计/规划文档（仅保留 docs/screenshots 用于 README 展示）
+/docs/PROJECT_PLAN.md
+/docs/designs/
+/docs/specs/
+/docs/superpowers/
 # 调试/临时截图
 today_sleep.png
 today_*.png
