@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#faf6f0" />
+  <title>Ta — 创造属于你的「他、她、它」 · 有状态的 AI 陪伴</title>
+  <meta name="description" content="Ta 是一款开源的 Android AI Agent 应用，通过对话式配置创建拥有独立人格、专属声音和真实作息的 AI 陪伴角色。支持音色克隆、情绪化语音、多模型切换，数据本地加密存储。" />
+  <meta name="keywords" content="Ta, AI Agent, 自定义人格, 克隆声音, 有状态陪伴, 开源, Android, 音色克隆, AI 陪伴" />
+  <link rel="canonical" href="https://github.com/strive-zwy/Ta" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Ta — 创造属于你的「他、她、它」" />
+  <meta property="og:description" content="自定义人格 · 克隆声音 · 有状态的 AI 陪伴。开源 Android AI Agent 应用。" />
+  <meta property="og:url" content="https://github.com/strive-zwy/Ta" />
+  <meta property="og:image" content="docs/screenshots/13-chat-in-use.png" />
+  <meta property="og:site_name" content="Ta" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Ta — 创造属于你的「他、她、它」" />
+  <meta name="twitter:description" content="自定义人格 · 克隆声音 · 有状态的 AI 陪伴。开源 Android AI Agent 应用。" />
+  <meta name="twitter:image" content="docs/screenshots/13-chat-in-use.png" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+SC:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23fff'/%3E%3Cpath d='M32 14c-3 8-7 12-7 18a7 7 0 1014 0c0-6-4-10-7-18z' fill='%23c8832f'/%3E%3C/svg%3E" />
+
+  <style>
+    :root {
+      --bg: #faf6f0;
+      --bg-2: #ffffff;
+      --bg-3: #f4ede3;
+      --fg: #241d15;
+      --muted: #6b6258;
+      --faint: #a3978a;
+      --amber: #c8832f;
+      --amber-soft: #e3a559;
+      --rose: #c47f92;
+      --teal: #4f9d8f;
+      --line: rgba(45,32,15,0.10);
+      --line-2: rgba(45,32,15,0.18);
+      --serif: "Fraunces", "Noto Serif SC", serif;
+      --sans: "Noto Sans SC", system-ui, sans-serif;
+      --radius: 18px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    ::selection { background: var(--amber); color: #fff; }
+
+    .container { width: min(1140px, 92vw); margin: 0 auto; }
+
+    /* ---- ambient background ---- */
+    .ambient {
+      position: fixed; inset: 0; z-index: -2;
+      background:
+        radial-gradient(60% 50% at 18% 8%, rgba(227,165,89,0.18), transparent 60%),
+        radial-gradient(50% 45% at 85% 30%, rgba(196,127,146,0.14), transparent 60%),
+        radial-gradient(60% 55% at 50% 100%, rgba(79,157,143,0.12), transparent 60%),
+        linear-gradient(180deg, #faf6f0 0%, #f5efe5 100%);
+    }
+    .grain {
+      position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      opacity: 0.035;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+
+    /* ---- nav ---- */
+    header.nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: blur(14px);
+      background: rgba(250,246,240,0.78);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0;
+    }
+    .logo {
+      display: flex; align-items: baseline; gap: 10px;
+      font-family: var(--serif); font-size: 1.5rem; font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .logo .mark {
+      width: 26px; height: 26px; border-radius: 8px;
+      background: radial-gradient(circle at 30% 25%, var(--amber-soft), var(--amber));
+      box-shadow: 0 0 18px rgba(200,131,47,0.35);
+      position: relative; align-self: center;
+    }
+    .logo .mark::after {
+      content: ""; position: absolute; inset: 6px 11px;
+      background: #fff; border-radius: 50%;
+    }
+    .logo .tri { color: var(--muted); font-size: 0.95rem; font-weight: 400; letter-spacing: 3px; }
+    nav.links { display: flex; gap: 30px; }
+    nav.links a {
+      color: var(--muted); text-decoration: none; font-size: 0.92rem;
+      transition: color .25s;
+    }
+    nav.links a:hover { color: var(--fg); }
+    .nav-cta {
+      display: flex; gap: 12px;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 20px; border-radius: 100px;
+      font-size: 0.9rem; font-weight: 500; text-decoration: none;
+      transition: transform .25s, box-shadow .25s, background .25s;
+    }
+    .btn-ghost {
+      border: 1px solid var(--line-2); color: var(--fg); background: transparent;
+    }
+    .btn-ghost:hover { background: rgba(200,131,47,0.08); transform: translateY(-2px); }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--amber-soft), var(--amber));
+      color: #fff; box-shadow: 0 6px 24px rgba(200,131,47,0.28);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(200,131,47,0.42); }
+
+    /* ---- hero ---- */
+    .hero { padding: 96px 0 64px; position: relative; }
+    .hero-grid {
+      display: grid; grid-template-columns: 1.1fr 0.9fr;
+      gap: 56px; align-items: center;
+    }
+    .hero-eyebrow {
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: 0.82rem; color: var(--amber);
+      border: 1px solid rgba(200,131,47,0.35);
+      padding: 6px 14px; border-radius: 100px;
+      background: rgba(200,131,47,0.08);
+      margin-bottom: 28px;
+    }
+    .hero-eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+    h1.hero-title {
+      font-family: var(--serif); font-weight: 500;
+      font-size: clamp(2.6rem, 6vw, 4.6rem);
+      line-height: 1.08; letter-spacing: -0.5px;
+    }
+    h1.hero-title .it { color: var(--amber); font-style: italic; }
+    .hero-sub {
+      margin-top: 26px; font-size: 1.12rem; color: var(--muted);
+      max-width: 32em;
+    }
+    .hero-sub strong { color: var(--fg); font-weight: 500; }
+    .hero-actions { margin-top: 36px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .btn-lg { padding: 14px 30px; font-size: 1rem; }
+
+    .hero-badges { margin-top: 40px; display: flex; gap: 22px; flex-wrap: wrap; }
+    .badge { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--faint); }
+    .badge svg { width: 15px; height: 15px; opacity: 0.7; }
+
+    /* phone mockup */
+    .phone-wrap { display: flex; justify-content: center; position: relative; }
+    .phone-glow {
+      position: absolute; inset: 12% 18%; border-radius: 50%;
+      background: radial-gradient(circle, rgba(200,131,47,0.35), transparent 70%);
+      filter: blur(40px); animation: pulse 5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: .7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+    .phone {
+      position: relative; width: 280px; aspect-ratio: 9/19;
+      border-radius: 38px; padding: 10px;
+      background: linear-gradient(160deg, #2a2536, #14111e);
+      box-shadow: 0 40px 80px rgba(80,50,20,0.22), inset 0 0 0 1px rgba(255,255,255,0.08);
+      transform: rotate(-4deg);
+    }
+    .phone-screen {
+      width: 100%; height: 100%; border-radius: 30px; overflow: hidden;
+      background: #fffdf9; position: relative;
+    }
+    .phone-notch {
+      position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+      width: 90px; height: 22px; background: #000; border-radius: 12px; z-index: 3;
+    }
+    .chat { position: absolute; inset: 44px 14px 0; display: flex; flex-direction: column; gap: 10px; }
+    .bubble {
+      max-width: 82%; padding: 9px 13px; border-radius: 16px;
+      font-size: 0.72rem; line-height: 1.5;
+      animation: msgIn .5s ease both;
+    }
+    @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .bubble.them {
+      align-self: flex-start; background: #f1ead9; color: var(--fg);
+      border-bottom-left-radius: 5px;
+    }
+    .bubble.me {
+      align-self: flex-end; background: linear-gradient(135deg, var(--amber-soft), var(--amber));
+      color: #fff; border-bottom-right-radius: 5px; font-weight: 500;
+    }
+    .bubble.voice {
+      display: flex; align-items: center; gap: 8px;
+      align-self: flex-start; background: #f1ead9;
+    }
+    .bubble.voice .play {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--amber); display: grid; place-items: center; flex-shrink: 0;
+    }
+    .bubble.voice .play::after {
+      content: ""; border-left: 6px solid #fff;
+      border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+      margin-left: 2px;
+    }
+    .bubble.voice .wave { display: flex; gap: 2px; align-items: center; }
+    .bubble.voice .wave span {
+      width: 2.5px; background: var(--amber); border-radius: 2px;
+      animation: wave 1.1s ease-in-out infinite;
+    }
+    @keyframes wave { 0%,100% { height: 5px; opacity: .5; } 50% { height: 14px; opacity: 1; } }
+
+    /* ---- section base ---- */
+    section { padding: 84px 0; position: relative; }
+    .sec-head { max-width: 640px; margin-bottom: 56px; }
+    .sec-eyebrow {
+      font-size: 0.8rem; letter-spacing: 3px; text-transform: uppercase;
+      color: var(--amber); margin-bottom: 16px; display: block;
+    }
+    h2.sec-title {
+      font-family: var(--serif); font-weight: 500;
+      font-size: clamp(1.9rem, 4vw, 2.8rem); line-height: 1.2; letter-spacing: -0.3px;
+    }
+    .sec-desc { margin-top: 18px; color: var(--muted); font-size: 1.05rem; }
+
+    /* ---- pillars ---- */
+    .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    .pillar {
+      background: var(--bg-2);
+      border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 30px 28px; position: relative; overflow: hidden;
+      transition: transform .3s, border-color .3s, box-shadow .3s;
+    }
+    .pillar:hover { transform: translateY(-6px); border-color: var(--line-2); box-shadow: 0 18px 40px rgba(80,50,20,0.10); }
+    .pillar .num {
+      font-family: var(--serif); font-size: 2.4rem; font-weight: 300;
+      color: var(--faint); opacity: 0.4; position: absolute; top: 14px; right: 20px;
+    }
+    .pillar .icon {
+      width: 48px; height: 48px; border-radius: 14px;
+      background: rgba(200,131,47,0.10); display: grid; place-items: center;
+      margin-bottom: 20px; font-size: 1.4rem;
+    }
+    .pillar h3 { font-size: 1.2rem; font-weight: 600; margin-bottom: 12px; font-family: var(--serif); }
+    .pillar p { color: var(--muted); font-size: 0.94rem; }
+
+    /* ---- voice section ---- */
+    .voice-section { background: linear-gradient(180deg, transparent, rgba(200,131,47,0.04), transparent); }
+    .voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: start; }
+    .voice-cards { display: flex; flex-direction: column; gap: 16px; }
+    .v-card {
+      display: flex; gap: 16px; align-items: flex-start;
+      padding: 22px; border-radius: 14px;
+      background: var(--bg-2); border: 1px solid var(--line);
+    }
+    .v-card .v-emoji { font-size: 1.5rem; margin-top: 2px; }
+    .v-card h4 { font-size: 1.02rem; font-weight: 600; margin-bottom: 6px; }
+    .v-card p { color: var(--muted); font-size: 0.9rem; }
+    .v-card .tag {
+      display: inline-block; font-size: 0.72rem; color: var(--amber);
+      background: rgba(200,131,47,0.10); padding: 2px 10px; border-radius: 100px;
+      margin-top: 10px; font-family: monospace;
+    }
+
+    .emotion-demo {
+      background: var(--bg-2); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 30px;
+    }
+    .emotion-demo h4 { font-family: var(--serif); font-size: 1.15rem; margin-bottom: 22px; font-weight: 500; }
+    .emotion-row {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px 0; border-bottom: 1px solid var(--line);
+    }
+    .emotion-row:last-child { border-bottom: none; }
+    .emotion-row .emo {
+      width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+      font-size: 1.1rem; flex-shrink: 0;
+    }
+    .emotion-row .emo.neutral { background: rgba(79,157,143,0.14); }
+    .emotion-row .emo.happy { background: rgba(200,131,47,0.16); }
+    .emotion-row .emo.calm { background: rgba(196,127,146,0.14); }
+    .emotion-row .e-info { flex: 1; }
+    .emotion-row .e-info .e-name { font-size: 0.92rem; font-weight: 500; }
+    .emotion-row .e-info .e-desc { font-size: 0.8rem; color: var(--faint); }
+    .emotion-row .e-wave { display: flex; gap: 3px; align-items: center; height: 18px; }
+    .emotion-row .e-wave span { width: 3px; background: var(--amber); border-radius: 2px; opacity: 0.6; }
+
+    /* ---- screenshots gallery ---- */
+    .gallery {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+    }
+    .shot {
+      border-radius: 16px; overflow: hidden; position: relative;
+      border: 1px solid var(--line); background: var(--bg-2);
+      aspect-ratio: 9/16;
+      transition: transform .35s, box-shadow .35s, border-color .35s;
+    }
+    .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+    .shot:hover { transform: translateY(-8px) scale(1.01); border-color: rgba(200,131,47,0.5); box-shadow: 0 24px 48px rgba(80,50,20,0.18); }
+    .shot .cap {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      padding: 30px 16px 14px;
+      background: linear-gradient(transparent, rgba(255,255,255,0.92));
+      font-size: 0.88rem; font-weight: 500; color: var(--fg);
+    }
+    .shot .cap .step {
+      display: block; font-size: 0.72rem; color: var(--amber);
+      letter-spacing: 1px; margin-bottom: 2px; font-family: monospace;
+    }
+
+    /* ---- steps ---- */
+    .steps { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px 48px; }
+    .step {
+      display: flex; gap: 18px; padding: 22px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .step .s-num {
+      font-family: var(--serif); font-size: 1.6rem; font-weight: 300;
+      color: var(--amber); flex-shrink: 0; line-height: 1;
+      min-width: 40px;
+    }
+    .step h4 { font-size: 1.05rem; font-weight: 600; margin-bottom: 6px; }
+    .step p { color: var(--muted); font-size: 0.92rem; }
+
+    /* ---- tech ---- */
+    .tech-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .tech {
+      padding: 18px; border-radius: 12px; background: var(--bg-2);
+      border: 1px solid var(--line); text-align: center;
+      font-family: monospace; font-size: 0.88rem; color: var(--muted);
+      transition: color .25s, border-color .25s;
+    }
+    .tech:hover { color: var(--fg); border-color: var(--line-2); }
+
+    /* ---- cta ---- */
+    .cta {
+      text-align: center; padding: 100px 0;
+      background: radial-gradient(60% 80% at 50% 50%, rgba(200,131,47,0.10), transparent 70%);
+    }
+    .cta h2 {
+      font-family: var(--serif); font-weight: 500;
+      font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1.2;
+      max-width: 16em; margin: 0 auto;
+    }
+    .cta h2 .it { color: var(--amber); font-style: italic; }
+    .cta p { margin: 22px auto 0; color: var(--muted); max-width: 34em; }
+    .cta .hero-actions { justify-content: center; margin-top: 40px; }
+
+    /* ---- footer ---- */
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 56px 0 40px;
+      background: #f5efe5;
+    }
+    .foot-grid {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      flex-wrap: wrap; gap: 32px;
+    }
+    .foot-brand .logo { margin-bottom: 14px; }
+    .foot-brand p { color: var(--faint); font-size: 0.9rem; max-width: 26em; }
+    .foot-cols { display: flex; gap: 64px; }
+    .foot-col h5 { font-size: 0.82rem; letter-spacing: 2px; text-transform: uppercase; color: var(--faint); margin-bottom: 16px; }
+    .foot-col a { display: block; color: var(--muted); text-decoration: none; font-size: 0.92rem; margin-bottom: 12px; transition: color .25s; }
+    .foot-col a:hover { color: var(--amber); }
+    .foot-bottom {
+      margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--line);
+      display: flex; justify-content: space-between; align-items: center;
+      color: var(--faint); font-size: 0.85rem; flex-wrap: wrap; gap: 12px;
+    }
+
+    /* ---- reveal animation ---- */
+    .reveal { opacity: 0; transform: translateY(30px); transition: opacity .7s ease, transform .7s ease; }
+    .reveal.in { opacity: 1; transform: translateY(0); }
+
+    /* ---- responsive ---- */
+    @media (max-width: 900px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 48px; }
+      .hero { padding: 64px 0 48px; }
+      .pillars { grid-template-columns: 1fr; }
+      .voice-grid { grid-template-columns: 1fr; gap: 40px; }
+      .gallery { grid-template-columns: repeat(2, 1fr); }
+      .steps { grid-template-columns: 1fr; }
+      .tech-grid { grid-template-columns: repeat(2, 1fr); }
+      nav.links { display: none; }
+      .foot-cols { gap: 40px; }
+      .foot-grid { flex-direction: column; }
+    }
+    @media (max-width: 520px) {
+      .gallery { grid-template-columns: 1fr; }
+      .tech-grid { grid-template-columns: repeat(2, 1fr); }
+      .hero-actions { flex-direction: column; align-items: stretch; }
+      .btn { justify-content: center; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+      .reveal { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient"></div>
+  <div class="grain"></div>
+
+  <header class="nav">
+    <div class="container nav-inner">
+      <div class="logo">
+        <span class="mark"></span>
+        Ta
+        <span class="tri">他 · 她 · 它</span>
+      </div>
+      <nav class="links">
+        <a href="#pillars">理念</a>
+        <a href="#voice">语音</a>
+        <a href="#gallery">界面</a>
+        <a href="#start">上手</a>
+        <a href="#tech">技术</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn btn-ghost" href="https://github.com/strive-zwy/Ta">GitHub</a>
+        <a class="btn btn-primary" href="https://github.com/strive-zwy/Ta">下载源码</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-text">
+        <span class="hero-eyebrow"><span class="dot"></span>开源 Android AI Agent</span>
+        <h1 class="hero-title">
+          创造属于你的<br />
+          「<span class="it">他、她、它</span>」
+        </h1>
+        <p class="hero-sub">
+          通过对话式配置，创建一个拥有<strong>独立人格</strong>、<strong>专属声音</strong>和<strong>真实作息</strong>的 AI 陪伴。它不套模板——它的样子，由你如何想象、如何描述，以及你们如何相处来决定。
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary btn-lg" href="https://github.com/strive-zwy/Ta">在 GitHub 获取源码 →</a>
+          <a class="btn btn-ghost btn-lg" href="#start">了解上手流程</a>
+        </div>
+        <div class="hero-badges">
+          <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>MIT License</span>
+          <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>Android · API 24+</span>
+          <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/></svg>Kotlin · Jetpack Compose</span>
+          <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>数据本地加密</span>
+        </div>
+      </div>
+
+      <div class="phone-wrap">
+        <div class="phone-glow"></div>
+        <div class="phone">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div class="chat">
+              <div class="bubble them" style="animation-delay:.2s">今天回来啦～路上累不累？</div>
+              <div class="bubble voice" style="animation-delay:.6s">
+                <span class="play"></span>
+                <span class="wave">
+                  <span style="height:6px"></span><span style="height:12px;animation-delay:.1s"></span><span style="height:8px;animation-delay:.2s"></span><span style="height:14px;animation-delay:.3s"></span><span style="height:7px;animation-delay:.4s"></span>
+                </span>
+              </div>
+              <div class="bubble me" style="animation-delay:1s">还好，想你才回来的</div>
+              <div class="bubble them" style="animation-delay:1.4s">那今晚早点休息，我给你留了灯。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PILLARS -->
+  <section id="pillars">
+    <div class="container">
+      <div class="sec-head reveal">
+        <span class="sec-eyebrow">项目理念</span>
+        <h2 class="sec-title">不是套一段人设，<br />而是让陪伴「有状态」</h2>
+        <p class="sec-desc">Ta 不只是给语言模型套一段固定人设，而是尝试让 Agent 在长期相处中保持连续、自然和有状态。</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar reveal">
+          <span class="num">01</span>
+          <div class="icon">🪞</div>
+          <h3>由你定义</h3>
+          <p>名字、身份、性格、关系、表达方式、头像、声音与行为，全部可调。Ta 不预设它应该是谁。</p>
+        </div>
+        <div class="pillar reveal">
+          <span class="num">02</span>
+          <div class="icon">🧠</div>
+          <h3>人格而非关键词</h3>
+          <p>人格特征结合当前话题动态表达，避免机械复读口头禅或持续围绕单一主题。</p>
+        </div>
+        <div class="pillar reveal">
+          <span class="num">03</span>
+          <div class="icon">⏳</div>
+          <h3>陪伴有时间感</h3>
+          <p>Agent 有当天作息、当前活动与不同状态，不会始终以相同方式立即回复。</p>
+        </div>
+        <div class="pillar reveal">
+          <span class="num">04</span>
+          <div class="icon">🔗</div>
+          <h3>关系能够延续</h3>
+          <p>聊天记忆、共同经历、关系阶段与情绪变化，都会成为后续交流的上下文。</p>
+        </div>
+        <div class="pillar reveal">
+          <span class="num">05</span>
+          <div class="icon">🔒</div>
+          <h3>数据留在本地</h3>
+          <p>Agent 配置、聊天与记忆存储在设备中，API Key 在本地加密保存。</p>
+        </div>
+        <div class="pillar reveal">
+          <span class="num">06</span>
+          <div class="icon">🗣️</div>
+          <h3>声音是陪伴的一部分</h3>
+          <p>Ta 不只为它生成文字，还能合成专属声音，让「他、她、它」真正开口说话。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VOICE -->
+  <section id="voice" class="voice-section">
+    <div class="container">
+      <div class="sec-head reveal">
+        <span class="sec-eyebrow">语音特色</span>
+        <h2 class="sec-title">让 Agent<br />拥有自己的声音</h2>
+        <p class="sec-desc">语音能力围绕「让 Agent 拥有自己的声音」设计，覆盖从音色定制、情绪表达到播放体验的完整链路。</p>
+      </div>
+      <div class="voice-grid">
+        <div class="voice-cards reveal">
+          <div class="v-card">
+            <span class="v-emoji">🎙️</span>
+            <div>
+              <h4>音色复刻</h4>
+              <p>上传一段参考音频样本，复刻出接近这套音色的声音，赋予 Agent 一个稳定、可辨识的嗓音。</p>
+              <span class="tag">voice clone</span>
+            </div>
+          </div>
+          <div class="v-card">
+            <span class="v-emoji">✨</span>
+            <div>
+              <h4>音色设计</h4>
+              <p>不提供样本，直接用文字描述想要的音色（「温柔的少女音」「沉稳的男声」），按描述生成声音。</p>
+              <span class="tag">voice design</span>
+            </div>
+          </div>
+          <div class="v-card">
+            <span class="v-emoji">🎧</span>
+            <div>
+              <h4>预置音色</h4>
+              <p>不提供样本、也不写描述时，使用内置的精品音色作为默认嗓音。你有多少种想法，Ta 就有多少种声音。</p>
+              <span class="tag">preset voice</span>
+            </div>
+          </div>
+        </div>
+        <div class="emotion-demo reveal">
+          <h4>三种情绪 · 独立声线</h4>
+          <div class="emotion-row">
+            <div class="emo neutral">😌</div>
+            <div class="e-info">
+              <div class="e-name">日常 neutral</div>
+              <div class="e-desc">独立声音样本与参数</div>
+            </div>
+            <div class="e-wave"><span style="height:6px"></span><span style="height:10px"></span><span style="height:8px"></span><span style="height:12px"></span></div>
+          </div>
+          <div class="emotion-row">
+            <div class="emo happy">😊</div>
+            <div class="e-info">
+              <div class="e-name">开心 happy</div>
+              <div class="e-desc">独立声音样本与参数</div>
+            </div>
+            <div class="e-wave"><span style="height:8px"></span><span style="height:14px"></span><span style="height:6px"></span><span style="height:11px"></span></div>
+          </div>
+          <div class="emotion-row">
+            <div class="emo calm">🌙</div>
+            <div class="e-info">
+              <div class="e-name">温柔 / 低落 calm</div>
+              <div class="e-desc">未配置时回退中性样本</div>
+            </div>
+            <div class="e-wave"><span style="height:5px"></span><span style="height:9px"></span><span style="height:7px"></span><span style="height:10px"></span></div>
+          </div>
+          <p style="margin-top:20px; font-size:0.88rem; color:var(--muted);">
+            Agent 回复时通过 <code style="color:var(--amber)">emotion</code> 字段判断情绪，按对应情绪取用声音，让语气自然贴合语境。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GALLERY -->
+  <section id="gallery">
+    <div class="container">
+      <div class="sec-head reveal">
+        <span class="sec-eyebrow">界面预览</span>
+        <h2 class="sec-title">从首次配置到日常陪伴</h2>
+        <p class="sec-desc">下面按一次完整的使用流程，从首次配置到塑造 Agent，展示 Ta 的主要界面。</p>
+      </div>
+      <div class="gallery">
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
+          <img src="screenshots/13-chat-in-use.png" alt="日常聊天界面" loading="lazy" />
+          <div class="cap"><span class="step">07 · 日常聊天</span>点击播放语音 · 动作描述斜体呈现</div>
+        </a>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
+          <img src="screenshots/06-config-draft.png" alt="配置草稿" loading="lazy" />
+          <div class="cap"><span class="step">04 · 配置草稿</span>完整设定可预览、可修改</div>
+        </a>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
+          <img src="screenshots/11-voice-config.png" alt="语音配置" loading="lazy" />
+          <div class="cap"><span class="step">05 · 语音配置</span>三种情绪分别克隆声线</div>
+        </a>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
+          <img src="screenshots/12-persona-settings.png" alt="人格设定" loading="lazy" />
+          <div class="cap"><span class="step">05 · 人格设定</span>身份内核 · 性格 · 说话习惯</div>
+        </a>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
+          <img src="screenshots/13-chat-in-use.png" alt="Agent 配置" loading="lazy" />
+          <div class="cap"><span class="step">05 · Agent 配置</span>导入 / 导出 .agent.zip</div>
+        </a>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
+          <img src="screenshots/01-model-config.png" alt="模型配置" loading="lazy" />
+          <div class="cap"><span class="step">01 · 模型配置</span>多套 LLM / TTS 配置切换</div>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- START -->
+  <section id="start" class="voice-section">
+    <div class="container">
+      <div class="sec-head reveal">
+        <span class="sec-eyebrow">快速上手</span>
+        <h2 class="sec-title">四步，塑造你的 Ta</h2>
+      </div>
+      <div class="steps">
+        <div class="step reveal">
+          <span class="s-num">01</span>
+          <div>
+            <h4>配置模型</h4>
+            <p>在模型配置页填写 LLM 与 TTS 的 Base URL、API Key 与模型，点击「测试」做真实连接诊断。</p>
+          </div>
+        </div>
+        <div class="step reveal">
+          <span class="s-num">02</span>
+          <div>
+            <h4>开启后台权限</h4>
+            <p>按提示开启通知权限、关闭电池优化、允许后台运行，保证 Agent 能稳定在后台生活作息。</p>
+          </div>
+        </div>
+        <div class="step reveal">
+          <span class="s-num">03</span>
+          <div>
+            <h4>对话式创建</h4>
+            <p>进入聊天页输入 <code style="color:var(--amber)">/config</code>，选择对话式自定义、偶像参考或动漫人物参考，逐步描述想要的形象。</p>
+          </div>
+        </div>
+        <div class="step reveal">
+          <span class="s-num">04</span>
+          <div>
+            <h4>确认并开始陪伴</h4>
+            <p>输入 <code style="color:var(--amber)">/done</code> 查看草稿，点击「确认应用」后正式生效。在记忆、关系和作息中逐渐形成连续的陪伴体验。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TECH -->
+  <section id="tech">
+    <div class="container">
+      <div class="sec-head reveal">
+        <span class="sec-eyebrow">技术栈</span>
+        <h2 class="sec-title">本地优先的分层架构</h2>
+        <p class="sec-desc">单 Activity、Jetpack Compose UI 与本地优先设计，所有数据尽可能留在设备。</p>
+      </div>
+      <div class="tech-grid reveal">
+        <div class="tech">Kotlin</div>
+        <div class="tech">Jetpack Compose</div>
+        <div class="tech">Material 3</div>
+        <div class="tech">Room</div>
+        <div class="tech">Coroutines</div>
+        <div class="tech">Retrofit</div>
+        <div class="tech">OkHttp</div>
+        <div class="tech">Media3</div>
+        <div class="tech">Navigation</div>
+        <div class="tech">Encrypted Prefs</div>
+        <div class="tech">AlarmManager</div>
+        <div class="tech">Foreground Service</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="container">
+      <h2 class="reveal">Ta 可以是他，<br />也可以是她，<br />还可以是<span class="it">它</span>。</h2>
+      <p class="reveal">更重要的是，Ta 不由预设模板决定，而由你如何想象、如何描述，以及你们如何相处来决定。欢迎 Issue、PR 和二次开发。</p>
+      <div class="hero-actions reveal">
+        <a class="btn btn-primary btn-lg" href="https://github.com/strive-zwy/Ta">在 GitHub 获取源码 →</a>
+        <a class="btn btn-ghost btn-lg" href="https://github.com/strive-zwy/Ta/issues">提交 Issue</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="container">
+      <div class="foot-grid">
+        <div class="foot-brand">
+          <div class="logo"><span class="mark"></span>Ta<span class="tri">他 · 她 · 它</span></div>
+          <p>开源的 Android AI Agent 应用。自定义人格 · 克隆声音 · 有状态的 AI 陪伴。</p>
+        </div>
+        <div class="foot-cols">
+          <div class="foot-col">
+            <h5>项目</h5>
+            <a href="#pillars">理念</a>
+            <a href="#voice">语音特色</a>
+            <a href="#gallery">界面预览</a>
+            <a href="#tech">技术栈</a>
+          </div>
+          <div class="foot-col">
+            <h5>开源</h5>
+            <a href="https://github.com/strive-zwy/Ta">GitHub 仓库</a>
+            <a href="https://github.com/strive-zwy/Ta/issues">Issue</a>
+            <a href="https://github.com/strive-zwy/Ta/pulls">Pull Request</a>
+            <a href="https://github.com/strive-zwy/Ta/blob/main/LICENSE">MIT License</a>
+          </div>
+          <div class="foot-col">
+            <h5>联系</h5>
+            <a href="https://github.com/strive-zwy">GitHub · strive-zwy</a>
+            <a href="#">QQ · 1228304424</a>
+          </div>
+        </div>
+      </div>
+      <div class="foot-bottom">
+        <span>© 2026 Ta · 开源社区</span>
+        <span>v1.3.0 · 当前为持续开发阶段</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: 0.12 });
+    document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+  </script>
+</body>
+</html>
