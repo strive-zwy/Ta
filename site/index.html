@@ -34,6 +34,7 @@
       --muted: #6b6258;
       --faint: #a3978a;
       --amber: #c8832f;
+      --amber-deep: #8a5225;
       --amber-soft: #e3a559;
       --rose: #c47f92;
       --teal: #4f9d8f;
@@ -42,10 +43,29 @@
       --serif: "Fraunces", "Noto Serif SC", serif;
       --sans: "Noto Sans SC", system-ui, sans-serif;
       --radius: 18px;
+      --phone-bg: #2a2536;
+      --phone-bg-2: #14111e;
+      --phone-text: #fffdf9;
+      --bubble-soft: #f1ead9;
+      --shadow-soft: rgba(80,50,20,0.10);
+      --shadow-soft-2: rgba(80,50,20,0.12);
+      --cta-glow: rgba(200,131,47,0.10);
+      --phone-glow: rgba(200,131,47,0.35);
+      --star-btn-bg: #241d15;
+      --star-btn-bg-2: #3a2f20;
+      --star-btn-text: #f5d9a8;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html { scroll-behavior: smooth; }
+
+    .skip-link {
+      position: absolute; top: -100px; left: 0; z-index: 1000;
+      background: var(--fg); color: var(--bg); padding: 12px 24px;
+      text-decoration: none; font-weight: 500; border-radius: 0 0 8px 0;
+      font-size: 0.9rem; transition: top .2s;
+    }
+    .skip-link:focus { top: 0; }
 
     body {
       font-family: var(--sans);
@@ -153,7 +173,7 @@
     }
     .hero-eyebrow {
       display: inline-flex; align-items: center; gap: 10px;
-      font-size: 0.82rem; color: var(--amber);
+      font-size: 0.82rem; color: var(--amber-deep);
       border: 1px solid rgba(200,131,47,0.35);
       padding: 6px 14px; border-radius: 100px;
       background: rgba(200,131,47,0.08);
@@ -182,20 +202,20 @@
     .phone-wrap { display: flex; justify-content: center; position: relative; }
     .phone-glow {
       position: absolute; inset: 12% 18%; border-radius: 50%;
-      background: radial-gradient(circle, rgba(200,131,47,0.35), transparent 70%);
+      background: radial-gradient(circle, var(--phone-glow), transparent 70%);
       filter: blur(40px); animation: pulse 5s ease-in-out infinite;
     }
     @keyframes pulse { 0%,100% { opacity: .7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
     .phone {
       position: relative; width: 280px; aspect-ratio: 9/19;
       border-radius: 38px; padding: 10px;
-      background: linear-gradient(160deg, #2a2536, #14111e);
+      background: linear-gradient(160deg, var(--phone-bg), var(--phone-bg-2));
       box-shadow: 0 40px 80px rgba(80,50,20,0.22), inset 0 0 0 1px rgba(255,255,255,0.08);
       transform: rotate(-4deg);
     }
     .phone-screen {
       width: 100%; height: 100%; border-radius: 30px; overflow: hidden;
-      background: #fffdf9; position: relative;
+      background: var(--phone-text); position: relative;
     }
     .phone-notch {
       position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
@@ -209,7 +229,7 @@
     }
     @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     .bubble.them {
-      align-self: flex-start; background: #f1ead9; color: var(--fg);
+      align-self: flex-start; background: var(--bubble-soft); color: var(--fg);
       border-bottom-left-radius: 5px;
     }
     .bubble.me {
@@ -218,7 +238,7 @@
     }
     .bubble.voice {
       display: flex; align-items: center; gap: 8px;
-      align-self: flex-start; background: #f1ead9;
+      align-self: flex-start; background: var(--bubble-soft);
     }
     .bubble.voice .play {
       width: 22px; height: 22px; border-radius: 50%;
@@ -247,7 +267,7 @@
     .sec-head { max-width: 640px; margin-bottom: 56px; }
     .sec-eyebrow {
       font-size: 0.8rem; letter-spacing: 3px; text-transform: uppercase;
-      color: var(--amber); margin-bottom: 16px; display: block;
+      color: var(--amber-deep); margin-bottom: 16px; display: block;
     }
     h2.sec-title {
       font-family: var(--serif); font-weight: 500;
@@ -263,7 +283,7 @@
       padding: 30px 28px; position: relative; overflow: hidden;
       transition: transform .3s, border-color .3s, box-shadow .3s;
     }
-    .pillar:hover { transform: translateY(-6px); border-color: var(--line-2); box-shadow: 0 18px 40px rgba(80,50,20,0.10); }
+    .pillar:hover { transform: translateY(-6px); border-color: var(--line-2); box-shadow: 0 18px 40px var(--shadow-soft); }
     .pillar .num {
       font-family: var(--serif); font-size: 2.4rem; font-weight: 300;
       color: var(--faint); opacity: 0.4; position: absolute; top: 14px; right: 20px;
@@ -286,11 +306,12 @@
       padding: 22px; border-radius: 14px;
       background: var(--bg-2); border: 1px solid var(--line);
     }
-    .v-card .v-emoji { font-size: 1.5rem; margin-top: 2px; }
+    .v-card .v-emoji { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; margin-top: 2px; flex-shrink: 0; }
+    .v-card .v-emoji svg { width: 24px; height: 24px; stroke: var(--amber); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
     .v-card h4 { font-size: 1.02rem; font-weight: 600; margin-bottom: 6px; }
     .v-card p { color: var(--muted); font-size: 0.9rem; }
     .v-card .tag {
-      display: inline-block; font-size: 0.72rem; color: var(--amber);
+      display: inline-block; font-size: 0.72rem; color: var(--amber-deep);
       background: rgba(200,131,47,0.10); padding: 2px 10px; border-radius: 100px;
       margin-top: 10px; font-family: monospace;
     }
@@ -307,8 +328,12 @@
     .emotion-row:last-child { border-bottom: none; }
     .emotion-row .emo {
       width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
-      font-size: 1.1rem; flex-shrink: 0;
+      flex-shrink: 0;
     }
+    .emotion-row .emo svg { width: 24px; height: 24px; }
+    .emotion-row .emo.neutral svg { stroke: var(--teal); }
+    .emotion-row .emo.happy svg { stroke: var(--amber); }
+    .emotion-row .emo.calm svg { stroke: var(--rose); }
     .emotion-row .emo.neutral { background: rgba(79,157,143,0.14); }
     .emotion-row .emo.happy { background: rgba(200,131,47,0.16); }
     .emotion-row .emo.calm { background: rgba(196,127,146,0.14); }
@@ -316,8 +341,7 @@
     .emotion-row .e-info .e-name { font-size: 0.92rem; font-weight: 500; }
     .emotion-row .e-info .e-desc { font-size: 0.8rem; color: var(--faint); }
     .emotion-row .e-wave { display: flex; gap: 3px; align-items: center; height: 18px; }
-    .emotion-row .e-wave span { width: 3px; background: var(--amber); border-radius: 2px; animation: eWave 1.2s ease-in-out infinite; }
-    @keyframes eWave { 0%,100% { height: 4px; opacity: .4; } 50% { height: 16px; opacity: 1; } }
+    .emotion-row .e-wave span { width: 3px; background: var(--amber); border-radius: 2px; animation: wave 1.2s ease-in-out infinite; }
 
     /* ---- screenshots showcase (single slide + deck) ---- */
     .showcase { position: relative; }
@@ -394,7 +418,7 @@
     .info-slide.active > *:nth-child(4) { transition-delay: .34s; }
     .info-slide.active > *:nth-child(5) { transition-delay: .42s; }
     .i-step {
-      font-size: .78rem; color: var(--amber); letter-spacing: 3px;
+      font-size: .78rem; color: var(--amber-deep); letter-spacing: 3px;
       font-family: monospace; margin-bottom: 14px;
     }
     .info-slide h3 {
@@ -440,7 +464,8 @@
       cursor: pointer; display: grid; place-items: center;
       transition: border-color .25s, color .25s, transform .25s, box-shadow .25s;
     }
-    .sh-btn:hover { border-color: var(--amber); color: var(--amber); transform: translateY(-2px); box-shadow: 0 8px 20px rgba(80,50,20,.12); }
+    .sh-btn:hover { border-color: var(--amber); color: var(--amber); transform: translateY(-2px); box-shadow: 0 8px 20px var(--shadow-soft-2); }
+    .sh-btn:focus-visible { outline: 2px solid var(--amber-deep); outline-offset: 2px; }
     .sh-btn:disabled { opacity: .3; pointer-events: none; }
 
     /* ---- steps ---- */
@@ -451,7 +476,7 @@
     }
     .step .s-num {
       font-family: var(--serif); font-size: 1.6rem; font-weight: 300;
-      color: var(--amber); flex-shrink: 0; line-height: 1;
+      color: var(--amber-deep); flex-shrink: 0; line-height: 1;
       min-width: 40px;
     }
     .step h4 { font-size: 1.05rem; font-weight: 600; margin-bottom: 6px; }
@@ -477,7 +502,7 @@
     /* ---- cta ---- */
     .cta {
       text-align: center; padding: 100px 0;
-      background: radial-gradient(60% 80% at 50% 50%, rgba(200,131,47,0.10), transparent 70%);
+      background: radial-gradient(60% 80% at 50% 50%, var(--cta-glow), transparent 70%);
     }
     .cta h2 {
       font-family: var(--serif); font-weight: 500;
@@ -501,7 +526,7 @@
     }
     .star-banner .star-text p { font-size: 0.88rem; color: var(--muted); max-width: 24em; }
     .star-btn {
-      background: linear-gradient(135deg, #241d15, #3a2f20); color: #f5d9a8;
+      background: linear-gradient(135deg, var(--star-btn-bg), var(--star-btn-bg-2)); color: var(--star-btn-text);
       border: 1px solid rgba(200,131,47,0.4); flex-shrink: 0;
     }
     .star-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(36,29,21,0.35); }
@@ -511,7 +536,7 @@
     .star-badge { text-decoration: none; color: var(--muted); transition: color .25s; cursor: pointer; }
     .star-badge:hover { color: var(--amber); }
     .star-badge svg { width: 15px; height: 15px; color: var(--amber); opacity: 1; }
-    .star-badge img { height: 15px; margin-left: 4px; border-radius: 3px; }
+    .star-badge .hero-star-count { font-size: 0.8rem; color: var(--faint); margin-left: 4px; }
 
     /* ---- footer ---- */
     footer {
@@ -572,12 +597,12 @@
       .foot-grid { flex-direction: column; }
     }
     @media (max-width: 520px) {
-      .showcase-visual { min-height: 380px; }
+      .showcase-visual { min-height: 260px; }
       .phone-frame { width: min(232px, 68%); }
       .info-slide p { font-size: .95rem; }
       .i-bg-num { font-size: 4rem; }
       .sh-hint { display: none; }
-      .tech-grid { grid-template-columns: repeat(2, 1fr); }
+      .tech-grid { grid-template-columns: 1fr; }
       .hero-actions { flex-direction: column; align-items: stretch; }
       .btn { justify-content: center; }
     }
@@ -586,11 +611,36 @@
       * { animation: none !important; transition: none !important; }
       .reveal { opacity: 1; transform: none; }
     }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1614;
+        --bg-2: #221c19;
+        --bg-3: #2c2420;
+        --fg: #f5eae0;
+        --muted: #b5a99e;
+        --faint: #7d7369;
+        --line: rgba(245,234,224,0.12);
+        --line-2: rgba(245,234,224,0.20);
+        --phone-bg: #1a1614;
+        --phone-bg-2: #100d0b;
+        --phone-text: #1a1614;
+        --bubble-soft: #2c2420;
+        --shadow-soft: rgba(0,0,0,0.40);
+        --shadow-soft-2: rgba(0,0,0,0.50);
+        --cta-glow: rgba(200,131,47,0.15);
+        --phone-glow: rgba(200,131,47,0.50);
+        --star-btn-bg: #f5eae0;
+        --star-btn-bg-2: #e0d4c8;
+        --star-btn-text: #1a1614;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="ambient"></div>
-  <div class="grain"></div>
+  <a href="#main" class="skip-link">跳到主内容</a>
+  <div class="ambient" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
   <div class="scroll-progress" id="scrollProgress"></div>
 
   <header class="nav">
@@ -598,7 +648,7 @@
       <div class="logo">
         <span class="mark"></span>
         Ta
-        <span class="tri">他 · 她 · 它</span>
+        <span class="tri" aria-hidden="true">他 · 她 · 它</span>
       </div>
       <nav class="links">
         <a href="#pillars">理念</a>
@@ -623,7 +673,7 @@
   </header>
 
   <!-- HERO -->
-  <section class="hero">
+  <section class="hero" id="main">
     <div class="container hero-grid">
       <div class="hero-text">
         <span class="hero-eyebrow"><span class="dot"></span>开源 Android AI Agent</span>
@@ -650,12 +700,12 @@
           <a class="badge star-badge" href="https://github.com/strive-zwy/Ta" title="去 GitHub 点个 Star" aria-label="在 GitHub 上为项目点 Star">
             <svg viewBox="0 0 24 24" fill="currentColor" stroke-width="0"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>
             GitHub Star
-            <img src="https://img.shields.io/github/stars/strive-zwy/Ta?style=flat-square&color=%23c8832f&label=" alt="stars" loading="lazy" />
+            <span class="hero-star-count" id="heroStarCount">…</span>
           </a>
         </div>
       </div>
 
-      <div class="phone-wrap">
+      <div class="phone-wrap" aria-hidden="true">
         <div class="phone-glow"></div>
         <div class="phone">
           <div class="phone-notch"></div>
@@ -687,37 +737,37 @@
       </div>
       <div class="pillars">
         <div class="pillar reveal">
-          <span class="num">01</span>
+          <span class="num" aria-hidden="true">01</span>
           <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5v3a5 5 0 01-10 0V7a5 5 0 015-5z"/><path d="M8 14s-3 2-3 5v1h14v-1c0-3-3-5-3-5"/><circle cx="12" cy="7" r="1.5" fill="var(--amber)" stroke="none"/></svg></div>
           <h3>由你定义</h3>
           <p>名字、身份、性格、关系、表达方式、头像、声音与行为，全部可调。Ta 不预设它应该是谁。</p>
         </div>
         <div class="pillar reveal">
-          <span class="num">02</span>
+          <span class="num" aria-hidden="true">02</span>
           <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10"/><path d="M12 2c2 2.5 3 5.5 3 8.5S13.5 16 12 18"/><path d="M12 2c-2 2.5-3 5.5-3 8.5S10.5 16 12 18"/><path d="M2 12h20"/><path d="M4.5 7.5c3 1 6 1.5 7.5 1.5s4.5-.5 7.5-1.5"/><path d="M4.5 16.5c3-1 6-1.5 7.5-1.5s4.5.5 7.5 1.5"/></svg></div>
           <h3>人格而非关键词</h3>
           <p>人格特征结合当前话题动态表达，避免机械复读口头禅或持续围绕单一主题。</p>
         </div>
         <div class="pillar reveal">
-          <span class="num">03</span>
+          <span class="num" aria-hidden="true">03</span>
           <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
           <h3>陪伴有时间感</h3>
           <p>Agent 有当天作息、当前活动与不同状态，不会始终以相同方式立即回复。</p>
         </div>
         <div class="pillar reveal">
-          <span class="num">04</span>
+          <span class="num" aria-hidden="true">04</span>
           <div class="icon"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></div>
           <h3>关系能够延续</h3>
           <p>聊天记忆、共同经历、关系阶段与情绪变化，都会成为后续交流的上下文。</p>
         </div>
         <div class="pillar reveal">
-          <span class="num">05</span>
+          <span class="num" aria-hidden="true">05</span>
           <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
           <h3>数据留在本地</h3>
           <p>Agent 配置、聊天与记忆存储在设备中，API Key 在本地加密保存。</p>
         </div>
         <div class="pillar reveal">
-          <span class="num">06</span>
+          <span class="num" aria-hidden="true">06</span>
           <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></div>
           <h3>声音是陪伴的一部分</h3>
           <p>Ta 不只为它生成文字，还能合成专属声音，让「他、她、它」真正开口说话。</p>
@@ -737,7 +787,7 @@
       <div class="voice-grid">
         <div class="voice-cards reveal">
           <div class="v-card">
-            <span class="v-emoji">🎙️</span>
+            <span class="v-emoji"><svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5v3a5 5 0 01-10 0V7a5 5 0 015-5z"/><path d="M8 14s-3 2-3 5v1h14v-1c0-3-3-5-3-5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></span>
             <div>
               <h4>音色复刻</h4>
               <p>上传一段参考音频样本，复刻出接近这套音色的声音，赋予 Agent 一个稳定、可辨识的嗓音。</p>
@@ -745,7 +795,7 @@
             </div>
           </div>
           <div class="v-card">
-            <span class="v-emoji">✨</span>
+            <span class="v-emoji"><svg viewBox="0 0 24 24"><path d="M12 2l2.5 6.5L21 11l-6.5 2.5L12 20l-2.5-6.5L3 11l6.5-2.5z"/><path d="M5 5l1.5 1.5M19 5l-1.5 1.5M5 19l1.5-1.5M19 19l-1.5-1.5"/></svg></span>
             <div>
               <h4>音色设计</h4>
               <p>不提供样本，直接用文字描述想要的音色（「温柔的少女音」「沉稳的男声」），按描述生成声音。</p>
@@ -753,7 +803,7 @@
             </div>
           </div>
           <div class="v-card">
-            <span class="v-emoji">🎧</span>
+            <span class="v-emoji"><svg viewBox="0 0 24 24"><path d="M5 12h2a2 2 0 012 2v6a2 2 0 01-2 2H5z"/><path d="M17 12h2a2 2 0 012 2v6a2 2 0 01-2 2h-2z"/><path d="M5 14V8a7 7 0 0114 0v6"/></svg></span>
             <div>
               <h4>预置音色</h4>
               <p>不提供样本、也不写描述时，使用内置的精品音色作为默认嗓音。你有多少种想法，Ta 就有多少种声音。</p>
@@ -764,7 +814,7 @@
         <div class="emotion-demo reveal">
           <h4>三种情绪 · 独立声线</h4>
           <div class="emotion-row">
-            <div class="emo neutral">😌</div>
+            <div class="emo neutral"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1.5" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M9 15c1 1 5 1 6 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg></div>
             <div class="e-info">
               <div class="e-name">日常 neutral</div>
               <div class="e-desc">独立声音样本与参数</div>
@@ -772,7 +822,7 @@
             <div class="e-wave"><span style="height:6px;animation-delay:0s"></span><span style="height:10px;animation-delay:.15s"></span><span style="height:8px;animation-delay:.3s"></span><span style="height:12px;animation-delay:.45s"></span></div>
           </div>
           <div class="emotion-row">
-            <div class="emo happy">😊</div>
+            <div class="emo happy"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="9" cy="10" r="1.5" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="1.5" fill="currentColor" stroke="none"/><path d="M9 14c1 2 5 2 6 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg></div>
             <div class="e-info">
               <div class="e-name">开心 happy</div>
               <div class="e-desc">独立声音样本与参数</div>
@@ -780,7 +830,7 @@
             <div class="e-wave"><span style="height:8px;animation-delay:.1s"></span><span style="height:14px;animation-delay:.25s"></span><span style="height:6px;animation-delay:.4s"></span><span style="height:11px;animation-delay:.55s"></span></div>
           </div>
           <div class="emotion-row">
-            <div class="emo calm">🌙</div>
+            <div class="emo calm"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg></div>
             <div class="e-info">
               <div class="e-name">温柔 / 低落 calm</div>
               <div class="e-desc">未配置时回退中性样本</div>
@@ -788,7 +838,7 @@
             <div class="e-wave"><span style="height:5px;animation-delay:.2s"></span><span style="height:9px;animation-delay:.35s"></span><span style="height:7px;animation-delay:.5s"></span><span style="height:10px;animation-delay:.65s"></span></div>
           </div>
           <p style="margin-top:20px; font-size:0.88rem; color:var(--muted);">
-            Agent 回复时通过 <code style="color:var(--amber)">emotion</code> 字段判断情绪，按对应情绪取用声音，让语气自然贴合语境。
+            Agent 回复时通过 <code style="color:var(--amber-deep)">emotion</code> 字段判断情绪，按对应情绪取用声音，让语气自然贴合语境。
           </p>
         </div>
       </div>
@@ -806,67 +856,67 @@
       <div class="showcase reveal" id="showcase">
         <div class="showcase-stage">
           <div class="showcase-visual" id="shVisual">
-            <div class="glow-orb" id="shOrb"></div>
+            <div class="glow-orb" id="shOrb" aria-hidden="true"></div>
             <div class="deck" id="shDeck">
               <div class="deck-sizer"></div>
               <div class="phone-frame">
-                <img src="screenshots/01-model-config.png" alt="模型配置界面" loading="lazy" />
+                <img src="screenshots/01-model-config.png" alt="模型配置界面" loading="lazy" width="400" height="800" />
               </div>
               <div class="phone-frame">
-                <img src="screenshots/11-voice-config.png" alt="语音配置界面" loading="lazy" />
+                <img src="screenshots/11-voice-config.png" alt="语音配置界面" loading="lazy" width="400" height="800" />
               </div>
               <div class="phone-frame">
-                <img src="screenshots/12-persona-settings.png" alt="人格设定界面" loading="lazy" />
+                <img src="screenshots/12-persona-settings.png" alt="人格设定界面" loading="lazy" width="400" height="800" />
               </div>
               <div class="phone-frame">
-                <img src="screenshots/06-config-draft.png" alt="配置草稿界面" loading="lazy" />
+                <img src="screenshots/06-config-draft.png" alt="配置草稿界面" loading="lazy" width="400" height="800" />
               </div>
               <div class="phone-frame">
-                <img src="screenshots/08-agent-config.png" alt="Agent 管理界面" loading="lazy" />
+                <img src="screenshots/08-agent-config.png" alt="Agent 管理界面" loading="lazy" width="400" height="800" />
               </div>
               <div class="phone-frame">
-                <img src="screenshots/13-chat-in-use.png" alt="日常聊天界面" loading="lazy" />
+                <img src="screenshots/13-chat-in-use.png" alt="日常聊天界面" loading="lazy" width="400" height="800" />
               </div>
             </div>
           </div>
           <div class="showcase-info">
             <div class="info-slide">
-              <span class="i-bg-num">01</span>
+              <span class="i-bg-num" aria-hidden="true">01</span>
               <span class="i-step">STEP 01 · 基础</span>
               <h3>模型配置</h3>
               <p>填写 LLM 与 TTS 接入参数，支持保存多套配置、一键测试连通性并随时切换。</p>
               <div class="i-tags"><span>多模型管理</span><span>连通性测试</span><span>随时切换</span></div>
             </div>
             <div class="info-slide">
-              <span class="i-bg-num">02</span>
+              <span class="i-bg-num" aria-hidden="true">02</span>
               <span class="i-step">STEP 02 · 声音</span>
               <h3>语音配置</h3>
               <p>为日常、开心、温柔三种情绪分别配置声音样本与语音参数，支持即时试听。</p>
               <div class="i-tags"><span>三种情绪</span><span>声音样本</span><span>即时试听</span></div>
             </div>
             <div class="info-slide">
-              <span class="i-bg-num">03</span>
+              <span class="i-bg-num" aria-hidden="true">03</span>
               <span class="i-step">STEP 03 · 人格</span>
               <h3>人格设定</h3>
               <p>定义身份背景、性格标签、说话习惯与示例对话，塑造 Agent 的表达内核。</p>
               <div class="i-tags"><span>身份背景</span><span>性格标签</span><span>示例对话</span></div>
             </div>
             <div class="info-slide">
-              <span class="i-bg-num">04</span>
+              <span class="i-bg-num" aria-hidden="true">04</span>
               <span class="i-step">STEP 04 · 确认</span>
               <h3>配置草稿</h3>
               <p>对话式配置完成后生成完整草稿，可预览、可修改，确认后才会正式生效。</p>
               <div class="i-tags"><span>对话式生成</span><span>可改可预览</span><span>确认生效</span></div>
             </div>
             <div class="info-slide">
-              <span class="i-bg-num">05</span>
+              <span class="i-bg-num" aria-hidden="true">05</span>
               <span class="i-step">STEP 05 · 管理</span>
               <h3>Agent 管理</h3>
               <p>集中管理头像、声音与行为设定，支持导入导出 .agent.zip 配置包。</p>
               <div class="i-tags"><span>.agent.zip</span><span>导入导出</span><span>多 Agent</span></div>
             </div>
             <div class="info-slide">
-              <span class="i-bg-num">06</span>
+              <span class="i-bg-num" aria-hidden="true">06</span>
               <span class="i-step">STEP 06 · 日常</span>
               <h3>日常聊天</h3>
               <p>类即时通信的对话体验，语音消息点击播放，多条回复逐条送达。</p>
@@ -917,7 +967,7 @@
           <span class="s-num">03</span>
           <div>
             <h4>对话式创建</h4>
-            <p>进入聊天页输入 <code style="color:var(--amber)">/config</code>，选择对话式自定义、偶像参考或动漫人物参考，逐步描述想要的形象。</p>
+            <p>进入聊天页输入 <code style="color:var(--amber-deep)">/config</code>，选择对话式自定义、偶像参考或动漫人物参考，逐步描述想要的形象。</p>
           </div>
         </div>
         <div class="step reveal">
@@ -997,7 +1047,7 @@
     <div class="container">
       <div class="foot-grid">
         <div class="foot-brand">
-          <div class="logo"><span class="mark"></span>Ta<span class="tri">他 · 她 · 它</span></div>
+          <div class="logo"><span class="mark"></span>Ta<span class="tri" aria-hidden="true">他 · 她 · 它</span></div>
           <p>开源的 Android AI Agent 应用。自定义人格 · 克隆声音 · 有状态的 AI 陪伴。</p>
         </div>
         <div class="foot-cols">
@@ -1064,12 +1114,16 @@
 
     // ---- GitHub Star 数字 ----
     (() => {
-      const el = document.getElementById('starCount');
-      if (!el) return;
-      fetch('https://api.github.com/repos/strive-zwy/Ta', { headers: { Accept: 'application/vnd.github.v3+json' } })
-        .then(r => r.json())
-        .then(d => { el.textContent = d.stargazers_count != null ? '· ' + d.stargazers_count : ''; })
-        .catch(() => { el.textContent = ''; });
+      const fetchStar = (elId, prefix) => {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        fetch('https://api.github.com/repos/strive-zwy/Ta', { headers: { Accept: 'application/vnd.github.v3+json' } })
+          .then(r => r.json())
+          .then(d => { el.textContent = d.stargazers_count != null ? prefix + d.stargazers_count : ''; })
+          .catch(() => { el.textContent = ''; });
+      };
+      fetchStar('starCount', '· ');
+      fetchStar('heroStarCount', '· ');
     })();
 
     // ---- 界面预览：单张展示 + 3D 卡组 ----
