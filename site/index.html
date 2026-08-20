@@ -295,26 +295,37 @@
 
     /* ---- screenshots gallery ---- */
     .gallery {
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
     }
     .shot {
-      border-radius: 16px; overflow: hidden; position: relative;
+      border-radius: 16px; overflow: hidden;
       border: 1px solid var(--line); background: var(--bg-2);
-      aspect-ratio: 9/16;
+      display: flex; flex-direction: column; text-decoration: none;
       transition: transform .35s, box-shadow .35s, border-color .35s;
     }
-    .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
-    .shot:hover { transform: translateY(-8px) scale(1.01); border-color: rgba(200,131,47,0.5); box-shadow: 0 24px 48px rgba(80,50,20,0.18); }
+    .shot .img-wrap {
+      aspect-ratio: 9/17; overflow: hidden;
+      background: var(--bg-3);
+    }
+    .shot img {
+      width: 100%; height: 100%; object-fit: cover; object-position: top;
+      display: block; transition: transform .5s ease;
+    }
+    .shot:hover { transform: translateY(-8px); border-color: rgba(200,131,47,0.5); box-shadow: 0 24px 48px rgba(80,50,20,0.18); }
+    .shot:hover img { transform: scale(1.04); }
     .shot .cap {
-      position: absolute; bottom: 0; left: 0; right: 0;
-      padding: 30px 16px 14px;
-      background: linear-gradient(transparent, rgba(255,255,255,0.92));
-      font-size: 0.88rem; font-weight: 500; color: var(--fg);
+      padding: 16px 18px 18px;
+      border-top: 1px solid var(--line);
     }
     .shot .cap .step {
       display: block; font-size: 0.72rem; color: var(--amber);
-      letter-spacing: 1px; margin-bottom: 2px; font-family: monospace;
+      letter-spacing: 1.5px; margin-bottom: 6px; font-family: monospace;
     }
+    .shot .cap .title {
+      display: block; font-size: 1rem; font-weight: 600; color: var(--fg);
+      margin-bottom: 4px;
+    }
+    .shot .cap p { font-size: 0.84rem; color: var(--muted); line-height: 1.6; }
 
     /* ---- steps ---- */
     .steps { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px 48px; }
@@ -353,6 +364,31 @@
     .cta h2 .it { color: var(--amber); font-style: italic; }
     .cta p { margin: 22px auto 0; color: var(--muted); max-width: 34em; }
     .cta .hero-actions { justify-content: center; margin-top: 40px; }
+
+    /* ---- star banner ---- */
+    .star-banner {
+      margin: 64px auto 0; max-width: 640px;
+      display: flex; align-items: center; justify-content: space-between; gap: 24px;
+      padding: 24px 28px; border-radius: var(--radius);
+      background: var(--bg-2); border: 1px solid var(--line);
+      text-align: left; flex-wrap: wrap;
+    }
+    .star-banner .star-text h3 {
+      font-family: var(--serif); font-size: 1.15rem; font-weight: 600; margin-bottom: 4px;
+    }
+    .star-banner .star-text p { font-size: 0.88rem; color: var(--muted); max-width: 24em; }
+    .star-btn {
+      background: linear-gradient(135deg, #241d15, #3a2f20); color: #f5d9a8;
+      border: 1px solid rgba(200,131,47,0.4); flex-shrink: 0;
+    }
+    .star-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(36,29,21,0.35); }
+    .star-btn .star-count { display: inline-block; height: 16px; margin-left: 2px; }
+
+    /* hero star badge */
+    .star-badge { text-decoration: none; color: var(--muted); transition: color .25s; cursor: pointer; }
+    .star-badge:hover { color: var(--amber); }
+    .star-badge svg { width: 15px; height: 15px; color: var(--amber); opacity: 1; }
+    .star-badge img { height: 15px; margin-left: 4px; border-radius: 3px; }
 
     /* ---- footer ---- */
     footer {
@@ -426,7 +462,7 @@
       </nav>
       <div class="nav-cta">
         <a class="btn btn-ghost" href="https://github.com/strive-zwy/Ta">GitHub</a>
-        <a class="btn btn-primary" href="https://github.com/strive-zwy/Ta">下载源码</a>
+        <a class="btn btn-primary" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">下载 APK</a>
       </div>
     </div>
   </header>
@@ -444,7 +480,11 @@
           通过对话式配置，创建一个拥有<strong>独立人格</strong>、<strong>专属声音</strong>和<strong>真实作息</strong>的 AI 陪伴。它不套模板——它的样子，由你如何想象、如何描述，以及你们如何相处来决定。
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary btn-lg" href="https://github.com/strive-zwy/Ta">在 GitHub 获取源码 →</a>
+          <a class="btn btn-primary btn-lg" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            下载 APK · v1.3.0
+          </a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/strive-zwy/Ta">GitHub 源码</a>
           <a class="btn btn-ghost btn-lg" href="#start">了解上手流程</a>
         </div>
         <div class="hero-badges">
@@ -452,6 +492,11 @@
           <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>Android · API 24+</span>
           <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/></svg>Kotlin · Jetpack Compose</span>
           <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>数据本地加密</span>
+          <a class="badge star-badge" href="https://github.com/strive-zwy/Ta" title="去 GitHub 点个 Star">
+            <svg viewBox="0 0 24 24" fill="currentColor" stroke-width="0"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>
+            GitHub Star
+            <img src="https://img.shields.io/github/stars/strive-zwy/Ta?style=flat-square&color=%23c8832f&label=" alt="stars" loading="lazy" />
+          </a>
         </div>
       </div>
 
@@ -604,29 +649,53 @@
         <p class="sec-desc">下面按一次完整的使用流程，从首次配置到塑造 Agent，展示 Ta 的主要界面。</p>
       </div>
       <div class="gallery">
-        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
-          <img src="screenshots/13-chat-in-use.png" alt="日常聊天界面" loading="lazy" />
-          <div class="cap"><span class="step">07 · 日常聊天</span>点击播放语音 · 动作描述斜体呈现</div>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <div class="img-wrap"><img src="screenshots/01-model-config.png" alt="模型配置" loading="lazy" /></div>
+          <div class="cap">
+            <span class="step">STEP 01</span>
+            <span class="title">模型配置</span>
+            <p>填写 LLM 与 TTS 接入参数，支持保存多套配置、一键测试连通性并随时切换。</p>
+          </div>
         </a>
-        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
-          <img src="screenshots/06-config-draft.png" alt="配置草稿" loading="lazy" />
-          <div class="cap"><span class="step">04 · 配置草稿</span>完整设定可预览、可修改</div>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <div class="img-wrap"><img src="screenshots/11-voice-config.png" alt="语音配置" loading="lazy" /></div>
+          <div class="cap">
+            <span class="step">STEP 02</span>
+            <span class="title">语音配置</span>
+            <p>为日常、开心、温柔三种情绪分别配置声音样本与语音参数，支持即时试听。</p>
+          </div>
         </a>
-        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
-          <img src="screenshots/11-voice-config.png" alt="语音配置" loading="lazy" />
-          <div class="cap"><span class="step">05 · 语音配置</span>三种情绪分别克隆声线</div>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <div class="img-wrap"><img src="screenshots/12-persona-settings.png" alt="人格设定" loading="lazy" /></div>
+          <div class="cap">
+            <span class="step">STEP 03</span>
+            <span class="title">人格设定</span>
+            <p>定义身份背景、性格标签、说话习惯与示例对话，塑造 Agent 的表达内核。</p>
+          </div>
         </a>
-        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
-          <img src="screenshots/12-persona-settings.png" alt="人格设定" loading="lazy" />
-          <div class="cap"><span class="step">05 · 人格设定</span>身份内核 · 性格 · 说话习惯</div>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <div class="img-wrap"><img src="screenshots/06-config-draft.png" alt="配置草稿" loading="lazy" /></div>
+          <div class="cap">
+            <span class="step">STEP 04</span>
+            <span class="title">配置草稿</span>
+            <p>对话式配置完成后生成完整草稿，可预览、可修改，确认后才会正式生效。</p>
+          </div>
         </a>
-        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
-          <img src="screenshots/13-chat-in-use.png" alt="Agent 配置" loading="lazy" />
-          <div class="cap"><span class="step">05 · Agent 配置</span>导入 / 导出 .agent.zip</div>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <div class="img-wrap"><img src="screenshots/08-agent-config.png" alt="Agent 管理" loading="lazy" /></div>
+          <div class="cap">
+            <span class="step">STEP 05</span>
+            <span class="title">Agent 管理</span>
+            <p>集中管理头像、声音与行为设定，支持导入导出 .agent.zip 配置包。</p>
+          </div>
         </a>
-        <a class="shot reveal" href="https://github.com/strive-zwy/Ta">
-          <img src="screenshots/01-model-config.png" alt="模型配置" loading="lazy" />
-          <div class="cap"><span class="step">01 · 模型配置</span>多套 LLM / TTS 配置切换</div>
+        <a class="shot reveal" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <div class="img-wrap"><img src="screenshots/13-chat-in-use.png" alt="日常聊天" loading="lazy" /></div>
+          <div class="cap">
+            <span class="step">STEP 06</span>
+            <span class="title">日常聊天</span>
+            <p>类即时通信的对话体验，语音消息点击播放，多条回复逐条送达。</p>
+          </div>
         </a>
       </div>
     </div>
@@ -665,7 +734,7 @@
           <span class="s-num">04</span>
           <div>
             <h4>确认并开始陪伴</h4>
-            <p>输入 <code style="color:var(--amber)">/done</code> 查看草稿，点击「确认应用」后正式生效。在记忆、关系和作息中逐渐形成连续的陪伴体验。</p>
+            <p>点击「完成并预览」查看配置草稿，确认无误后点击「确认应用」正式保存。之后在记忆、关系和作息中逐渐形成连续的陪伴体验。</p>
           </div>
         </div>
       </div>
@@ -703,8 +772,24 @@
       <h2 class="reveal">Ta 可以是他，<br />也可以是她，<br />还可以是<span class="it">它</span>。</h2>
       <p class="reveal">更重要的是，Ta 不由预设模板决定，而由你如何想象、如何描述，以及你们如何相处来决定。欢迎 Issue、PR 和二次开发。</p>
       <div class="hero-actions reveal">
-        <a class="btn btn-primary btn-lg" href="https://github.com/strive-zwy/Ta">在 GitHub 获取源码 →</a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下载 APK · v1.3.0
+        </a>
+        <a class="btn btn-ghost btn-lg" href="https://github.com/strive-zwy/Ta">GitHub 源码</a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/strive-zwy/Ta/issues">提交 Issue</a>
+      </div>
+
+      <div class="star-banner reveal">
+        <div class="star-text">
+          <h3>觉得 Ta 有意思？</h3>
+          <p>如果这个项目对你有帮助，欢迎去 GitHub 点一个 Star —— 你的支持是这个开源项目持续更新的动力。</p>
+        </div>
+        <a class="btn star-btn" href="https://github.com/strive-zwy/Ta">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke-width="0" width="17" height="17"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>
+          Star on GitHub
+          <img class="star-count" src="https://img.shields.io/github/stars/strive-zwy/Ta?style=flat-square&color=%23ffffff&label=" alt="stars" loading="lazy" />
+        </a>
       </div>
     </div>
   </section>

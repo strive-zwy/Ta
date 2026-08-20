@@ -105,6 +105,9 @@ jobs:
             base=$(basename "$apk" .apk)
             mv "$apk" "release-out/ta-${{ steps.version.outputs.version }}-${base}.apk"
           done
+          # 固定名副本：供官网「下载最新版」永久链接使用
+          # https://github.com/strive-zwy/Ta/releases/latest/download/Ta.apk
+          cp release-out/ta-${{ steps.version.outputs.version }}-app-release.apk release-out/Ta.apk
           ls -la release-out/
 
       - name: Upload release APK artifact
