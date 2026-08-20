@@ -505,7 +505,7 @@
       border: 1px solid rgba(200,131,47,0.4); flex-shrink: 0;
     }
     .star-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(36,29,21,0.35); }
-    .star-btn .star-count { display: inline-block; height: 16px; margin-left: 2px; }
+    .star-btn .star-count { display: inline-block; margin-left: 4px; font-size: 0.88rem; opacity: 0.85; }
 
     /* hero star badge */
     .star-badge { text-decoration: none; color: var(--muted); transition: color .25s; cursor: pointer; }
@@ -986,7 +986,7 @@
         <a class="btn star-btn" href="https://github.com/strive-zwy/Ta" aria-label="在 GitHub 上为项目点 Star">
           <svg viewBox="0 0 24 24" fill="currentColor" stroke-width="0" width="17" height="17"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>
           Star on GitHub
-          <img class="star-count" src="https://img.shields.io/github/stars/strive-zwy/Ta?style=flat-square&color=%23ffffff&label=" alt="stars" loading="lazy" />
+          <span class="star-count" id="starCount">…</span>
         </a>
       </div>
     </div>
@@ -1060,6 +1060,16 @@
       };
       window.addEventListener('scroll', update, { passive: true });
       update();
+    })();
+
+    // ---- GitHub Star 数字 ----
+    (() => {
+      const el = document.getElementById('starCount');
+      if (!el) return;
+      fetch('https://api.github.com/repos/strive-zwy/Ta', { headers: { Accept: 'application/vnd.github.v3+json' } })
+        .then(r => r.json())
+        .then(d => { el.textContent = d.stargazers_count != null ? '· ' + d.stargazers_count : ''; })
+        .catch(() => { el.textContent = ''; });
     })();
 
     // ---- 界面预览：单张展示 + 3D 卡组 ----
