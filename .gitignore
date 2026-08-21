@@ -39,3 +39,6 @@ del_schedule.py
 # 调试/临时截图
 today_sleep.png
 today_*.png
+# wrangler 登录凭据与本地缓存
+.wrangler-home/
+.wrangler/

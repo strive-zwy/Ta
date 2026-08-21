@@ -1,0 +1,7 @@
+name = "ta-stats"
+main = "ta-stats.js"
+compatibility_date = "2026-08-21"
+
+[[kv_namespaces]]
+binding = "STATS"
+id = "bd14475cae414ffbb3322737d0ff5df4"
