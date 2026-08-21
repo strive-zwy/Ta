@@ -1313,8 +1313,9 @@
         const track = (type) => {
           try {
             const payload = JSON.stringify({ type, vid, isNewVisitor: isNew && type === 'pageview' });
-            if (navigator.sendBeacon) navigator.sendBeacon(ENDPOINT + '/track', new Blob([payload], { type: 'application/json' }));
-            else fetch(ENDPOINT + '/track', { method: 'POST', body: payload, keepalive: true });
+            // 用 text/plain 发送以避免 CORS 预检（sendBeacon 不支持预检），服务端按 JSON 解析
+            if (navigator.sendBeacon) navigator.sendBeacon(ENDPOINT + '/track', new Blob([payload], { type: 'text/plain;charset=UTF-8' }));
+            else fetch(ENDPOINT + '/track', { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, keepalive: true });
           } catch (e) { /* 统计失败不影响页面 */ }
         };
         track('pageview');
