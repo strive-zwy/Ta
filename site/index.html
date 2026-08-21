@@ -1310,12 +1310,16 @@
           localStorage.setItem('ta_vid', vid);
           isNew = true;
         }
+        const send = (payload, useBeacon) => {
+          // 用 text/plain 发送以避免 CORS 预检（sendBeacon 不支持预检），服务端按 JSON 解析
+          if (useBeacon && navigator.sendBeacon && navigator.sendBeacon(ENDPOINT + '/track', new Blob([payload], { type: 'text/plain;charset=UTF-8' }))) return;
+          fetch(ENDPOINT + '/track', { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, keepalive: true }).catch(() => {});
+        };
         const track = (type) => {
           try {
             const payload = JSON.stringify({ type, vid, isNewVisitor: isNew && type === 'pageview' });
-            // 用 text/plain 发送以避免 CORS 预检（sendBeacon 不支持预检），服务端按 JSON 解析
-            if (navigator.sendBeacon) navigator.sendBeacon(ENDPOINT + '/track', new Blob([payload], { type: 'text/plain;charset=UTF-8' }));
-            else fetch(ENDPOINT + '/track', { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, keepalive: true });
+            // 下载即将跳转页面用 beacon，浏览场景用 fetch 更可靠
+            send(payload, type === 'download');
           } catch (e) { /* 统计失败不影响页面 */ }
         };
         track('pageview');
