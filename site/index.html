@@ -409,6 +409,96 @@
       .steps-rail { padding-left:50px; }
       .step-dot { left:-50px; width:34px; height:34px; font-size:.8rem; }
     }
+    /* ===== 偶像克隆 ===== */
+    .clone-wrap { position:relative; overflow:hidden; }
+    .clone-wrap::before { content:""; position:absolute; inset:0; pointer-events:none;
+      background:radial-gradient(640px 320px at 10% 18%, rgba(201,123,144,.09), transparent 62%),
+                 radial-gradient(720px 360px at 90% 72%, rgba(200,131,47,.10), transparent 62%); }
+    .clone-flow { position:relative; display:grid; grid-template-columns:1fr 148px 1.14fr; gap:24px; align-items:center; margin-top:10px; }
+    .cf-line { position:absolute; top:50%; left:7%; right:7%; height:2px; z-index:0; opacity:.5;
+      background:repeating-linear-gradient(90deg, var(--amber2) 0 9px, transparent 9px 18px);
+      animation:cfFlow 1.1s linear infinite; }
+    @keyframes cfFlow { to { background-position:18px 0; } }
+    .cf-node { position:relative; z-index:1; }
+    .cf-phone { background:var(--paper2); border:1px solid var(--line); border-radius:22px; padding:18px; box-shadow:0 18px 44px rgba(90,58,24,.10); }
+    .cf-phone-top { display:flex; align-items:center; gap:7px; font-size:.72rem; color:var(--muted); margin-bottom:13px; }
+    .cf-dot { width:7px; height:7px; border-radius:50%; background:var(--teal); box-shadow:0 0 10px var(--teal); animation:pulseDot 2s infinite; }
+    .cf-bub { max-width:86%; padding:9px 13px; border-radius:15px; font-size:.86rem; line-height:1.5; margin-bottom:9px; opacity:0; }
+    .cf-bub.me { margin-left:auto; background:linear-gradient(135deg,var(--amber2),var(--amber)); color:#fff; border-bottom-right-radius:5px; font-weight:500; }
+    .cf-bub.bot { background:var(--cream); color:var(--ink); border-bottom-left-radius:5px; }
+    .cf-typing { display:flex; gap:4px; padding:11px 13px; width:max-content; border-radius:15px; border-bottom-left-radius:5px; background:var(--cream); margin-bottom:9px; opacity:0; }
+    .cf-typing i { width:5px; height:5px; border-radius:50%; background:var(--muted); animation:tdot 1s infinite; }
+    .cf-typing i:nth-child(2){ animation-delay:.16s } .cf-typing i:nth-child(3){ animation-delay:.32s }
+    @keyframes tdot { 0%,60%,100%{ transform:translateY(0); opacity:.5 } 30%{ transform:translateY(-4px); opacity:1 } }
+    .cf-mid { display:flex; flex-direction:column; align-items:center; gap:12px; }
+    .cf-orb { position:relative; width:64px; height:64px; border-radius:50%; display:grid; place-items:center;
+      background:conic-gradient(from 210deg, var(--amber2), var(--rose), var(--teal), var(--amber2));
+      padding:2px; animation:cfSpin 7s linear infinite; }
+    .cf-orb::before { content:""; position:absolute; inset:2px; border-radius:50%; background:var(--paper2); }
+    .cf-orb svg { position:relative; width:26px; height:26px; stroke:var(--amber); fill:none; stroke-width:1.8; }
+    @keyframes cfSpin { to { transform:rotate(360deg); } }
+    .cf-mid-label { font-size:.74rem; color:var(--muted); letter-spacing:2px; }
+    .cf-chip { position:absolute; padding:5px 12px; border-radius:99px; font-size:.74rem; font-weight:500;
+      background:var(--paper2); border:1px solid var(--line2); box-shadow:0 6px 18px rgba(90,58,24,.12); opacity:0; }
+    .cf-chip.c1 { top:2px; right:6px; color:var(--amber); }
+    .cf-chip.c2 { bottom:34px; left:-4px; color:var(--rose); }
+    .cf-chip.c3 { bottom:-4px; right:10px; color:var(--teal); }
+    .cf-card { background:var(--paper2); border:1px solid var(--line); border-radius:22px; padding:20px; box-shadow:0 18px 44px rgba(90,58,24,.10); }
+    .cf-card-head { display:flex; align-items:center; gap:12px; padding-bottom:14px; margin-bottom:6px; border-bottom:1px dashed var(--line2); }
+    .cf-ava { width:42px; height:42px; border-radius:50%; display:grid; place-items:center; font-family:var(--serif); font-size:1.15rem; font-weight:600; color:#fff;
+      background:radial-gradient(circle at 32% 28%, var(--amber2), var(--amber)); flex-shrink:0; }
+    .cf-card-meta b { display:block; font-size:.95rem; }
+    .cf-card-meta i { font-style:normal; font-size:.74rem; color:var(--muted); }
+    .cf-done { margin-left:auto; font-size:.72rem; font-weight:600; color:var(--teal); background:rgba(63,151,137,.1);
+      padding:5px 11px; border-radius:99px; white-space:nowrap; opacity:0; }
+    .cf-fields { list-style:none; }
+    .cf-field { display:grid; grid-template-columns:76px 1fr; gap:12px; align-items:baseline; padding:10px 0; border-bottom:1px solid var(--line); opacity:0; }
+    .cf-field:last-child { border-bottom:none; }
+    .cf-field b { font-size:.78rem; color:var(--amber); white-space:nowrap; }
+    .cf-field span { font-size:.85rem; line-height:1.55; color:var(--ink); }
+    /* 动画时间轴（.play 触发） */
+    .play .cf-bub.me { animation:cfUp .55s cubic-bezier(.2,.8,.3,1) .25s forwards; }
+    .play .cf-typing { animation:cfTyping 2.4s ease .9s forwards; }
+    .play .cf-bub.bot:not(.b2) { animation:cfUp .55s cubic-bezier(.2,.8,.3,1) 2.2s forwards; }
+    .play .cf-bub.bot.b2 { animation:cfUp .55s cubic-bezier(.2,.8,.3,1) 6.4s forwards; }
+    .play .cf-chip.c1 { animation:cfChip 2.6s cubic-bezier(.2,.8,.3,1) 2.5s forwards; }
+    .play .cf-chip.c2 { animation:cfChip 2.6s cubic-bezier(.2,.8,.3,1) 2.75s forwards; }
+    .play .cf-chip.c3 { animation:cfChip 2.6s cubic-bezier(.2,.8,.3,1) 3s forwards; }
+    .play .cf-card { animation:cfGlow 1.2s ease 3.5s; }
+    .play .cf-field:nth-child(1) { animation:cfField .6s ease 3.9s forwards; }
+    .play .cf-field:nth-child(2) { animation:cfField .6s ease 4.3s forwards; }
+    .play .cf-field:nth-child(3) { animation:cfField .6s ease 4.7s forwards; }
+    .play .cf-field:nth-child(4) { animation:cfField .6s ease 5.1s forwards; }
+    .play .cf-field:nth-child(5) { animation:cfField .6s ease 5.5s forwards; }
+    .play .cf-done { animation:cfPop .5s cubic-bezier(.2,1.4,.4,1) 5.9s forwards; }
+    .play-static .cf-bub, .play-static .cf-typing, .play-static .cf-chip, .play-static .cf-field, .play-static .cf-done { opacity:1; animation:none !important; }
+    @keyframes cfUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+    @keyframes cfTyping { 0% { opacity:0; } 8% { opacity:1; } 82% { opacity:1; } 100% { opacity:0; } }
+    @keyframes cfChip { 0% { opacity:0; transform:scale(.3); } 18% { opacity:1; transform:scale(1); }
+      62% { opacity:1; transform:scale(1); } 100% { opacity:0; transform:scale(1) translateX(110px); } }
+    @keyframes cfGlow { 0%,100% { box-shadow:0 18px 44px rgba(90,58,24,.10); } 50% { box-shadow:0 18px 60px rgba(200,131,47,.30); border-color:var(--amber2); } }
+    @keyframes cfField { from { opacity:0; filter:blur(5px); transform:translateX(16px); } to { opacity:1; filter:blur(0); transform:none; } }
+    @keyframes cfPop { 0% { opacity:0; transform:scale(.5); } 100% { opacity:1; transform:scale(1); } }
+    .clone-cards { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; margin-top:46px; }
+    .clone-card { background:var(--paper2); border:1px solid var(--line); border-radius:20px; padding:26px 24px; position:relative; overflow:hidden;
+      transition:transform .35s cubic-bezier(.2,.8,.3,1), box-shadow .35s, border-color .35s; }
+    .clone-card:hover { transform:translateY(-6px); box-shadow:0 22px 48px rgba(90,58,24,.14); border-color:var(--amber2); }
+    .clone-card .cc-icon { width:44px; height:44px; border-radius:13px; display:grid; place-items:center; margin-bottom:16px;
+      background:linear-gradient(135deg, rgba(200,131,47,.14), rgba(201,123,144,.14)); }
+    .clone-card .cc-icon svg { width:22px; height:22px; stroke:var(--amber); fill:none; stroke-width:1.7; }
+    .clone-card h4 { font-size:1.02rem; margin-bottom:9px; }
+    .clone-card p { font-size:.87rem; line-height:1.7; color:var(--muted); }
+    .clone-card .tag { margin-top:14px; }
+    .clone-note { margin-top:26px; text-align:center; font-size:.82rem; color:var(--muted); max-width:680px; margin-left:auto; margin-right:auto; line-height:1.8; }
+    .clone-note strong { color:var(--ink); font-weight:500; }
+    @media (max-width:920px) {
+      .clone-flow { grid-template-columns:1fr; gap:30px; }
+      .cf-line { left:50%; top:8%; bottom:8%; right:auto; width:2px; height:auto;
+        background:repeating-linear-gradient(180deg, var(--amber2) 0 9px, transparent 9px 18px); animation:none; }
+      .clone-cards { grid-template-columns:1fr; }
+      .cf-chip.c2 { left:8px; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *,*::before,*::after { animation-duration:.001s !important; animation-delay:0s !important; transition-duration:.001s !important; }
       .reveal { opacity:1 !important; transform:none !important; }
@@ -439,6 +529,7 @@
       <a class="logo" href="#main"><span class="mark"></span>Ta<span class="tri">他 · 她 · 它</span></a>
       <nav class="links">
         <a href="#pillars">理念</a>
+        <a href="#clone">克隆</a>
         <a href="#voice">语音</a>
         <a href="#gallery">界面</a>
         <a href="#start">上手</a>
@@ -448,6 +539,7 @@
     </div>
     <nav class="mobile-nav" id="mobileNav">
       <a href="#pillars">理念</a>
+      <a href="#clone">克隆</a>
       <a href="#voice">语音</a>
       <a href="#gallery">界面</a>
       <a href="#start">上手</a>
@@ -571,6 +663,68 @@
             <p>配置、聊天、记忆全部存储在设备本地，API Key 加密保存；分享出去的 .agent.zip 不包含任何密钥与地址。</p>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="sec clone-wrap" id="clone">
+      <div class="container">
+        <div class="sec-head reveal">
+          <span class="sec-eyebrow">偶像克隆</span>
+          <h2 class="sec-title">只要一个名字，<br /><em>把 TA 带到你身边</em></h2>
+          <p class="sec-desc">在聊天里说一句「帮我克隆周深」，Ta 会自动搜集公开资料，生成完整的人格设定——身份、性格、说话习惯、情绪反应，一次到位。预览、微调、确认后才正式生效。</p>
+        </div>
+        <div class="clone-flow reveal zoom" id="cloneFlow" role="img" aria-label="偶像克隆流程演示：输入名字，搜集公开资料，逐项生成人格设定">
+          <div class="cf-line" aria-hidden="true"></div>
+          <div class="cf-node cf-phone">
+            <div class="cf-phone-top"><span class="cf-dot"></span>对话式克隆 · 聊天页输入 /config</div>
+            <div class="cf-bub me">帮我克隆一下周深</div>
+            <div class="cf-typing" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="cf-bub bot">正在搜集公开资料，整理他说话的方式…</div>
+            <div class="cf-bub bot b2">人格设定生成好了，先看看像不像？</div>
+          </div>
+          <div class="cf-node cf-mid" aria-hidden="true">
+            <div class="cf-orb"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg></div>
+            <span class="cf-mid-label">资料搜集</span>
+            <div class="cf-chip c1">公开履历</div>
+            <div class="cf-chip c2">采访语录</div>
+            <div class="cf-chip c3">性格趣闻</div>
+          </div>
+          <div class="cf-node cf-card">
+            <div class="cf-card-head">
+              <span class="cf-ava">深</span>
+              <div class="cf-card-meta"><b>昵称由你定</b><i>人格与代表作基于公开资料生成</i></div>
+              <span class="cf-done">✓ 已生成</span>
+            </div>
+            <ul class="cf-fields">
+              <li class="cf-field"><b>身份内核</b><span>我是歌手，在舞台上唱歌，在生活里和你聊天</span></li>
+              <li class="cf-field"><b>性格核心</b><span>温柔但不讨好，认真里带一点冷幽默</span></li>
+              <li class="cf-field"><b>说话习惯</b><span>口语化，句尾常带「呀」「啦」，但不是每句都用</span></li>
+              <li class="cf-field"><b>情绪反应</b><span>被夸会害羞但嘴硬，聊到音乐又会突然认真</span></li>
+              <li class="cf-field"><b>情绪声线</b><span>日常 / 开心 / 温柔，三套独立语音参数</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="clone-cards">
+          <div class="clone-card reveal">
+            <span class="cc-icon"><svg viewBox="0 0 24 24"><polygon points="12 2 15 9 22 9.3 16.5 14 18.5 21.5 12 17 5.5 21.5 7.5 14 2 9.3 9 9"/></svg></span>
+            <h4>现实偶像</h4>
+            <p>输入一个名字，自动搜索公开履历、采访与语录，还原 TA 的性格底色和说话方式。不用填任何表单。</p>
+            <span class="tag">一个名字 → 完整人格</span>
+          </div>
+          <div class="clone-card reveal" style="--d:.1s">
+            <span class="cc-icon"><svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg></span>
+            <h4>虚构角色</h4>
+            <p>「砂金，《崩坏：星穹铁道》」这样输入即可。按官方设定还原角色，关系也不强制偶像-粉丝，可以按剧情自然来。</p>
+            <span class="tag">角色 + 作品 · 按设定还原</span>
+          </div>
+          <div class="clone-card reveal" style="--d:.2s">
+            <span class="cc-icon"><svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z"/><path d="M15 5l4 4"/></svg></span>
+            <h4>任何你描述的人</h4>
+            <p>不一定是名人。直接描述你想象中的 TA——性格、身份、说话方式，多轮对话里逐步成型，随时可以改。</p>
+            <span class="tag">自由描述 · 对话成型</span>
+          </div>
+        </div>
+        <p class="clone-note reveal"><strong>守住边界：</strong>Ta 还原的是公开资料里的性格与说话方式，App 内显示的是你自定义的昵称而非真名；配合音色复刻，人格与声音都由你掌握。</p>
       </div>
     </section>
 
@@ -813,6 +967,7 @@
           <div class="foot-col">
             <h5>了解</h5>
             <a href="#pillars">项目理念</a>
+            <a href="#clone">偶像克隆</a>
             <a href="#voice">语音系统</a>
             <a href="#gallery">应用一览</a>
             <a href="#start">上手流程</a>
@@ -989,6 +1144,29 @@
       });
     },{threshold:.15, rootMargin:'0px 0px -6% 0px'});
     [].forEach.call(document.querySelectorAll('.reveal'), function(el){ io.observe(el); });
+
+    var cloneFlow=document.getElementById('cloneFlow');
+    if(cloneFlow){
+      if(reduceMotion){
+        cloneFlow.classList.add('play-static');
+      } else {
+        var cloneVisible=false, cloneTimer=null;
+        function cloneRestart(){
+          cloneFlow.classList.remove('play');
+          void cloneFlow.offsetWidth;
+          cloneFlow.classList.add('play');
+          clearTimeout(cloneTimer);
+          cloneTimer=setTimeout(function(){ if(cloneVisible) cloneRestart(); }, 10200);
+        }
+        var cfIo=new IntersectionObserver(function(es){
+          es.forEach(function(en){
+            cloneVisible=en.isIntersecting;
+            if(cloneVisible && !cloneFlow.classList.contains('play')) cloneRestart();
+          });
+        },{threshold:.3});
+        cfIo.observe(cloneFlow);
+      }
+    }
 
     var cio=new IntersectionObserver(function(entries){
       entries.forEach(function(en){
