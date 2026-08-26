@@ -299,7 +299,7 @@
 
     /* ---------- gallery deck ---------- */
     .deck-stage { display:grid; grid-template-columns:1fr 1fr; gap:48px; align-items:stretch; }
-    .deck-visual { position:relative; display:grid; place-items:center; perspective:1300px; touch-action:pan-y; cursor:grab; user-select:none; -webkit-user-select:none; }
+    .deck-visual { position:relative; display:grid; place-items:center; perspective:1300px; touch-action:pan-y; cursor:grab; user-select:none; -webkit-user-select:none; overflow:hidden; }
     .deck-visual.dragging { cursor:grabbing; }
     .deck { position:relative; width:100%; transform-style:preserve-3d; transform:translateX(var(--drag,0px)); transition:transform .55s cubic-bezier(.22,1,.36,1); }
     .deck.no-trans { transition:none; }
