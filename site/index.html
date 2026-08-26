@@ -979,7 +979,7 @@
         </div>
       </div>
       <div class="foot-bottom">
-        <span>© 2026 Ta · 以 MIT 协议开源</span>
+        <span id="siteStats">© 2026 Ta · 以 MIT 协议开源</span>
         <span>Built with Kotlin &amp; Jetpack Compose</span>
       </div>
     </div>
@@ -1345,6 +1345,40 @@
         } else { starEl.textContent='★'; }
       })
       .catch(function(){ starEl.textContent='★'; });
+
+    // ---- 隐私友好统计埋点：只记录聚合计数，不收集 IP 与个人信息 ----
+    (function () {
+      var ENDPOINT = 'https://ta-stats.1228304424.workers.dev';
+      try {
+        var vid = localStorage.getItem('ta_vid');
+        var isNew = false;
+        if (!vid) {
+          vid = crypto.randomUUID ? crypto.randomUUID() : 'v' + Date.now() + Math.random().toString(36).slice(2);
+          localStorage.setItem('ta_vid', vid);
+          isNew = true;
+        }
+        var send = function (payload, useBeacon) {
+          if (useBeacon && navigator.sendBeacon && navigator.sendBeacon(ENDPOINT + '/track', new Blob([payload], { type: 'text/plain;charset=UTF-8' }))) return;
+          fetch(ENDPOINT + '/track', { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, keepalive: true }).catch(function () {});
+        };
+        var track = function (type) {
+          try {
+            send(JSON.stringify({ type: type, vid: vid, isNewVisitor: isNew && type === 'pageview' }), type === 'download');
+          } catch (e) { /* 统计失败不影响页面 */ }
+        };
+        track('pageview');
+        document.addEventListener('click', function (e) {
+          var a = e.target.closest && e.target.closest('a[href*="releases/latest/download/Ta.apk"]');
+          if (a) track('download');
+        }, true);
+        fetch(ENDPOINT + '/stats').then(function (r) { return r.json(); }).then(function (d) {
+          var el = document.getElementById('siteStats');
+          if (el && d && d.pv != null) {
+            el.textContent = '© 2026 Ta · 累计访问 ' + d.pv + ' · 下载 ' + d.dl + ' · MIT 开源';
+          }
+        }).catch(function () {});
+      } catch (e) { /* localStorage 不可用等极端情况 */ }
+    })();
   })();
   </script>
 </body>
