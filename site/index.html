@@ -1357,8 +1357,9 @@
       .catch(function(){});
 
     // ---- 隐私友好统计埋点：只记录聚合计数，不收集 IP 与个人信息 ----
+    // 走自身域名 /track、/stats（由 Pages Function 反代统计 Worker），规避 *.workers.dev 在国内访问不稳定
     (function () {
-      var ENDPOINT = 'https://ta-stats.1228304424.workers.dev';
+      var ENDPOINT = '';
       try {
         var vid = localStorage.getItem('ta_vid');
         var isNew = false;
