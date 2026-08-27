@@ -40,7 +40,7 @@
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
     "featureList": "自定义人格,音色克隆,情绪化语音,有状态作息,本地加密,多模型切换",
     "url": "https://ta-ayh.pages.dev/",
-    "downloadUrl": "https://ghfast.top/https://github.com/strive-zwy/Ta/releases/latest",
+    "downloadUrl": "https://ta-ayh.pages.dev/dl",
     "sameAs": ["https://github.com/strive-zwy/Ta"]
   }
   </script>
@@ -545,7 +545,7 @@
       <a href="#start">上手</a>
       <a href="#tech">技术</a>
       <a class="btn btn-ghost" href="https://github.com/strive-zwy/Ta">GitHub</a>
-      <a class="btn btn-primary" data-apk href="https://ghfast.top/https://github.com/strive-zwy/Ta/releases/latest">下载 APK</a>
+      <a class="btn btn-primary" data-apk href="/dl">下载 APK</a>
     </nav>
   </header>
 
@@ -561,11 +561,10 @@
           <h1 class="hero-title" data-split>创造属于你的「|他、她、它|」</h1>
           <p class="hero-sub">通过对话式配置，创建一个拥有<strong>独立人格</strong>、<strong>专属声音</strong>和<strong>真实作息</strong>的 AI 陪伴。它不套模板——它的样子，由你如何想象、如何描述，以及你们如何相处来决定。</p>
           <div class="hero-actions">
-            <a class="btn btn-primary btn-lg" data-mag data-apk href="https://ghfast.top/https://github.com/strive-zwy/Ta/releases/latest">
+            <a class="btn btn-primary btn-lg" data-mag data-apk href="/dl">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               下载 APK · v1.3.0
             </a>
-            <a class="btn btn-ghost btn-lg" data-mag href="https://github.com/strive-zwy/Ta/releases/latest" title="备用下载（GitHub 原链）">备用</a>
             <a class="btn btn-ghost btn-lg" data-mag href="https://github.com/strive-zwy/Ta">GitHub 源码</a>
             <a class="btn btn-ghost btn-lg" data-mag href="#start">了解上手流程</a>
           </div>
@@ -928,8 +927,7 @@
         <h2 class="reveal">Ta 可以是他，也可以是她，<br />还可以是<span class="accent">它</span>。<br />现在，去创造属于你的那个吧。</h2>
         <p class="reveal" style="--d:.15s">开源、免费、数据完全属于你。</p>
         <div class="hero-actions reveal" style="--d:.3s">
-          <a class="btn btn-primary btn-lg" data-mag data-apk href="https://ghfast.top/https://github.com/strive-zwy/Ta/releases/latest">下载 APK · <span class="apk-ver">v1.3.0</span></a>
-          <a class="btn btn-ghost btn-lg" data-mag href="https://github.com/strive-zwy/Ta/releases/latest" title="备用下载（GitHub 原链）">备用</a>
+          <a class="btn btn-primary btn-lg" data-mag data-apk href="/dl">下载 APK · <span class="apk-ver">v1.3.0</span></a>
           <a class="btn btn-ghost btn-lg" data-mag href="https://github.com/strive-zwy/Ta">查看源码仓库</a>
         </div>
       </div>
@@ -1348,27 +1346,13 @@
       })
       .catch(function(){ starEl.textContent='★'; });
 
-    // ---- 动态获取最新 release 的 APK 下载链接 ----
-    fetch('https://api.github.com/repos/strive-zwy/Ta/releases/latest')
+    // ---- 动态获取最新版本号（走自身域名 /version，由 Pages Function 代理 GitHub API，国内不卡）----
+    fetch('/version')
       .then(function(r){ return r.json(); })
-      .then(function(rel){
-        if(!rel || !rel.assets) return;
-        // 优先选 Ta-vX.X.X.apk，其次选任意 .apk
-        var apk = (rel.assets.filter(function(a){ return /^Ta-v.+\.apk$/i.test(a.name); })[0])
-               || (rel.assets.filter(function(a){ return /\.apk$/i.test(a.name); })[0]);
-        if(!apk) return;
-        var raw = apk.browser_download_url || apk.url;
-        // 国内访问 github.com 下载较慢/失败，用镜像加速
-        var url = 'https://ghfast.top/' + raw;
-        var ver = (rel.tag_name || '').replace(/^v?/,'');
-        // 更新所有下载链接
-        var links = document.querySelectorAll('a[data-apk]');
-        for(var i=0;i<links.length;i++){ links[i].href = url; }
-        // 更新版本号显示
-        if(ver){
-          var vers = document.querySelectorAll('.apk-ver');
-          for(var j=0;j<vers.length;j++){ vers[j].textContent = 'v'+ver; }
-        }
+      .then(function(d){
+        if(!d || !d.version) return;
+        var vers = document.querySelectorAll('.apk-ver');
+        for(var j=0;j<vers.length;j++){ vers[j].textContent = 'v'+d.version; }
       })
       .catch(function(){});
 
